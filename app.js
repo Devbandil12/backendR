@@ -6,7 +6,7 @@ const app = require('express')();
 var http = require('http').Server(app);
 
 app.use(cors({
-    origin:"*"
+    origin:"https://www.devidaura.com/"
 }))
 const paymentRoute = require('./routes/paymentRoute');
 
