@@ -10,7 +10,7 @@ app.use(cors({
 }))
 const paymentRoute = require('./routes/paymentRoute');
 
-app.use('/',paymentRoute.payment_route);
+app.use('/',paymentRoute.payment_routes);
 
 http.listen(3000, function(){
     console.log('Server is running');

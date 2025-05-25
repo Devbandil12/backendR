@@ -3,13 +3,12 @@ import { db } from "../configs/index.js";                // your drizzle setup
 import { eq } from "drizzle-orm";
 import Razorpay from "razorpay";
 import { ordersTable } from "../configs/schema.js";
-export const payment_route = express();
+ const payment_route = express();
 
 import bodyParser from 'body-parser';
 payment_route.use(bodyParser.json());
 payment_route.use(bodyParser.urlencoded({ extended:false }));
 
-import path from'path';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_ID_KEY,
@@ -24,9 +23,9 @@ payment_route.post('/createOrder', paymentController.createOrder);
 payment_route.post('/verify-payment', paymentController.verify);
 
 
- payment_route.post("/:orderId/refund", async (req, res) => {
-  const { orderId } = req.params;
-  const { reason } = req.body;
+ 
+payment_route.post("/refund", async (req, res) => {
+  const { reason,orderId } = req.body;
 
   try {
     // 1) Lookup payment_id from your DB
@@ -62,5 +61,5 @@ payment_route.post('/verify-payment', paymentController.verify);
   }
 });
 
-
+export const payment_routes=payment_route
 
