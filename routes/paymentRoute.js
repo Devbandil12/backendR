@@ -23,19 +23,18 @@ payment_route.post('/createOrder', paymentController.createOrder);
 payment_route.post('/verify-payment', paymentController.verify);
 
 
+
  
 payment_route.post("/refund", async (req, res) => {
-  const { reason,orderId } = req.body;
-
+  const { orderId } = req.body;
   try {
     // 1) Lookup payment_id from your DB
-    const [order] = await db
+    const order = await db
       .select({ paymentId: ordersTable.transactionId })
       .from(ordersTable)
       .where(eq(ordersTable.id, Number(orderId)));
-
     if (!order || !order.paymentId) {
-      return res.status(404).json({ error: "Order or payment not found" });
+      return res.json({ error: "Order or payment not found" });
     }
      const refund = await razorpay.payments.refund(order.paymentId, {
       amount: undefined, // omit to refund full amount, or specify in paise
