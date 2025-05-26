@@ -29,17 +29,17 @@ payment_route.post("/refund", async (req, res) => {
   const { orderId } = req.body;
   try {
     // 1) Lookup payment_id from your DB
-    const order = await db
+    const [order] = await db
       .select({ paymentId: ordersTable.transactionId })
       .from(ordersTable)
-      .where(eq(ordersTable.id, Number(orderId)));
+      .where(eq(ordersTable.id,orderId));
     if (!order || !order.paymentId) {
       return res.json({ error: "Order or payment not found" });
     }
      const refund = await razorpay.payments.refund(order.paymentId, {
       amount: undefined, // omit to refund full amount, or specify in paise
       speed: "normal",   // or 'optimum' / 'instant'
-      notes: { reason: reason || "User-initiated cancellation" },
+      notes: { reason: "User-initiated cancellation" },
     });
 
     // 3) Update your DB: mark paymentStatus = 'refunded'
