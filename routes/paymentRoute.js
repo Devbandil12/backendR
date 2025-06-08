@@ -2,8 +2,8 @@ import express from "express"
 import { db } from "../configs/index.js";                // your drizzle setup
 import { eq } from "drizzle-orm";
 import Razorpay from "razorpay";
-const multer = require('multer');
-const pdf=require("pdf-parse")
+import multer from 'multer'
+import pdf from "pdf-parse"
 import { ordersTable } from "../configs/schema.js";
  const payment_route = express();
 
