@@ -67,7 +67,7 @@ export const ordersTable = pgTable('orders', {
   status: text('status').default('order placed'),
   progressStep:text('progressStep').default('0'),
   paymentMode:text('payment_mode').notNull(),
-  transactionId:text('transaction_id').default("null"),
+  transactionId:text('transaction_id').default(null),
   paymentStatus: text("payment_status").default("pending"), 
   phone: text("phone").notNull(),
   createdAt:  text('created_at').notNull(),

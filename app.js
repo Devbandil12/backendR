@@ -1,17 +1,20 @@
-require("dotenv").config();
-const cors = require("cors")
+// app.js
 
+import 'dotenv/config';                   // loads .env into process.env
+import express from 'express';
+import cors from 'cors';
+import http from 'http';
+import payment_routes from './routes/paymentRoute.js'; // <- default import
 
-const app = require('express')();
-var http = require('http').Server(app);
+const app = express();
+const server = http.createServer(app);
 
-app.use(cors({
-    origin:"*"
-}))
-const paymentRoute = require('./routes/paymentRoute');
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-app.use('/',paymentRoute.payment_routes);
-
-http.listen(3000, function(){
-    console.log('Server is running');
+// Mount your payment routes
+app.use('/api/payment', payment_routes);
+server.listen(3000, () => {
+  console.log('🚀 Server is running on http://localhost:3000');
 });
