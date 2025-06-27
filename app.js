@@ -18,6 +18,15 @@ app.use(express.urlencoded({ extended: false }));
 // Mount payment routes under /api/payment
 app.use('/api/payment', payment_routes);
 
+app._router.stack.forEach(layer => {
+  if (layer.route && layer.route.path) {
+    console.log(
+      layer.route.stack[0].method.toUpperCase(),
+      layer.route.path
+    );
+  }
+});
+
 // Basic health check route (optional)
 app.get('/', (req, res) => {
   res.send('✅ Backend is running!');

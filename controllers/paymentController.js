@@ -115,7 +115,7 @@ export async function issueRefund(req, res) {
     // Call Razorpay refund API (amount in paise)
     const refund = await razorpay.payments.refund(order.paymentId, {
       amount: refundAmount * 100,
-      speed:  "normal",
+      speed:  "instant",
       notes:  { reason: "User cancellation" },
     });
 
