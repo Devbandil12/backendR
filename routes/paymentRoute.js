@@ -63,11 +63,11 @@ router.post('/refund', async (req, res) => {
     await db
       .update(ordersTable)
       .set({
-        refundId: refund.id,
-        refundAmount: refund.amount,
-        refundStatus: refund.status,
-        refundSpeed: refund.speed,
-        refundInitiatedAt: new Date(refund.created_at * 1000),
+        refund_id: refund.id,
+        refund_amount: refund.amount,
+        refund_status: refund.status,
+        refund_speed: refund.speed,
+        refund_initiated_at: new Date(refund.created_at * 1000),
       })
       .where(eq(ordersTable.id, orderId));
 

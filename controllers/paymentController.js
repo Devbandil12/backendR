@@ -75,3 +75,24 @@ export const verify = async (req, res) => {
     return res.status(500).json({ success: false, error: "Verification error." });
   }
 };
+
+export const refund = async (req, res) => {
+  try {
+    const { paymentId, amount, speed } = req.body;
+    if (!paymentId || !amount) {
+      return res.status(400).json({ success: false, error: "Missing paymentId or amount" });
+    }
+
+    // Create refund in Razorpay
+    const refund = await razorpayInstance.payments.refund(paymentId, {
+      amount,
+      speed: speed || 'optimum',
+    });
+
+    console.log("Refund created:", refund);
+    return res.json({ success: true, refund });
+  } catch (error) {
+    console.error("Refund failed:", error);
+    res.status(500).json({ success: false, error: error.message || "Refund failed" });
+  }
+};
