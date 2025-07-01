@@ -119,4 +119,12 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
   }
 });
 
+router.all('*', (req, res) => {
+  console.log(`❗ Unmatched route hit: ${req.method} ${req.originalUrl}`);
+  res.status(405).json({ error: 'Method not allowed at this endpoint' });
+});
+
+
 export default router;
+
+
