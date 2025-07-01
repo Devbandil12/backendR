@@ -5,7 +5,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "nodemon app.js"
+    "start": "nodemon app.js",
+    "drizzle:generate": "drizzle-kit generate",
+    "drizzle:push": "drizzle-kit push"
   },
   "keywords": [],
   "author": "",
@@ -23,5 +25,8 @@
     "nodemon": "^3.1.10",
     "pdf-parse": "^1.1.1",
     "razorpay": "^2.8.6"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.4"
   }
 }
