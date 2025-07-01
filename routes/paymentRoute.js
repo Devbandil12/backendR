@@ -42,7 +42,7 @@ router.post('/getdata', upload.single('file'), async (req, res) => {
 
 // ─── 3️⃣ ON-DEMAND REFUND ─────────────────────────────────
 router.post('/refund', async (req, res) => {
-  const { orderId, amount, speed = 'normal', notes } = req.body;
+  const { orderId, amount, speed = 'optimum', notes } = req.body;
 
   const [order] = await db
     .select({ paymentId: ordersTable.transactionId })
