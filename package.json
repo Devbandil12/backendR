@@ -1,6 +1,7 @@
 {
   "name": "stripe-pay-ex-1",
   "version": "1.0.0",
+  "type": "module",
   "description": "",
   "main": "index.js",
   "scripts": {

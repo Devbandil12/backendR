@@ -15,15 +15,15 @@ export const usersTable = pgTable('users', {
   phone: text('phone').default(null),
   email: text('email').notNull(),
   role: text('role').default('user'),
-  cartlength:integer("cart_length").default(0),
+  cartlength: integer("cart_length").default(0),
 
 });
-export const querytable=pgTable("query",{
+export const querytable = pgTable("query", {
   name: text("name").notNull(),
-   email: text("email").notNull(),
-    phone: text("phone").notNull(),
-     message:text("message").notNull(),
-     createdAt:  text('created_at').notNull()
+  email: text("email").notNull(),
+  phone: text("phone").notNull(),
+  message: text("message").notNull(),
+  createdAt: text('created_at').notNull()
 })
 
 
@@ -34,7 +34,7 @@ export const productsTable = pgTable('products', {
   description: varchar('description', { length: 255 }).notNull(),
   fragrance: varchar('fragrance', { length: 255 }).notNull(),
   fragranceNotes: varchar('fragranceNotes', { length: 255 }).notNull(),
- 
+
   quantity: integer('quantity').notNull().default(1),
   discount: integer('discount').notNull(),
   oprice: integer('oprice').notNull(),
@@ -52,7 +52,7 @@ export const addToCartTable = pgTable('add_to_cart', {
 
 
 export const wishlistTable = pgTable("wishlist_table", {
-  id: uuid("id").defaultRandom().primaryKey(), 
+  id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id")
     .notNull()
     .references(() => usersTable.id, { onDelete: "cascade" }),
@@ -61,17 +61,24 @@ export const wishlistTable = pgTable("wishlist_table", {
 })
 
 export const ordersTable = pgTable('orders', {
-  id: text('id').primaryKey().$defaultFn(()=>generateNumericId()),
+  id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
   totalAmount: integer('total_amount').notNull(),
   status: text('status').default('order placed'),
-  progressStep:text('progressStep').default('0'),
-  paymentMode:text('payment_mode').notNull(),
-  transactionId:text('transaction_id').default("null"),
-  paymentStatus: text("payment_status").default("pending"), 
+  progressStep: text('progressStep').default('0'),
+  paymentMode: text('payment_mode').notNull(),
+  transactionId: text('transaction_id').default("null"),
+  paymentStatus: text("payment_status").default("pending"),
   phone: text("phone").notNull(),
-  createdAt:  text('created_at').notNull(),
-  updatedAt:  text('updated_at').default('now()'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').default('now()'),
+  refund_id: text('refund_id'),                // Razorpay refund ID
+  refund_amount: integer('refund_amount'),         // in paise
+  refund_status: text('refund_status'),            // created, processed, failed, etc.
+  refund_speed: text('refund_speed'),             // normal, instant, etc.
+  refund_initiated_at: timestamp('refund_initiated_at'),
+  refund_completed_at: timestamp('refund_completed_at'),
+
 });
 
 export const addressTable = pgTable('address', {
@@ -89,18 +96,18 @@ export const UserAddressTable = pgTable('user_address', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
   name: text('name').notNull(),
-  phone:text("phone").notNull(),
+  phone: text("phone").notNull(),
   city: text('city').notNull(),
   state: text('state').notNull(),
   postalCode: text('postal_code').notNull(),
   country: text('country').notNull(),
-  address:text("address").notNull().default(""),
+  address: text("address").notNull().default(""),
 
 
 });
 
 export const orderItemsTable = pgTable('order_items', {
-  id: text('id').primaryKey().$defaultFn(()=>generateNumericId()),
+  id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   orderId: text('order_id').notNull().references(() => ordersTable.id),
   productId: uuid('product_id').notNull(),
   quantity: integer('quantity').notNull().default(1),

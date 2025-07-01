@@ -1,17 +1,27 @@
-require("dotenv").config();
-const cors = require("cors")
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import http from 'http';
+import paymentRoutes from './routes/paymentRoute.js';
 
+const app = express();
+const server = http.createServer(app);
 
-const app = require('express')();
-var http = require('http').Server(app);
+// ─── MIDDLEWARE ────────────────────────────────────────────
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-app.use(cors({
-    origin:"*"
-}))
-const paymentRoute = require('./routes/paymentRoute');
+// ─── ROUTES ────────────────────────────────────────────────
+app.use('/api/payments', paymentRoutes);
 
-app.use('/',paymentRoute.payment_routes);
+// ─── HEALTHCHECK ──────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.send('🛠️  Payment API up and running');
+});
 
-http.listen(3000, function(){
-    console.log('Server is running');
+// ─── SERVER START ─────────────────────────────────────────
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server listening on port ${PORT}`);
 });

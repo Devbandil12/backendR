@@ -1,85 +1,122 @@
-import express from "express"
-import { db } from "../configs/index.js";                // your drizzle setup
-import { eq } from "drizzle-orm";
-import Razorpay from "razorpay";
-import multer from 'multer'
-import pdf from "pdf-parse"
-import { ordersTable } from "../configs/schema.js";
- const payment_route = express();
+import express from 'express';
+import crypto from 'crypto';
+import multer from 'multer';
+import pdf from 'pdf-parse';
+import Razorpay from 'razorpay';
+import { db } from '../configs/index.js';
+import { ordersTable } from '../configs/schema.js';
+import { eq } from 'drizzle-orm';
+import * as paymentController from '../controllers/paymentController.js';
 
-import bodyParser from 'body-parser';
-payment_route.use(bodyParser.json());
-payment_route.use(bodyParser.urlencoded({ extended:false }));
+const router = express.Router();
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage: storage });
-
+// ─── Razorpay client ───────────────────────────────────────
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_ID_KEY,
   key_secret: process.env.RAZORPAY_SECRET_KEY,
 });
 
-import paymentController  from '../controllers/paymentController.js';
+// ─── Middleware ────────────────────────────────────────────
+router.use(express.json());
+router.use(express.urlencoded({ extended: false }));
 
+// ─── 1️⃣ CREATE ORDER & VERIFY PAYMENT ─────────────────────
+router.post('/createOrder', paymentController.createOrder);
+router.post('/verify-payment', paymentController.verify);
 
+// ─── 2️⃣ PDF UPLOAD & PARSE ────────────────────────────────
+const upload = multer({ storage: multer.memoryStorage() });
 
-payment_route.post('/createOrder', paymentController.createOrder);
-payment_route.post('/verify-payment', paymentController.verify);
-
-
-
-payment_route.post("/getdata",upload.single("file"),async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ error: "No file uploaded" });
-      }
-  
-      // req.file.buffer contains the PDF file
-      const dataBuffer = req.file.buffer;
-      const result = await pdf(dataBuffer);
-  
-      res.status(200).json({ text: result.text });
-    } catch (error) {
-      console.error("Error processing file:", error.message);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
- 
-payment_route.post("/refund", async (req, res) => {
-  const { orderId } = req.body;
+router.post('/getdata', upload.single('file'), async (req, res) => {
   try {
-    // 1) Lookup payment_id from your DB
-    const [order] = await db
-      .select({ paymentId: ordersTable.transactionId })
-      .from(ordersTable)
-      .where(eq(ordersTable.id,orderId));
-    if (!order || !order.paymentId) {
-      return res.json({ error: "Order or payment not found" });
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
     }
-     const refund = await razorpay.payments.refund(order.paymentId, {
-      amount: undefined, // omit to refund full amount, or specify in paise
-      speed: "normal",   // or 'optimum' / 'instant'
-      notes: { reason: "User-initiated cancellation" },
-    });
-
-    // 3) Update your DB: mark paymentStatus = 'refunded'
-    await db
-      .update(ordersTable)
-      .set({ paymentStatus: "refunded", status: "Order Cancelled" })
-      .where(eq(ordersTable.id, Number(orderId)));
-
-    // 4) (Optional) send notification email here…
-
-    res.json({ success: true, refund });
-  }
-    // 2) Issue refund request to Razorpay
-   
-  catch (err) {
-    console.error("Refund error:", err);
-    res.status(500).json({ error: "Refund failed" });
+    const result = await pdf(req.file.buffer);
+    res.json({ text: result.text });
+  } catch (err) {
+    console.error('PDF parse error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-export const payment_routes=payment_route
+// ─── 3️⃣ ON-DEMAND REFUND ─────────────────────────────────
+router.post('/refund', async (req, res) => {
+  const { orderId, amount, speed = 'normal', notes } = req.body;
 
+  const [order] = await db
+    .select({ paymentId: ordersTable.transactionId })
+    .from(ordersTable)
+    .where(eq(ordersTable.id, orderId));
+
+  if (!order?.paymentId) {
+    return res.status(404).json({ success: false, msg: 'Order/payment not found' });
+  }
+
+  try {
+    const refund = await razorpay.payments.refund(order.paymentId, {
+      amount,
+      speed,
+      notes: notes || { reason: 'User requested refund' },
+    });
+
+    await db
+      .update(ordersTable)
+      .set({
+        refundId: refund.id,
+        refundAmount: refund.amount,
+        refundStatus: refund.status,
+        refundSpeed: refund.speed,
+        refundInitiatedAt: new Date(refund.created_at * 1000),
+      })
+      .where(eq(ordersTable.id, orderId));
+
+    res.json({ success: true, refund });
+  } catch (err) {
+    console.error('Refund initiation error:', err);
+    res.status(500).json({ success: false, msg: 'Refund failed' });
+  }
+});
+
+// ─── 4️⃣ RAZORPAY WEBHOOK ─────────────────────────────────
+router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const signature = req.headers['x-razorpay-signature'];
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  const body = req.body.toString();
+
+  const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+
+  if (signature !== expected) {
+    console.warn('⚠️ Invalid webhook signature');
+    return res.status(400).send('Invalid signature');
+  }
+
+  const { event, payload: { refund: { entity } } } = JSON.parse(body);
+
+  if (!event.startsWith('refund.')) {
+    return res.status(200).send('Ignored');
+  }
+
+  const updates = {
+    refundStatus: entity.status,
+    refundCompletedAt: entity.status === 'processed' ? new Date(entity.processed_at * 1000) : null,
+    ...(entity.status === 'processed' && {
+      paymentStatus: 'refunded',
+      status: 'Order Cancelled',
+    }),
+  };
+
+  try {
+    await db
+      .update(ordersTable)
+      .set(updates)
+      .where(eq(ordersTable.refundId, entity.id));
+
+    res.status(200).send('OK');
+  } catch (err) {
+    console.error('Webhook processing error:', err);
+    res.status(500).send('DB error');
+  }
+});
+
+export default router;
