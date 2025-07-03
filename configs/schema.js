@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, } from 'drizzle-orm/pg-core';
 
 
 const generateNumericId = () => {
@@ -127,6 +127,9 @@ export const couponsTable = pgTable('coupons', {
   minItemCount: integer('min_item_count').default(0), // min quantity of products (optional)
   validFrom: timestamp('valid_from'), // Optional start date
   validUntil: timestamp('valid_until'), // Optional expiry date
+  isFirstOrderOnly: boolean('is_first_order_only').default(false),
+  maxUsagePerUser: integer('max_usage_per_user').default(1),  // 1 = once per user; can customize per coupon
+
 });
 
 
