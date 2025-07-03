@@ -78,7 +78,8 @@ export const ordersTable = pgTable('orders', {
   refund_speed: text('refund_speed'),             // normal, instant, etc.
   refund_initiated_at: timestamp('refund_initiated_at'),
   refund_completed_at: timestamp('refund_completed_at'),
-
+  couponCode: varchar('coupon_code', { length: 50 }),
+  discountAmount: integer('discount_amount'),   // in rupees
 });
 
 export const addressTable = pgTable('address', {
@@ -115,6 +116,18 @@ export const orderItemsTable = pgTable('order_items', {
   totalPrice: integer('total_price').notNull(), // quantity * price
 });
 
+
+export const couponsTable = pgTable('coupons', {
+  id: serial('id').primaryKey(),
+  code: varchar('code', { length: 50 }).notNull().unique(), // e.g. SAVE100, FIRSTORDER
+  discountType: varchar('discount_type', { length: 10 }).notNull(), // "flat" or "percent"
+  discountValue: integer('discount_value').notNull(), // ₹ value for flat, % value for percent
+  description: text('description'),
+  minOrderValue: integer('min_order_value').default(0), // min ₹ total (optional)
+  minItemCount: integer('min_item_count').default(0), // min quantity of products (optional)
+  validFrom: timestamp('valid_from'), // Optional start date
+  validUntil: timestamp('valid_until'), // Optional expiry date
+});
 
 
 

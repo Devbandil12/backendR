@@ -3,6 +3,8 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import paymentRoutes from './routes/paymentRoute.js';
+import couponsRouter from "./routes/coupons.js";
+
 
 const app = express();
 const server = http.createServer(app);
@@ -19,6 +21,9 @@ app.use('/api/payments', paymentRoutes);
 app.get('/', (req, res) => {
   res.send('🛠️  Payment API up and running');
 });
+
+app.use("/api/coupons", couponsRouter);
+
 
 // ─── SERVER START ─────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
