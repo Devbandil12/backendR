@@ -1,8 +1,7 @@
-// backend/src/routes/coupons.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { couponsTable } from "../configs/schema.js";
-import { eq } from "drizzle-orm";
+import { couponsTable, ordersTable } from "../configs/schema.js";
+import { eq, and } from "drizzle-orm";
 
 const router = express.Router();
 
@@ -71,13 +70,12 @@ router.post("/validate", async (req, res) => {
   }
 
   try {
-    // 1️⃣ Fetch coupon
+    // Fetch coupon
     const [coupon] = await db.select().from(couponsTable).where(eq(couponsTable.code, code));
     if (!coupon) {
       return res.status(404).json({ error: "Coupon not found" });
     }
 
-    // 2️⃣ Check validity period
     const now = new Date();
     if (coupon.validFrom && now < new Date(coupon.validFrom)) {
       return res.status(400).json({ error: "Coupon not yet valid" });
@@ -86,25 +84,35 @@ router.post("/validate", async (req, res) => {
       return res.status(400).json({ error: "Coupon expired" });
     }
 
-    // 3️⃣ Check first-order-only
-    if (coupon.isFirstOrderOnly) {
-      const orders = await db.query.ordersTable.findMany({
-        where: eq("user_id", userId),
-      });
-      if (orders.length > 0) {
+    // First order only check
+    if (coupon.firstOrderOnly) {
+      const userOrders = await db
+        .select()
+        .from(ordersTable)
+        .where(eq(ordersTable.userId, userId));
+      if (userOrders.length > 0) {
         return res.status(400).json({ error: "Coupon only valid for first order" });
       }
     }
 
-    // 4️⃣ Check user usage of this coupon
-    const usage = await db.query.ordersTable.findMany({
-      where: (order) => eq(order.userId, userId) && eq(order.couponCode, code),
-    });
-    if (coupon.maxUsagePerUser !== null && usage.length >= coupon.maxUsagePerUser) {
+    // User usage of this coupon
+    const usedCouponOrders = await db
+      .select()
+      .from(ordersTable)
+      .where(
+        and(
+          eq(ordersTable.userId, userId),
+          eq(ordersTable.couponCode, code)
+        )
+      );
+
+    if (
+      coupon.maxUsagePerUser !== null &&
+      usedCouponOrders.length >= coupon.maxUsagePerUser
+    ) {
       return res.status(400).json({ error: "Coupon usage limit reached" });
     }
 
-    // ✅ Valid coupon
     res.json({ success: true, coupon });
 
   } catch (err) {
@@ -113,5 +121,64 @@ router.post("/validate", async (req, res) => {
   }
 });
 
+// GET /api/coupons/available — list valid coupons for user
+router.get("/available", async (req, res) => {
+  const userId = req.query.userId;
+  if (!userId || typeof userId !== "string") {
+    return res.status(400).json({ error: "Valid userId is required" });
+  }
+
+  try {
+    // Fetch all coupons
+    const allCoupons = await db.select().from(couponsTable);
+
+    // Fetch user's orders
+    const usages = await db
+      .select()
+      .from(ordersTable)
+      .where(eq(ordersTable.userId, userId));
+
+    // Build map of couponCode -> usage count
+    const usageMap = {};
+    usages.forEach(order => {
+      if (order.couponCode) {
+        usageMap[order.couponCode] = (usageMap[order.couponCode] || 0) + 1;
+      }
+    });
+
+    const now = new Date();
+
+    // Filter coupons
+    const availableCoupons = allCoupons.filter(coupon => {
+      const usageCount = usageMap[coupon.code] || 0;
+
+      if (coupon.maxUsagePerUser !== null && usageCount >= coupon.maxUsagePerUser) {
+        return false;
+      }
+
+      if (coupon.validFrom && now < new Date(coupon.validFrom)) {
+        return false;
+      }
+
+      if (coupon.validUntil && now > new Date(coupon.validUntil)) {
+        return false;
+      }
+
+      if (coupon.firstOrderOnly) {
+        const userOrderCount = usages.length;
+        if (userOrderCount > 0) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    res.json(availableCoupons);
+  } catch (err) {
+    console.error("Failed to load available coupons:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 export default router;
