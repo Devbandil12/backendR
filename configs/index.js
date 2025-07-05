@@ -1,14 +1,9 @@
-// db.ts or configs/index.js
-import { Pool } from 'pg';
-import { drizzle } from 'drizzle-orm/node-postgres';
+import { neon } from '@neondatabase/serverless';
+import { drizzle } from 'drizzle-orm/neon-http';
 import * as schema from './schema.js';
 import 'dotenv/config';
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }, // Needed for Neon + Render
-});
+const sql = neon(process.env.DATABASE_URL);
+export const db = drizzle(sql, { schema });
 
-export const db = drizzle(pool, { schema });
-
-console.log("Connected to PostgreSQL (Neon via pg)");
+console.log("✅ Connected to Neon via HTTP (serverless)");
