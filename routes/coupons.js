@@ -30,37 +30,6 @@ router.post("/", async (req, res) => {
   }
 });
 
-// PUT /api/coupons/:id — update existing
-router.put("/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  try {
-    await db
-      .update(couponsTable)
-      .set(req.body)
-      .where(eq(couponsTable.id, id));
-    const [updated] = await db
-      .select()
-      .from(couponsTable)
-      .where(eq(couponsTable.id, id));
-    res.json(updated);
-  } catch (err) {
-    console.error("Failed to update coupon:", err);
-    res.status(400).json({ error: err.message });
-  }
-});
-
-// DELETE /api/coupons/:id — delete
-router.delete("/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  try {
-    await db.delete(couponsTable).where(eq(couponsTable.id, id));
-    res.sendStatus(204);
-  } catch (err) {
-    console.error("Failed to delete coupon:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
 // POST /api/coupons/validate — validate coupon code for user
 router.post("/validate", async (req, res) => {
   const { code, userId } = req.body;
@@ -180,5 +149,39 @@ router.get("/available", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
+
+// PUT /api/coupons/:id — update existing
+router.put("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    await db
+      .update(couponsTable)
+      .set(req.body)
+      .where(eq(couponsTable.id, id));
+    const [updated] = await db
+      .select()
+      .from(couponsTable)
+      .where(eq(couponsTable.id, id));
+    res.json(updated);
+  } catch (err) {
+    console.error("Failed to update coupon:", err);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// DELETE /api/coupons/:id — delete
+router.delete("/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    await db.delete(couponsTable).where(eq(couponsTable.id, id));
+    res.sendStatus(204);
+  } catch (err) {
+    console.error("Failed to delete coupon:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
 
 export default router;
