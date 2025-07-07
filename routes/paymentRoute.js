@@ -64,10 +64,17 @@ router.post('/refund', async (req, res) => {
       .update(ordersTable)
       .set({
         refund_id: refund.id,
+        status: 'Order Cancelled',
         refund_amount: refund.amount,
         refund_status: refund.status,
         refund_speed: refund.speed,
         refund_initiated_at: new Date(refund.created_at * 1000),
+        status: refund.status === 'processed' ? 'Order Cancelled' : ordersTable.status,
+        refund_completed_at: refund.status === 'processed'
+          ? new Date(refund.processed_at * 1000)
+          : null,
+        paymentStatus: refund.status === 'processed' ? 'refunded' : 'paid',
+
       })
       .where(eq(ordersTable.id, orderId));
 
@@ -98,13 +105,14 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
   }
 
   const updates = {
-    refundStatus: entity.status,
-    refundCompletedAt: entity.status === 'processed' ? new Date(entity.processed_at * 1000) : null,
+    refund_status: entity.status,
+    refund_completed_at: entity.status === 'processed' ? new Date(entity.processed_at * 1000) : null,
     ...(entity.status === 'processed' && {
       paymentStatus: 'refunded',
       status: 'Order Cancelled',
     }),
   };
+
 
   try {
     await db
