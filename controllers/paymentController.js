@@ -36,6 +36,8 @@ export const createOrder = async (req, res) => {
     // 2️⃣ Recalculate total from database (ignore client totals)
     let originalTotal = 0;
     let productTotal = 0;
+    const deliveryCharge = 0;
+
 
     for (const item of cartItems) {
       const [product] = await db
@@ -49,7 +51,7 @@ export const createOrder = async (req, res) => {
 
       const discountedPrice = Math.floor(product.oprice * (1 - product.discount / 100));
 
-      originalTotal += product.oprice * item.quantity;
+      originalTotal += Math.floor(product.oprice) * item.quantity;
       productTotal += discountedPrice * item.quantity;
 
       // Mutate item for secure use later
@@ -90,8 +92,7 @@ export const createOrder = async (req, res) => {
         : coupon.discountValue;
     }
 
-    const finalAmount = Math.max(productTotal - discountAmount, 0);
-
+    const finalAmount = Math.max(productTotal + deliveryCharge - discountAmount, 0);
 
     const clientSentAmount = Number(req.body.amount); // this comes from frontend (optional in your case)
 
@@ -160,7 +161,7 @@ export const createOrder = async (req, res) => {
     });
 
   } catch (err) {
-console.error('createOrder error:', err.stack || err.message || err);
+    console.error('createOrder error:', err.stack || err.message || err);
     return res.status(500).json({ success: false, msg: 'Server error' });
   }
 };
