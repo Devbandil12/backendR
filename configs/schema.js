@@ -63,6 +63,7 @@ export const wishlistTable = pgTable("wishlist_table", {
 export const ordersTable = pgTable('orders', {
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
+  razorpay_order_id: text('razorpay_order_id'),    // ← new!
   totalAmount: integer('total_amount').notNull(),
   status: text('status').default('order placed'),
   progressStep: text('progressStep').default('0'),
@@ -110,6 +111,8 @@ export const UserAddressTable = pgTable('user_address', {
 export const orderItemsTable = pgTable('order_items', {
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   orderId: text('order_id').notNull().references(() => ordersTable.id),
+  productName: varchar('product_name', { length: 255 }).notNull(),
+  img: varchar('img', { length: 500 }).notNull(),
   productId: uuid('product_id').notNull(),
   quantity: integer('quantity').notNull().default(1),
   price: integer('price').notNull(), // Price per unit at purchase time

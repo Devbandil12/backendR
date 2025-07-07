@@ -34,6 +34,8 @@ CREATE TABLE "order_items" (
 	"id" text PRIMARY KEY NOT NULL,
 	"order_id" text NOT NULL,
 	"product_id" uuid NOT NULL,
+	"product_name" varchar(255) NOT NULL,
+	"img" varchar(500) NOT NULL ,
 	"quantity" integer DEFAULT 1 NOT NULL,
 	"price" integer NOT NULL,
 	"total_price" integer NOT NULL
