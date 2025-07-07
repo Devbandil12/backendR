@@ -12,32 +12,63 @@ const razorpay = new Razorpay({
   key_secret: RAZORPAY_SECRET_KEY,
 });
 
+
+
 export const createOrder = async (req, res) => {
   try {
     const {
       user,
       phone,
-      amount,            // original total in rupees
-      couponCode,       // optional
-      paymentMode = 'online'
+      couponCode = null,
+      paymentMode = 'online',
+      cartItems,
     } = req.body;
 
+    // 1️⃣ Validate basic request
     if (!user) {
-      return res.status(401).json({ success: false, msg: "Please log in first" });
+      return res.status(401).json({ success: false, msg: 'Please log in first' });
+    }
+    if (!Array.isArray(cartItems) || cartItems.length === 0) {
+      return res.status(400).json({ success: false, msg: 'Cart is empty' });
     }
 
-    let discountAmount = 0;
-    let finalAmount = Number(amount);
+    // 2️⃣ Recalculate total from database (ignore client totals)
+    let originalTotal = 0;
+    let productTotal = 0;
 
-    // ── 1️⃣ Lookup & validate coupon (if provided) ─────────────
+    for (const item of cartItems) {
+      const [product] = await db
+        .select()
+        .from(productsTable)
+        .where(eq(productsTable.id, item.id));
+
+      if (!product) {
+        return res.status(400).json({ success: false, msg: `Invalid product: ${item.id}` });
+      }
+
+      const discountedPrice = Math.floor(product.oprice * (1 - product.discount / 100));
+
+      originalTotal += product.oprice * item.quantity;
+      productTotal += discountedPrice * item.quantity;
+
+      // Mutate item for secure use later
+      item.productName = product.name;
+      item.img = product.imageurl;
+      item.size = product.size;
+      item.price = discountedPrice;
+    }
+
+    // 3️⃣ Validate and apply coupon
+    let discountAmount = 0;
     if (couponCode) {
       const [coupon] = await db
         .select({
-          code:           couponsTable.code,
-          discountPct:    couponsTable.discountValue,
-          minOrderValue:  couponsTable.minOrderValue,
-          validFrom:      couponsTable.validFrom,
-          validUntil:     couponsTable.validUntil
+          code: couponsTable.code,
+          discountType: couponsTable.discountType,
+          discountValue: couponsTable.discountValue,
+          minOrderValue: couponsTable.minOrderValue,
+          validFrom: couponsTable.validFrom,
+          validUntil: couponsTable.validUntil,
         })
         .from(couponsTable)
         .where(eq(couponsTable.code, couponCode));
@@ -47,75 +78,92 @@ export const createOrder = async (req, res) => {
       }
 
       const now = new Date();
-      if (coupon.validFrom && now < coupon.validFrom) {
-        return res.status(400).json({ success: false, msg: 'Coupon not yet active' });
-      }
-      if (coupon.validUntil && now > coupon.validUntil) {
-        return res.status(400).json({ success: false, msg: 'Coupon has expired' });
-      }
-      if (finalAmount < coupon.minOrderValue) {
-        return res.status(400).json({
-          success: false,
-          msg: `Minimum order value for this coupon is ₹${coupon.minOrderValue}`
-        });
+      if ((coupon.validFrom && now < coupon.validFrom) ||
+        (coupon.validUntil && now > coupon.validUntil) ||
+        productTotal < coupon.minOrderValue) {
+        return res.status(400).json({ success: false, msg: 'Coupon not applicable' });
       }
 
-      // calculate discount in rupees
-      discountAmount = Math.floor(finalAmount * (coupon.discountPct / 100));
-      finalAmount = finalAmount - discountAmount;
+      discountAmount = coupon.discountType === 'percent'
+        ? Math.floor(productTotal * (coupon.discountValue / 100))
+        : coupon.discountValue;
     }
 
-    // ── 2️⃣ Create Razorpay order for the discounted total ────────
+    const finalAmount = Math.max(productTotal - discountAmount, 0);
+
+
+    const clientSentAmount = Number(req.body.amount); // this comes from frontend (optional in your case)
+
+    // Compare client and server totals (rupee values)
+    if (Math.abs(finalAmount - clientSentAmount) > 1) {
+      return res.status(400).json({
+        success: false,
+        msg: `Amount mismatch: server calculated ₹${finalAmount}, but client sent ₹${clientSentAmount}. Please refresh and try again.`,
+      });
+    }
+
+
+    // 4️⃣ Create Razorpay order
     const amountPaise = finalAmount * 100;
-    const options = {
-      amount:   amountPaise,
+    const razorOrder = await razorpay.orders.create({
+      amount: amountPaise,
       currency: 'INR',
-      receipt:  user.id,
-    };
-
-    razorpay.orders.create(options, async (err, order) => {
-      if (err) {
-        console.error('Razorpay order creation failed:', err);
-        return res.status(400).json({ success: false, msg: 'Order creation failed' });
-      }
-
-      const nowISOString = new Date().toISOString();
-
-      // ── 3️⃣ Persist our order with coupon info ───────────────────
-      await db.insert(ordersTable).values({
-        id:             `DA${Date.now()}`,
-        userId:         user.id,
-        razorpay_order_id: order.id,            // ← persist the Razorpay order id
-        totalAmount:    finalAmount,
-        couponCode:     couponCode || null,
-        discountAmount,
-        paymentMode,
-        transactionId:  null,
-        paymentStatus:  'created',
-        phone,
-        createdAt:      nowISOString,
-        updatedAt:      nowISOString,
-      });
-
-      // ── 4️⃣ Respond with all necessary data for checkout ────────
-      return res.json({
-        success:         true,
-        orderId:         order.id,
-        amount:          amountPaise,
-        keyId:           RAZORPAY_ID_KEY,
-        name:            user.fullName,
-        email:           user.primaryEmailAddress.emailAddress,
-        contact:         phone,
-        originalAmount:  amount * 100,
-        discountAmount:  discountAmount * 100,
-      });
+      receipt: user.id,
     });
 
-  } catch (e) {
-    console.error('createOrder error:', e);
+    // 5️⃣ Store order + line items in DB transaction
+    const orderId = `DA${Date.now()}`;
+    await db.transaction(async (tx) => {
+      await tx.insert(ordersTable).values({
+        id: orderId,
+        userId: user.id,
+        razorpay_order_id: razorOrder.id,
+        totalAmount: finalAmount,
+        status: 'order placed',
+        paymentMode,
+        transactionId: null,
+        paymentStatus: 'created',
+        phone,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        couponCode,
+        discountAmount,
+      });
+
+      const itemsToInsert = cartItems.map(item => ({
+        id: `DA${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+        orderId,
+        productName: item.productName,
+        img: item.img,
+        size: item.size,
+        productId: item.id,
+        quantity: item.quantity,
+        price: item.price,
+        totalPrice: item.quantity * item.price,
+      }));
+
+      await tx.insert(orderItemsTable).values(itemsToInsert);
+    });
+
+    // 6️⃣ Respond with checkout data
+    return res.json({
+      success: true,
+      orderId: razorOrder.id,
+      amount: amountPaise,
+      keyId: process.env.RAZORPAY_ID_KEY,
+      discountAmount: discountAmount * 100,
+      name: user.fullName,
+      email: user.primaryEmailAddress.emailAddress,
+      contact: phone,
+      originalAmount: originalTotal * 100,
+    });
+
+  } catch (err) {
+    console.error('createOrder error:', err);
     return res.status(500).json({ success: false, msg: 'Server error' });
   }
 };
+
 
 export const verify = async (req, res) => {
   try {
@@ -138,7 +186,7 @@ export const verify = async (req, res) => {
       .set({
         transactionId: razorpay_payment_id,
         paymentStatus: 'paid',
-        updatedAt:     new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       })
       .where(eq(ordersTable.razorpay_order_id, razorpay_order_id));
 
@@ -176,16 +224,16 @@ export const refund = async (req, res) => {
     await db
       .update(ordersTable)
       .set({
-        paymentStatus:       'refunded',
-        refund_id:           refund.id,
-        refund_amount:       refund.amount,
-        refund_status:       refund.status,
-        refund_speed:        refund.speed_processed,
+        paymentStatus: 'refunded',
+        refund_id: refund.id,
+        refund_amount: refund.amount,
+        refund_status: refund.status,
+        refund_speed: refund.speed_processed,
         refund_initiated_at: new Date(refund.created_at * 1000),
         refund_completed_at: refund.status === 'processed'
-                              ? new Date(refund.processed_at * 1000)
-                              : null,
-        updatedAt:           new Date().toISOString(),
+          ? new Date(refund.processed_at * 1000)
+          : null,
+        updatedAt: new Date().toISOString(),
       })
       .where(eq(ordersTable.id, orderId));
 
@@ -193,14 +241,14 @@ export const refund = async (req, res) => {
     return res.json({
       success: true,
       refund: {
-        id:             refund.id,
-        amount:         refund.amount,
-        status:         refund.status,
+        id: refund.id,
+        amount: refund.amount,
+        status: refund.status,
         speedRequested: refund.speed_requested,
         speedProcessed: refund.speed_processed,
-        createdAt:      refund.created_at,
-        processedAt:    refund.processed_at,
-        currency:       refund.currency,
+        createdAt: refund.created_at,
+        processedAt: refund.processed_at,
+        currency: refund.currency,
       }
     });
   } catch (err) {

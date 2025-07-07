@@ -117,6 +117,7 @@ export const orderItemsTable = pgTable('order_items', {
   quantity: integer('quantity').notNull().default(1),
   price: integer('price').notNull(), // Price per unit at purchase time
   totalPrice: integer('total_price').notNull(), // quantity * price
+  size: integer('size').notNull().default(0),
 });
 
 

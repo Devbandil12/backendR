@@ -1,0 +1,1 @@
+ALTER TABLE "order_items" ALTER COLUMN "size" SET DEFAULT 0;
