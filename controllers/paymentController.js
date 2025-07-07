@@ -160,7 +160,7 @@ export const createOrder = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('createOrder error:', err);
+console.error('createOrder error:', err.stack || err.message || err);
     return res.status(500).json({ success: false, msg: 'Server error' });
   }
 };
