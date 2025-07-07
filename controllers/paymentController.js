@@ -3,6 +3,7 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable, couponsTable } from '../configs/schema.js';
+import { productsTable, orderItemsTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
