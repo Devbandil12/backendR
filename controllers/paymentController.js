@@ -34,10 +34,10 @@ export const createOrder = async (req, res) => {
       const [coupon] = await db
         .select({
           code:           couponsTable.code,
-          discountPct:    couponsTable.discount_pct,
-          minOrderValue:  couponsTable.min_order_value,
-          validFrom:      couponsTable.valid_from,
-          validUntil:     couponsTable.valid_until
+          discountPct:    couponsTable.discountValue,
+          minOrderValue:  couponsTable.minOrderValue,
+          validFrom:      couponsTable.validFrom,
+          validUntil:     couponsTable.validUntil
         })
         .from(couponsTable)
         .where(eq(couponsTable.code, couponCode));
@@ -85,6 +85,7 @@ export const createOrder = async (req, res) => {
       await db.insert(ordersTable).values({
         id:             `DA${Date.now()}`,
         userId:         user.id,
+        razorpay_order_id: order.id,            // ← persist the Razorpay order id
         totalAmount:    finalAmount,
         couponCode:     couponCode || null,
         discountAmount,
@@ -139,7 +140,7 @@ export const verify = async (req, res) => {
         paymentStatus: 'paid',
         updatedAt:     new Date().toISOString(),
       })
-      .where(eq(ordersTable.order_id, razorpay_order_id));
+      .where(eq(ordersTable.razorpay_order_id, razorpay_order_id));
 
     return res.json({ success: true, message: "Payment verified successfully." });
   } catch (error) {
