@@ -21,6 +21,8 @@ router.use(express.json());
 router.use(express.urlencoded({ extended: false }));
 
 // ─── 1️⃣ CREATE ORDER & VERIFY PAYMENT ─────────────────────
+// 👉 New price‐breakdown endpoint
+router.post('/breakdown', paymentController.getPriceBreakdown);
 router.post('/createOrder', paymentController.createOrder);
 router.post('/verify-payment', paymentController.verify);
 

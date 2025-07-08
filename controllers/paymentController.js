@@ -25,7 +25,7 @@ export const createOrder = async (req, res) => {
       cartItems,
     } = req.body;
 
-    // 1️⃣ Validate basic request
+    // 1️⃣ Basic validation
     if (!user) {
       return res.status(401).json({ success: false, msg: 'Please log in first' });
     }
@@ -33,12 +33,12 @@ export const createOrder = async (req, res) => {
       return res.status(400).json({ success: false, msg: 'Cart is empty' });
     }
 
-    // 2️⃣ Recalculate total from database (ignore client totals)
-    let originalTotal = 0;
+    // 2️⃣ Recompute all totals on the server
     let productTotal = 0;
+    let discountAmount = 0;
     const deliveryCharge = 0;
 
-
+    // Fetch each product, sum up discounted prices
     for (const item of cartItems) {
       const [product] = await db
         .select()
@@ -49,20 +49,18 @@ export const createOrder = async (req, res) => {
         return res.status(400).json({ success: false, msg: `Invalid product: ${item.id}` });
       }
 
-      const discountedPrice = Math.floor(product.oprice * (1 - product.discount / 100));
+      // unit price after product-level discount
+      const unitPrice = Math.floor(product.oprice * (1 - product.discount / 100));
+      productTotal += unitPrice * item.quantity;
 
-      originalTotal += Math.floor(product.oprice) * item.quantity;
-      productTotal += discountedPrice * item.quantity;
-
-      // Mutate item for secure use later
+      // Attach these for DB insert later
       item.productName = product.name;
       item.img = product.imageurl;
       item.size = product.size;
-      item.price = discountedPrice;
+      item.price = unitPrice;
     }
 
-    // 3️⃣ Validate and apply coupon
-    let discountAmount = 0;
+    // 3️⃣ Apply coupon (if provided)
     if (couponCode) {
       const [coupon] = await db
         .select({
@@ -81,39 +79,30 @@ export const createOrder = async (req, res) => {
       }
 
       const now = new Date();
-      if ((coupon.validFrom && now < coupon.validFrom) ||
+      if (
+        (coupon.validFrom && now < coupon.validFrom) ||
         (coupon.validUntil && now > coupon.validUntil) ||
-        productTotal < coupon.minOrderValue) {
+        productTotal < coupon.minOrderValue
+      ) {
         return res.status(400).json({ success: false, msg: 'Coupon not applicable' });
       }
 
       discountAmount = coupon.discountType === 'percent'
-        ? Math.floor(productTotal * (coupon.discountValue / 100))
+        ? Math.floor((coupon.discountValue / 100) * productTotal)
         : coupon.discountValue;
     }
 
+    // 4️⃣ Final server-computed amount (in rupees)
     const finalAmount = Math.max(productTotal + deliveryCharge - discountAmount, 0);
 
-    const clientSentAmount = Number(req.body.amount); // this comes from frontend (optional in your case)
-
-    // Compare client and server totals (rupee values)
-    if (Math.abs(finalAmount - clientSentAmount) > 1) {
-      return res.status(400).json({
-        success: false,
-        msg: `Amount mismatch: server calculated ₹${finalAmount}, but client sent ₹${clientSentAmount}. Please refresh and try again.`,
-      });
-    }
-
-
-    // 4️⃣ Create Razorpay order
-    const amountPaise = finalAmount * 100;
+    // 5️⃣ Create Razorpay order (in paise)
     const razorOrder = await razorpay.orders.create({
-      amount: amountPaise,
+      amount: finalAmount * 100,
       currency: 'INR',
       receipt: user.id,
     });
 
-    // 5️⃣ Store order + line items in DB transaction
+    // 6️⃣ Persist order + items in a transaction
     const orderId = `DA${Date.now()}`;
     await db.transaction(async (tx) => {
       await tx.insert(ordersTable).values({
@@ -141,23 +130,23 @@ export const createOrder = async (req, res) => {
         productId: item.id,
         quantity: item.quantity,
         price: item.price,
-        totalPrice: item.quantity * item.price,
+        totalPrice: item.price * item.quantity,
       }));
 
       await tx.insert(orderItemsTable).values(itemsToInsert);
     });
 
-    // 6️⃣ Respond with checkout data
+    // 7️⃣ Respond with authoritative amounts & breakdown
     return res.json({
       success: true,
       orderId: razorOrder.id,
-      amount: amountPaise,
       keyId: process.env.RAZORPAY_ID_KEY,
-      discountAmount: discountAmount * 100,
-      name: user.fullName,
-      email: user.primaryEmailAddress.emailAddress,
-      contact: phone,
-      originalAmount: originalTotal * 100,
+      amount: finalAmount,           // rupees
+      breakdown: {
+        productTotal,
+        deliveryCharge,
+        discountAmount,
+      },
     });
 
   } catch (err) {
@@ -165,7 +154,6 @@ export const createOrder = async (req, res) => {
     return res.status(500).json({ success: false, msg: 'Server error' });
   }
 };
-
 
 export const verify = async (req, res) => {
   try {
@@ -206,15 +194,39 @@ export const refund = async (req, res) => {
       return res.status(400).json({ success: false, error: "Missing orderId or amount" });
     }
 
-    // 1) Fetch existing payment ID
+     // 1) Fetch paymentId and current status/refundId
     const [order] = await db
-      .select({ paymentId: ordersTable.transactionId })
+      .select({
+        paymentId: ordersTable.transactionId,
+        status:    ordersTable.status,
+        refundId:  ordersTable.refund_id,
+      })
       .from(ordersTable)
       .where(eq(ordersTable.id, orderId));
 
-    if (!order?.paymentId) {
-      return res.status(404).json({ success: false, error: "Order or payment not found" });
+    if (!order) {
+      return res.status(404).json({ success: false, error: "Order not found" });
     }
+    if (order.status !== "Order Placed") {
+      return res.status(400).json({
+        success: false,
+        error: "Cannot cancel/refund after order has progressed",
+      });
+    }
+    if (order.refundId) {
+      return res.status(400).json({
+        success: false,
+        error: "Refund already initiated for this order",
+      });
+    }
+    if (!order.paymentId) {
+      return res.status(404).json({
+        success: false,
+        error: "No payment found to refund",
+      });
+    }
+
+
 
     // 2) Request refund at 'optimum' speed
     const refund = await razorpay.payments.refund(order.paymentId, {
@@ -256,5 +268,90 @@ export const refund = async (req, res) => {
   } catch (err) {
     console.error("refund error:", err);
     return res.status(500).json({ success: false, error: err.error_description || err.message });
+  }
+};
+
+
+
+export const getPriceBreakdown = async (req, res) => {
+  try {
+    const { cartItems, couponCode = null } = req.body;
+
+    // Validate cart input
+    if (!Array.isArray(cartItems) || cartItems.length === 0) {
+      return res.status(400).json({ success: false, msg: 'Cart is empty' });
+    }
+
+    let originalTotal = 0;
+    let productTotal = 0;
+    let discountAmount = 0;
+    const deliveryCharge = 0;
+
+    // Calculate product total and original price
+    for (const { id, quantity } of cartItems) {
+      const [product] = await db
+        .select()
+        .from(productsTable)
+        .where(eq(productsTable.id, id));
+
+      if (!product) {
+        return res.status(400).json({ success: false, msg: `Invalid product: ${id}` });
+      }
+
+      const basePrice = Math.floor(product.oprice || 0);
+      const discountedPrice = Math.floor(basePrice * (1 - (product.discount || 0) / 100));
+
+      originalTotal += basePrice * quantity;
+      productTotal += discountedPrice * quantity;
+    }
+
+    // Validate and apply coupon
+    if (couponCode) {
+      const [coupon] = await db
+        .select({
+          discountType:  couponsTable.discountType,
+          discountValue: couponsTable.discountValue,
+          minOrderValue: couponsTable.minOrderValue,
+          validFrom:     couponsTable.validFrom,
+          validUntil:    couponsTable.validUntil,
+        })
+        .from(couponsTable)
+        .where(eq(couponsTable.code, couponCode));
+
+      if (!coupon) {
+        return res.status(400).json({ success: false, msg: 'Invalid coupon code' });
+      }
+
+      const now = new Date();
+      if (
+        (coupon.validFrom && now < new Date(coupon.validFrom)) ||
+        (coupon.validUntil && now > new Date(coupon.validUntil)) ||
+        productTotal < (coupon.minOrderValue || 0)
+      ) {
+        return res.status(400).json({ success: false, msg: 'Coupon not applicable' });
+      }
+
+      discountAmount = coupon.discountType === 'percent'
+        ? Math.floor((coupon.discountValue / 100) * productTotal)
+        : coupon.discountValue;
+    }
+
+    // Final total
+    const total = Math.max(productTotal + deliveryCharge - discountAmount, 0);
+
+    return res.json({
+      success: true,
+      breakdown: {
+        originalTotal,
+        productTotal,
+        deliveryCharge,
+        discountAmount,
+        total,
+      },
+    });
+
+  } catch (err) {
+    console.error('getPriceBreakdown error:', err.stack || err);
+    return res.status(500).json({ success: false, msg: 'Server error' });
   }
 };
