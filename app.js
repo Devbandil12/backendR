@@ -11,9 +11,12 @@ const server = http.createServer(app);
 
 // ─── MIDDLEWARE ────────────────────────────────────────────
 app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: [
+    "https://www.devidaura.com",
+    "https://devidaura.com" // sometimes users might not include www
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  credentials: true
 }));
 app.options('*', cors()); // ✅ Allow preflight
 app.use(express.json());
