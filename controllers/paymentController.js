@@ -17,13 +17,7 @@ const razorpay = new Razorpay({
 
 export const createOrder = async (req, res) => {
   try {
-    const {
-      user,
-      phone,
-      couponCode = null,
-      paymentMode = 'online',
-      cartItems,
-    } = req.body;
+    const { user, phone, couponCode = null, paymentMode = 'online', cartItems } = req.body;
 
     // 1️⃣ Basic validation
     if (!user) {
@@ -33,14 +27,16 @@ export const createOrder = async (req, res) => {
       return res.status(400).json({ success: false, msg: 'Cart is empty' });
     }
 
-    // 2️⃣ Recompute all totals on the server
+    // 2️⃣ Recompute totals
     let productTotal = 0;
     let discountAmount = 0;
     const deliveryCharge = 0;
 
-    // Fetch each product, sum up discounted prices
-    const enrichedItems = [];
+    // 3️⃣ Generate our own orderId up front!
+    const orderId = `DA${Date.now()}`;
 
+    // 4️⃣ Build enrichedItems in one pass
+    const enrichedItems = [];
     for (const item of cartItems) {
       const [product] = await db
         .select()
@@ -56,21 +52,18 @@ export const createOrder = async (req, res) => {
 
       enrichedItems.push({
         id: `DA${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-        orderId,
+        orderId,             // ← now defined
         productId: item.id,
         quantity: item.quantity,
         productName: product.name,
-        img: product.imageurl,
-        size: product.size,
-        price: unitPrice,
-        totalPrice: unitPrice * item.quantity,
+        img:         product.imageurl,
+        size:        product.size,
+        price:       unitPrice,
+        totalPrice:  unitPrice * item.quantity,
       });
     }
 
-    await db.insert(orderItemsTable).values(enrichedItems);
-
-
-    // 3️⃣ Apply coupon (if provided)
+    // 5️⃣ Apply coupon
     if (couponCode) {
       const [coupon] = await db
         .select({
@@ -90,7 +83,7 @@ export const createOrder = async (req, res) => {
 
       const now = new Date();
       if (
-        (coupon.validFrom && now < coupon.validFrom) ||
+        (coupon.validFrom  && now < coupon.validFrom)  ||
         (coupon.validUntil && now > coupon.validUntil) ||
         productTotal < coupon.minOrderValue
       ) {
@@ -102,68 +95,50 @@ export const createOrder = async (req, res) => {
         : coupon.discountValue;
     }
 
-    // 4️⃣ Final server-computed amount (in rupees)
+    // 6️⃣ Final amount
     const finalAmount = Math.max(productTotal + deliveryCharge - discountAmount, 0);
 
-    // 5️⃣ Create Razorpay order (in paise)
+    // 7️⃣ Razorpay order
     const razorOrder = await razorpay.orders.create({
-      amount: finalAmount * 100,
+      amount:   finalAmount * 100,
       currency: 'INR',
-      receipt: user.id,
+      receipt:  user.id,
     });
 
-    // 6️⃣ Persist order + items in a transaction
-    const orderId = `DA${Date.now()}`;
-    // ✅ Sequential inserts (no transaction)
+    // 8️⃣ Persist order + items
     await db.insert(ordersTable).values({
-      id: orderId,
-      userId: user.id,
+      id:                orderId,
+      userId:            user.id,
       razorpay_order_id: razorOrder.id,
-      totalAmount: finalAmount,
-      status: 'order placed',
+      totalAmount:       finalAmount,
+      status:            'order placed',
       paymentMode,
-      transactionId: null,
-      paymentStatus: 'created',
+      transactionId:     null,
+      paymentStatus:     'created',
       phone,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt:         new Date().toISOString(),
+      updatedAt:         new Date().toISOString(),
       couponCode,
       discountAmount,
     });
 
-    const itemsToInsert = cartItems.map(item => ({
-      id: `DA${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-      orderId,
-      productName: item.productName,
-      img: item.img,
-      size: item.size,
-      productId: item.id,
-      quantity: item.quantity,
-      price: item.price,
-      totalPrice: item.price * item.quantity,
-    }));
+    await db.insert(orderItemsTable).values(enrichedItems);
 
-    await db.insert(orderItemsTable).values(itemsToInsert);
-
-
-    // 7️⃣ Respond with authoritative amounts & breakdown
+    // 9️⃣ Respond
     return res.json({
       success: true,
       orderId: razorOrder.id,
-      keyId: process.env.RAZORPAY_ID_KEY,
-      amount: finalAmount,           // rupees
-      breakdown: {
-        productTotal,
-        deliveryCharge,
-        discountAmount,
-      },
+      keyId:   RAZORPAY_ID_KEY,
+      amount:  finalAmount,
+      breakdown: { productTotal, deliveryCharge, discountAmount },
     });
 
   } catch (err) {
-    console.error('createOrder error:', err.stack || err.message || err);
+    console.error('createOrder error:', err);
     return res.status(500).json({ success: false, msg: 'Server error' });
   }
 };
+
 
 export const verifyPayment = async (req, res) => {
   try {
