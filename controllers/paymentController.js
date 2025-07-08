@@ -39,6 +39,8 @@ export const createOrder = async (req, res) => {
     const deliveryCharge = 0;
 
     // Fetch each product, sum up discounted prices
+    const enrichedItems = [];
+
     for (const item of cartItems) {
       const [product] = await db
         .select()
@@ -49,16 +51,24 @@ export const createOrder = async (req, res) => {
         return res.status(400).json({ success: false, msg: `Invalid product: ${item.id}` });
       }
 
-      // unit price after product-level discount
       const unitPrice = Math.floor(product.oprice * (1 - product.discount / 100));
       productTotal += unitPrice * item.quantity;
 
-      // Attach these for DB insert later
-      item.productName = product.name;
-      item.img = product.imageurl;
-      item.size = product.size;
-      item.price = unitPrice;
+      enrichedItems.push({
+        id: `DA${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+        orderId,
+        productId: item.id,
+        quantity: item.quantity,
+        productName: product.name,
+        img: product.imageurl,
+        size: product.size,
+        price: unitPrice,
+        totalPrice: unitPrice * item.quantity,
+      });
     }
+
+    await db.insert(orderItemsTable).values(enrichedItems);
+
 
     // 3️⃣ Apply coupon (if provided)
     if (couponCode) {
