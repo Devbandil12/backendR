@@ -6,7 +6,11 @@ import Razorpay from 'razorpay';
 import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
-import * as paymentController from '../controllers/paymentController.js';
+
+import { createOrder, verifyPayment } from '../controllers/paymentController.js';
+import { refundOrder }               from '../controllers/refundController.js';
+import { getPriceBreakdown }         from '../controllers/priceController.js';
+
 
 const router = express.Router();
 
@@ -16,15 +20,21 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_SECRET_KEY,
 });
 
+
+
 // ─── Middleware ────────────────────────────────────────────
 router.use(express.json());
 router.use(express.urlencoded({ extended: false }));
 
+
+
 // ─── 1️⃣ CREATE ORDER & VERIFY PAYMENT ─────────────────────
 // 👉 New price‐breakdown endpoint
-router.post('/breakdown', paymentController.getPriceBreakdown);
-router.post('/createOrder', paymentController.createOrder);
-router.post('/verify-payment', paymentController.verify);
+router.post('/breakdown',     getPriceBreakdown);
+router.post('/createOrder',   createOrder);
+router.post('/verify-payment', verifyPayment);
+router.post('/refund',        refundOrder);
+
 
 // ─── 2️⃣ PDF UPLOAD & PARSE ────────────────────────────────
 const upload = multer({ storage: multer.memoryStorage() });
@@ -42,50 +52,7 @@ router.post('/getdata', upload.single('file'), async (req, res) => {
   }
 });
 
-// ─── 3️⃣ ON-DEMAND REFUND ─────────────────────────────────
-router.post('/refund', async (req, res) => {
-  const { orderId, amount, speed = 'optimum', notes } = req.body;
 
-  const [order] = await db
-    .select({ paymentId: ordersTable.transactionId })
-    .from(ordersTable)
-    .where(eq(ordersTable.id, orderId));
-
-  if (!order?.paymentId) {
-    return res.status(404).json({ success: false, msg: 'Order/payment not found' });
-  }
-
-  try {
-    const refund = await razorpay.payments.refund(order.paymentId, {
-      amount,
-      speed,
-      notes: notes || { reason: 'User requested refund' },
-    });
-
-    await db
-      .update(ordersTable)
-      .set({
-        refund_id: refund.id,
-        status: 'Order Cancelled',
-        refund_amount: refund.amount,
-        refund_status: refund.status,
-        refund_speed: refund.speed,
-        refund_initiated_at: new Date(refund.created_at * 1000),
-        status: refund.status === 'processed' ? 'Order Cancelled' : ordersTable.status,
-        refund_completed_at: refund.status === 'processed'
-          ? new Date(refund.processed_at * 1000)
-          : null,
-        paymentStatus: refund.status === 'processed' ? 'refunded' : 'paid',
-
-      })
-      .where(eq(ordersTable.id, orderId));
-
-    res.json({ success: true, refund });
-  } catch (err) {
-    console.error('Refund initiation error:', err);
-    res.status(500).json({ success: false, msg: 'Refund failed' });
-  }
-});
 
 // ─── 4️⃣ RAZORPAY WEBHOOK ─────────────────────────────────
 router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
