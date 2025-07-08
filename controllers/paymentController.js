@@ -123,15 +123,16 @@ export const createOrder = async (req, res) => {
 
     const itemsToInsert = cartItems.map(item => ({
       id: `DA${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-      order_id: orderId,                  // snake_case
-      product_id: item.id,
-      product_name: item.productName,
+      orderId,
+      productName: item.productName,
       img: item.img,
       size: item.size,
+      productId: item.id,
       quantity: item.quantity,
       price: item.price,
-      total_price: item.price * item.quantity,
+      totalPrice: item.price * item.quantity,
     }));
+
     await db.insert(orderItemsTable).values(itemsToInsert);
 
 
