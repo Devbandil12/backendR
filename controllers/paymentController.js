@@ -207,7 +207,7 @@ export const refund = async (req, res) => {
     if (!order) {
       return res.status(404).json({ success: false, error: "Order not found" });
     }
-    if (order.status !== "Order Placed") {
+    if (order.status !== "order placed") {
       return res.status(400).json({
         success: false,
         error: "Cannot cancel/refund after order has progressed",
