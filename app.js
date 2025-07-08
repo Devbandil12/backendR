@@ -7,6 +7,7 @@ import http from 'http';
 
 import paymentRoutes from './routes/paymentRoute.js';
 import couponsRouter from './routes/coupons.js';
+import addressRoutes from "./routes/addressRoutes.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -43,6 +44,9 @@ app.use('/api/payments', paymentRoutes);
 
 // Coupons
 app.use('/api/coupons', couponsRouter);
+
+// address 
+app.use("/api/address", addressRoutes);
 
 // ─── HEALTHCHECK ────────────────────────────────────────────────
 app.get('/', (req, res) => res.send('🛠️  Payment API up and running'));
