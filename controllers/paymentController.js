@@ -104,37 +104,36 @@ export const createOrder = async (req, res) => {
 
     // 6️⃣ Persist order + items in a transaction
     const orderId = `DA${Date.now()}`;
-    await db.transaction(async (tx) => {
-      await tx.insert(ordersTable).values({
-        id: orderId,
-        userId: user.id,
-        razorpay_order_id: razorOrder.id,
-        totalAmount: finalAmount,
-        status: 'order placed',
-        paymentMode,
-        transactionId: null,
-        paymentStatus: 'created',
-        phone,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        couponCode,
-        discountAmount,
-      });
-
-      const itemsToInsert = cartItems.map(item => ({
-        id: `DA${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-        orderId,
-        productName: item.productName,
-        img: item.img,
-        size: item.size,
-        productId: item.id,
-        quantity: item.quantity,
-        price: item.price,
-        totalPrice: item.price * item.quantity,
-      }));
-
-      await tx.insert(orderItemsTable).values(itemsToInsert);
+    // ✅ Sequential inserts (no transaction)
+    await db.insert(ordersTable).values({
+      id: orderId,
+      userId: user.id,
+      razorpay_order_id: razorOrder.id,
+      totalAmount: finalAmount,
+      status: 'order placed',
+      paymentMode,
+      transactionId: null,
+      paymentStatus: 'created',
+      phone,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      couponCode,
+      discountAmount,
     });
+
+    const itemsToInsert = cartItems.map(item => ({
+      id: `DA${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+      order_id: orderId,                  // snake_case
+      product_id: item.id,
+      product_name: item.productName,
+      img: item.img,
+      size: item.size,
+      quantity: item.quantity,
+      price: item.price,
+      total_price: item.price * item.quantity,
+    }));
+    await db.insert(orderItemsTable).values(itemsToInsert);
+
 
     // 7️⃣ Respond with authoritative amounts & breakdown
     return res.json({

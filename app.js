@@ -13,7 +13,9 @@ const server = http.createServer(app);
 app.use(cors({
   origin: [
     "https://www.devidaura.com",
-    "https://devidaura.com" // sometimes users might not include www
+    "https://devidaura.com", // sometimes users might not include www
+    "http://localhost:3000", // for local development
+    "http://localhost:5173", // for local development
   ],
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   credentials: true
