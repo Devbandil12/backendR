@@ -7,7 +7,6 @@ import { eq } from 'drizzle-orm';
 
 
 export const refundOrder = async (req, res) => {
-
   const razorpay = new Razorpay({
     key_id: process.env.RAZORPAY_ID_KEY,
     key_secret: process.env.RAZORPAY_SECRET_KEY,
@@ -19,7 +18,7 @@ export const refundOrder = async (req, res) => {
       return res.status(400).json({ success: false, error: "Missing orderId or amount" });
     }
 
-    // 1) Fetch status/paymentId/refundId
+    // Step 1: Fetch order from DB
     const [order] = await db
       .select({
         paymentId: ordersTable.transactionId,
@@ -33,32 +32,42 @@ export const refundOrder = async (req, res) => {
       return res.status(404).json({ success: false, error: "Order not found" });
     }
     if (order.status !== "order placed") {
-      return res.status(400).json({
-        success: false,
-        error: "Cannot cancel/refund after order has progressed",
-      });
+      return res.status(400).json({ success: false, error: "Cannot refund after order progressed" });
     }
     if (order.refundId) {
-      return res.status(400).json({
-        success: false,
-        error: "Refund already initiated",
-      });
+      return res.status(400).json({ success: false, error: "Refund already initiated" });
     }
     if (!order.paymentId) {
-      return res.status(404).json({
+      return res.status(404).json({ success: false, error: "No payment found to refund" });
+    }
+
+    // Step 2: Convert amount to paise
+    const amountInPaise = Math.round(amount * 100);
+    const refundInPaise = Math.round(amountInPaise * 0.95);
+
+    // 🟩 Step 3: Fetch payment to see what Razorpay has recorded
+    const payment = await razorpay.payments.fetch(order.paymentId);
+
+    console.log(`🪙 Captured amount: ${payment.amount} paise (₹${(payment.amount / 100).toFixed(2)})`);
+    console.log(`↩️  Refund requested: ${refundInPaise} paise (₹${(refundInPaise / 100).toFixed(2)})`);
+
+    // Step 4: Validate
+    const alreadyRefunded = (payment.refunds || []).reduce((sum, r) => sum + (r.amount || 0), 0);
+    const maxRefundable = payment.amount - alreadyRefunded;
+    if (refundInPaise > maxRefundable) {
+      return res.status(400).json({
         success: false,
-        error: "No payment found to refund",
+        error: `Refund amount exceeds remaining refundable amount ₹${(maxRefundable / 100).toFixed(2)}.`,
       });
     }
-    // const amountInPaise = Math.round(amount * 100);
 
-    // 2) Razorpay refund
+    // Step 5: Call refund
     const refund = await razorpay.payments.refund(order.paymentId, {
-      amount,
+      amount: refundInPaise,
       speed: 'optimum',
     });
 
-    // 3) Persist
+    // Step 6: Persist refund data in DB
     await db
       .update(ordersTable)
       .set({
@@ -76,8 +85,13 @@ export const refundOrder = async (req, res) => {
       .where(eq(ordersTable.id, orderId));
 
     return res.json({ success: true, refund });
+
   } catch (err) {
     console.error("refundOrder error:", err);
-    return res.status(500).json({ success: false, error: err.message });
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ success: false, error: err.error?.description || err.message });
+    }
+    return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 };
+
