@@ -4,12 +4,15 @@ import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_ID_KEY,
-  key_secret: process.env.RAZORPAY_SECRET_KEY,
-});
+
 
 export const refundOrder = async (req, res) => {
+
+  const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_ID_KEY,
+    key_secret: process.env.RAZORPAY_SECRET_KEY,
+  });
+
   try {
     const { orderId, amount } = req.body;
     if (!orderId || !amount) {
@@ -20,8 +23,8 @@ export const refundOrder = async (req, res) => {
     const [order] = await db
       .select({
         paymentId: ordersTable.transactionId,
-        status:    ordersTable.status,
-        refundId:  ordersTable.refund_id,
+        status: ordersTable.status,
+        refundId: ordersTable.refund_id,
       })
       .from(ordersTable)
       .where(eq(ordersTable.id, orderId));
@@ -47,10 +50,11 @@ export const refundOrder = async (req, res) => {
         error: "No payment found to refund",
       });
     }
+    const amountInPaise = Math.round(amount * 100);
 
     // 2) Razorpay refund
     const refund = await razorpay.payments.refund(order.paymentId, {
-      amount,
+      amount: amountInPaise,
       speed: 'optimum',
     });
 
@@ -58,11 +62,11 @@ export const refundOrder = async (req, res) => {
     await db
       .update(ordersTable)
       .set({
-        paymentStatus:      'refunded',
-        refund_id:          refund.id,
-        refund_amount:      refund.amount,
-        refund_status:      refund.status,
-        refund_speed:       refund.speed_processed,
+        paymentStatus: 'refunded',
+        refund_id: refund.id,
+        refund_amount: refund.amount,
+        refund_status: refund.status,
+        refund_speed: refund.speed_processed,
         refund_initiated_at: new Date(refund.created_at * 1000),
         refund_completed_at: refund.status === 'processed'
           ? new Date(refund.processed_at * 1000)
