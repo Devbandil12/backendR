@@ -32,7 +32,7 @@ router.use(express.urlencoded({ extended: false }));
 // 👉 New price‐breakdown endpoint
 router.post('/breakdown',     getPriceBreakdown);
 router.post('/createOrder',   createOrder);
-router.post('/verify', verifyPayment);
+router.post('/verify-payment', verifyPayment);
 router.post('/refund',        refundOrder);
 
 
