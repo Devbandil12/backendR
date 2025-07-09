@@ -42,8 +42,20 @@ export const refundOrder = async (req, res) => {
     }
 
     // Step 2: Convert amount to paise
+    // Step: Convert to paise
     const amountInPaise = Math.round(amount * 100);
-    const refundInPaise = Math.round(amountInPaise * 0.95);
+
+    // Try to apply 5% deduction
+    let refundInPaise = Math.round(amountInPaise * 0.95);
+
+    // If after deduction refund < 1 rupee (100 paise), skip deduction and refund full amount
+    if (refundInPaise < 100) {
+      console.log("Refund after deduction is < ₹1 → skipping deduction, refunding full amount");
+      refundInPaise = amountInPaise;
+    } else {
+      console.log("Refund after 5% deduction:", refundInPaise, `paise (₹${(refundInPaise / 100).toFixed(2)})`);
+    }
+
 
     // 🟩 Step 3: Fetch payment to see what Razorpay has recorded
     const payment = await razorpay.payments.fetch(order.paymentId);
