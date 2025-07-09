@@ -50,11 +50,11 @@ export const refundOrder = async (req, res) => {
         error: "No payment found to refund",
       });
     }
-    const amountInPaise = Math.round(amount * 100);
+    // const amountInPaise = Math.round(amount * 100);
 
     // 2) Razorpay refund
     const refund = await razorpay.payments.refund(order.paymentId, {
-      amount: amountInPaise,
+      amount,
       speed: 'optimum',
     });
 
