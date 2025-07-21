@@ -9,6 +9,9 @@ import paymentRoutes from './routes/paymentRoute.js';
 import couponsRouter from './routes/coupons.js';
 import addressRoutes from "./routes/addressRoutes.js";
 
+import { razorpayWebhookHandler } from './routes/paymentRoute.js';
+
+
 const app = express();
 const server = http.createServer(app);
 
@@ -29,10 +32,11 @@ app.options('*', cors());
 // Only the webhook needs a raw body. Mount that first:
 
 app.post(
-  '/api/payments/razorpay-webhook',
-  express.raw({ type: 'application/json' }),
-  paymentRoutes  // this will dispatch the webhook handler inside your router
+  '/api/payments/razorpay-webhook',
+  express.raw({ type: 'application/json' }),
+  razorpayWebhookHandler  // ✅ DIRECTLY call the handler function
 );
+
 
 // Now mount the normal JSON/body‐parser for everything else:
 app.use(express.json());
