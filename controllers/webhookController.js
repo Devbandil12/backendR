@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm';
 export const razorpayWebhookHandler = async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const body = req.body.toString();
+  const body = req.body; // ⚠️ raw buffer from express.raw()
 
   const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
 
@@ -15,6 +15,7 @@ export const razorpayWebhookHandler = async (req, res) => {
     return res.status(400).send('Invalid signature');
   }
 
+  // ✅ Signature matched → parse JSON body
   const { event, payload: { refund: { entity } } } = JSON.parse(body);
 
   if (!event.startsWith('refund.')) {
@@ -45,6 +46,6 @@ export const razorpayWebhookHandler = async (req, res) => {
     return res.status(200).send("Webhook processed");
   } catch (err) {
     console.error('Webhook processing error:', err);
-    res.status(500).send('DB error');
+    return res.status(500).send('DB error');
   }
 };
