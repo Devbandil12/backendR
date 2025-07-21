@@ -11,7 +11,7 @@ import { createOrder, verifyPayment } from '../controllers/paymentController.js'
 import { refundOrder }               from '../controllers/refundController.js';
 import { getPriceBreakdown }         from '../controllers/priceController.js';
 
-
+const router = express.Router();
 
 // ─── Razorpay client ───────────────────────────────────────
 const razorpay = new Razorpay({
