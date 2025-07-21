@@ -74,12 +74,16 @@ export const refundOrder = async (req, res) => {
     }
 
     // Step 5: Call refund
-    const refund = await razorpay.payments.refund(order.paymentId, {
-      amount: refundInPaise,
-      speed: 'optimum',
-    });
+const refundInit = await razorpay.payments.refund(order.paymentId, {
+  amount: refundInPaise,
+  speed: 'optimum',
+});
 
-    // Step 6: Persist refund data in DB
+// Step 6: Fetch accurate refund status
+const refund = await razorpay.refunds.fetch(refundInit.id);
+
+
+    // Step 7: Persist refund data in DB
     await db
       .update(ordersTable)
       .set({
