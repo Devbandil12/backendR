@@ -3,7 +3,7 @@ import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
-export const razorpayWebhookHandler = async (req, res) => {
+const razorpayWebhookHandler = async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const body = req.body; // ⚠️ raw buffer from express.raw()
@@ -49,3 +49,6 @@ export const razorpayWebhookHandler = async (req, res) => {
     return res.status(500).send('DB error');
   }
 };
+
+
+export default razorpayWebhookHandler;
