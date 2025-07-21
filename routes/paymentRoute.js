@@ -98,6 +98,7 @@ if (entity.status === 'processed') {
       .where(eq(ordersTable.refundId, entity.id));
 
     res.status(200).send('OK');
+return res.status(200).send("Webhook processed");
   } catch (err) {
     console.error('Webhook processing error:', err);
     res.status(500).send('DB error');
@@ -109,7 +110,7 @@ router.all('*', (req, res) => {
   res.status(405).json({ error: 'Method not allowed at this endpoint' });
 });
 
-return res.status(200).send("Webhook processed");
+
 
 
 export default router;
