@@ -29,7 +29,7 @@ app.options('*', cors());
 // Only the webhook needs a raw body. Mount that first:
 
 app.post(
-  '/api/payments/webhook',
+  '/api/payments/razorpay-webhook',
   express.raw({ type: 'application/json' }),
   paymentRoutes  // this will dispatch the webhook handler inside your router
 );
