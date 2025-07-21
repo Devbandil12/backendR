@@ -55,7 +55,7 @@ router.post('/getdata', upload.single('file'), async (req, res) => {
 
 
 // ─── 4️⃣ RAZORPAY WEBHOOK ─────────────────────────────────
-router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/razorpay-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const body = req.body.toString();
