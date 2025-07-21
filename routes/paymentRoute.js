@@ -95,7 +95,7 @@ if (entity.status === 'processed') {
     await db
       .update(ordersTable)
       .set(updates)
-      .where(eq(ordersTable.refundId, entity.id));
+      .where(eq(ordersTable.refund_id, entity.id));
 
     
 return res.status(200).send("Webhook processed");
