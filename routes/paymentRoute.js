@@ -97,7 +97,7 @@ if (entity.status === 'processed') {
       .set(updates)
       .where(eq(ordersTable.refundId, entity.id));
 
-    res.status(200).send('OK');
+    
 return res.status(200).send("Webhook processed");
   } catch (err) {
     console.error('Webhook processing error:', err);
