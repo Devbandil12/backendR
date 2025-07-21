@@ -9,7 +9,8 @@ import paymentRoutes from './routes/paymentRoute.js';
 import couponsRouter from './routes/coupons.js';
 import addressRoutes from "./routes/addressRoutes.js";
 
-import { razorpayWebhookHandler } from './routes/paymentRoute.js';
+import { razorpayWebhookHandler } from './controllers/webhookController.js'; // ✅ Correct
+
 
 
 const app = express();
