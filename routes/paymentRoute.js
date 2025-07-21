@@ -74,13 +74,21 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
   }
 
   const updates = {
-    refund_status: entity.status,
-    refund_completed_at: entity.status === 'processed' ? new Date(entity.processed_at * 1000) : null,
-    ...(entity.status === 'processed' && {
-      paymentStatus: 'refunded',
-      status: 'Order Cancelled',
-    }),
-  };
+  refund_status: entity.status,
+  refund_completed_at: entity.status === 'processed'
+    ? new Date(entity.processed_at * 1000)
+    : null,
+  updatedAt: new Date().toISOString(),
+};
+
+if (entity.status === 'processed') {
+  updates.paymentStatus = 'refunded';
+  updates.status = 'Order Cancelled';
+} else if (entity.status === 'failed') {
+  // optionally notify admin here
+  console.warn(`⚠️ Refund failed for order with refund_id: ${entity.id}`);
+}
+
 
 
   try {
@@ -100,6 +108,8 @@ router.all('*', (req, res) => {
   console.log(`❗ Unmatched route hit: ${req.method} ${req.originalUrl}`);
   res.status(405).json({ error: 'Method not allowed at this endpoint' });
 });
+
+return res.status(200).send("Webhook processed");
 
 
 export default router;
