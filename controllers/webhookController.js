@@ -41,3 +41,7 @@ const razorpayWebhookHandler = async (req, res) => {
     return res.status(500).send('DB error');
   }
 };
+
+
+export default razorpayWebhookHandler;
+
