@@ -51,9 +51,10 @@ app.use('/api/address', addressRoutes);
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));
 
-app.get('/api/payments/razorpay-webhook-ping', (req, res) => {
-  res.send('Webhook route warmed up ✅');
+app.get('/wake-up', (req, res) => {
+  res.send('✅ DevidAura backend awake');
 });
+
 
 
 // ───── Start Server ─────
