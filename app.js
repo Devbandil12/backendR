@@ -30,15 +30,7 @@ app.options('*', cors());
 app.post(
   '/api/payments/razorpay-webhook',
   express.raw({ type: 'application/json' }),
-  (req, res, next) => {
-    try {
-      razorpayWebhookHandler(req, res);
-    } catch (err) {
-      console.error("❌ Webhook Error:", err);
-      res.status(500).send("Internal Server Error");
-    }
-  }
-);
+razorpayWebhookHandler);
 
 
 
