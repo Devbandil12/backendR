@@ -10,11 +10,10 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_SECRET_KEY,
 });
 
-const pollRefundStatus = async () => {
+export const pollRefunds = async () => {
   console.log("🔄 Polling: Checking Razorpay refund statuses...");
 
   try {
-    // Get all orders where refund is marked as processed, but no date stored
     const orders = await db
       .select()
       .from(ordersTable)
@@ -54,5 +53,3 @@ const pollRefundStatus = async () => {
     console.error("❌ DB polling error:", err.message);
   }
 };
-
-pollRefundStatus();
