@@ -50,7 +50,11 @@ app.use('/api/address', addressRoutes);
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));
-app.get('/health', (req, res) => res.send('OK'));
+
+app.get('/api/payments/razorpay-webhook-ping', (req, res) => {
+  res.send('Webhook route warmed up ✅');
+});
+
 
 // ───── Start Server ─────
 const PORT = process.env.PORT || 3000;
