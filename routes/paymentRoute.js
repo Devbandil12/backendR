@@ -54,7 +54,7 @@ router.post('/getdata', upload.single('file'), async (req, res) => {
 // ─── 4️⃣ RAZORPAY WEBHOOK ─────────────────────────────────
 router.post('/razorpay-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  const secret = "harsh_553588_omkar_398266_yomesh_711915";
   const body = req.body.toString();
 
   const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
