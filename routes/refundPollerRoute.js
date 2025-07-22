@@ -1,6 +1,6 @@
 // routes/refundPollerRoute.js
 import express from 'express';
-import { pollRefunds } from '../controllers/refundPoller.js';
+import { pollRefunds } from '../refundPoller.js';
 
 const router = express.Router();
 
