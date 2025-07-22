@@ -25,24 +25,32 @@ app.use(cors({
 }));
 app.options('*', cors());
 
-// ───── Webhook route with raw body (MUST come before express.json) ─────
+// ───── Webhook route (must be before JSON parser) ─────
 app.post(
   '/api/payments/razorpay-webhook',
   express.raw({ type: 'application/json' }),
-  razorpayWebhookHandler
+  (req, res, next) => {
+    try {
+      razorpayWebhookHandler(req, res);
+    } catch (err) {
+      console.error("❌ Webhook Error:", err);
+      res.status(500).send("Internal Server Error");
+    }
+  }
 );
 
-// ───── JSON body parser for other routes ─────
+// ───── JSON Body Parser (for all other routes) ─────
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// ───── Other Routes ─────
+// ───── Routes ─────
 app.use('/api/payments', paymentRoutes);
 app.use('/api/coupons', couponsRouter);
 app.use('/api/address', addressRoutes);
 
-// ───── Healthcheck ─────
+// ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));
+app.get('/health', (req, res) => res.send('OK'));
 
 // ───── Start Server ─────
 const PORT = process.env.PORT || 3000;
