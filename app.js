@@ -31,10 +31,11 @@ app.options('*', cors());
 // Only the webhook needs a raw body. Mount that first:
 
 app.post(
-  '/api/payments/razorpay-webhook',
-  express.raw({ type: 'application/json' }),
-  paymentRoutes  // ❌ WRONG – this causes 405
+  '/api/payments/razorpay-webhook',
+  express.raw({ type: 'application/json' }),
+  razorpayWebhookHandler
 );
+
 
 
 // Now mount the normal JSON/body‐parser for everything else:
