@@ -8,6 +8,7 @@ import paymentRoutes from './routes/paymentRoute.js';
 import couponsRouter from './routes/coupons.js';
 import addressRoutes from './routes/addressRoutes.js';
 import razorpayWebhookHandler from './controllers/webhookController.js';
+import refundPollerRoute from './routes/refundPollerRoute.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -39,6 +40,10 @@ app.post(
   }
 );
 
+
+
+
+
 // ───── JSON Body Parser (for all other routes) ─────
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -47,6 +52,8 @@ app.use(express.urlencoded({ extended: false }));
 app.use('/api/payments', paymentRoutes);
 app.use('/api/coupons', couponsRouter);
 app.use('/api/address', addressRoutes);
+app.use('/api/cron', refundPollerRoute);
+
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));
