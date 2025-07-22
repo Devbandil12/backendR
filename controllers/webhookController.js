@@ -1,4 +1,3 @@
-// controllers/webhookController.js
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
@@ -9,11 +8,13 @@ const razorpayWebhookHandler = async (req, res) => {
 
   const signature = req.headers['x-razorpay-signature'];
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-
-  const body = req.body; // raw buffer
+  const body = req.body;
 
   // Verify signature
-  const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(body)
+    .digest('hex');
 
   if (signature !== expected) {
     console.warn('⚠️ Invalid webhook signature');
@@ -39,10 +40,19 @@ const razorpayWebhookHandler = async (req, res) => {
     return res.status(400).send("Missing refund entity");
   }
 
+  // Safely convert processed_at timestamp
+  let refundCompletedAt = null;
+  if (entity.status === 'processed' && entity.processed_at) {
+    try {
+      refundCompletedAt = new Date(entity.processed_at * 1000);
+    } catch (e) {
+      console.warn("⚠️ Invalid processed_at timestamp:", entity.processed_at);
+    }
+  }
+
   const updates = {
     refund_status: entity.status,
-    refund_completed_at:
-      entity.status === 'processed' ? new Date(entity.processed_at * 1000) : null,
+    refund_completed_at: refundCompletedAt,
     updatedAt: new Date().toISOString(),
   };
 
