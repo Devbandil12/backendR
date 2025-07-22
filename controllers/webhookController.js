@@ -1,6 +1,6 @@
 const razorpayWebhookHandler = async (req, res) => {
   const signature = req.headers['x-razorpay-signature'];
-  const secret = "harsh_553588_omkar_398266_yomesh_711915";
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const body = req.body; // raw buffer
 
   const expected = crypto.createHmac('sha256', secret).update(body).digest('hex');
