@@ -9,8 +9,6 @@ import paymentRoutes from './routes/paymentRoute.js';
 import couponsRouter from './routes/coupons.js';
 import addressRoutes from "./routes/addressRoutes.js";
 
-import razorpayWebhookHandler from './controllers/webhookController.js'; // ✅ Correct
-
 
 
 const app = express();
@@ -35,7 +33,7 @@ app.options('*', cors());
 app.post(
   '/api/payments/razorpay-webhook',
   express.raw({ type: 'application/json' }),
-  razorpayWebhookHandler  // ✅ DIRECTLY call the handler function
+  paymentRoutes  // ❌ WRONG – this causes 405
 );
 
 
