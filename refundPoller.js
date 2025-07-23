@@ -33,15 +33,17 @@ export const pollRefunds = async () => {
 
         if (refund.status === 'processed' && refund.processed_at > 0) {
           const completedAt = new Date(refund.processed_at * 1000).toISOString();
+          const updatedSpeed = refund.speed_processed || null;
 
           await db
             .update(ordersTable)
             .set({
               refund_completed_at: completedAt,
+              refund_speed: updatedSpeed,  // ← This line updates the speed
             })
             .where(eq(ordersTable.refund_id, refund.id));
 
-          console.log(`✅ Updated refund ${refund.id} as completed`);
+          console.log(`✅ Updated refund ${refund.id} as completed (Speed: ${updatedSpeed})`);
         } else {
           console.log(`⏳ Refund ${refund.id} status: ${refund.status}`);
         }
