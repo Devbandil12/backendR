@@ -58,7 +58,6 @@ export const pollRefunds = async () => {
       }
     }
   } catch (err) {
-    console.error("❌ DB polling erro
-r:", err.message);
+    console.error("❌ DB polling error:", err.message);
   }
 };
