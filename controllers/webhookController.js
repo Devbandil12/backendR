@@ -44,7 +44,7 @@ const razorpayWebhookHandler = async (req, res) => {
   let refundCompletedAt = null;
   if (entity.status === 'processed' && entity.processed_at) {
     try {
-      refundCompletedAt = new Date(entity.processed_at * 1000);
+      refundCompletedAt = new Date(entity.processed_at * 1000).toISOString();
     } catch (e) {
       console.warn("⚠️ Invalid processed_at timestamp:", entity.processed_at);
     }
