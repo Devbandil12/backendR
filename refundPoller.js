@@ -46,6 +46,7 @@ export const pollRefunds = async () => {
               refund_completed_at: completedAt,
               refund_speed:        refund.speed_processed || null,
               paymentStatus:       'refunded',
+updatedAt: new Date().toISOString(),
             })
             .where(eq(ordersTable.refund_id, refund.id));
 
