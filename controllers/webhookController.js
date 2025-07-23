@@ -1,80 +1,65 @@
+// controllers/webhookController.js
+
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
 const razorpayWebhookHandler = async (req, res) => {
-  console.log("🔔 Webhook handler invoked");
-
-  const signature = req.headers['x-razorpay-signature'];
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const body = req.body;
+  const signature = req.headers['x-razorpay-signature'];
 
-  // Verify signature
+  // 1. Verify signature using raw body
   const expected = crypto
     .createHmac('sha256', secret)
-    .update(body)
+    .update(req.body)
     .digest('hex');
 
   if (signature !== expected) {
-    console.warn('⚠️ Invalid webhook signature');
-    return res.status(400).send('Invalid signature');
+    console.warn("⚠️ Invalid Razorpay webhook signature");
+    return res.status(400).send("Invalid signature");
   }
 
-  let parsedBody;
+  let parsed;
   try {
-    parsedBody = JSON.parse(body.toString());
+    parsed = JSON.parse(req.body.toString('utf8'));
   } catch (err) {
-    console.error("❌ Failed to parse JSON from webhook:", err);
-    return res.status(400).send("Invalid JSON body");
+    console.error("❌ Failed to parse Razorpay webhook body:", err);
+    return res.status(400).send("Invalid JSON");
   }
 
-  const { event, payload } = parsedBody;
-
-  if (!event.startsWith('refund.')) {
-    return res.status(200).send('Ignored event');
+  const { event, payload } = parsed;
+  if (!event.startsWith("refund.")) {
+    return res.status(200).send("Ignored non-refund event");
   }
 
-  const entity = payload?.refund?.entity;
-  if (!entity) {
-    return res.status(400).send("Missing refund entity");
-  }
+  const refund = payload.refund.entity;
 
-  // Safely convert processed_at timestamp
-  let refundCompletedAt = null;
-  if (entity.status === 'processed' && entity.processed_at) {
-    try {
-      refundCompletedAt = new Date(entity.processed_at * 1000);
-    } catch (e) {
-      console.warn("⚠️ Invalid processed_at timestamp:", entity.processed_at);
-    }
-  }
-
-  const updates = {
-  refund_status: entity.status,
-  refund_completed_at: refundCompletedAt,
-  refund_speed: entity.speed_processed, // <- capture refund speed here too
-  updatedAt: new Date().toISOString(),
-};
-
-
-  if (entity.status === 'processed') {
-    updates.paymentStatus = 'refunded';
-    updates.status = 'Order Cancelled';
-  } else if (entity.status === 'failed') {
-    console.warn(`⚠️ Refund failed for refund_id: ${entity.id}`);
-  }
+  const updateFields = {
+    refund_status: refund.status,
+    refund_completed_at:
+      refund.status === 'processed' && refund.processed_at
+        ? new Date(refund.processed_at * 1000).toISOString()
+        : null,
+    refund_speed: refund.speed_processed || null,
+    paymentStatus: refund.status === 'processed' ? 'refunded' : undefined,
+  };
 
   try {
-    const updated = await db
+    const result = await db
       .update(ordersTable)
-      .set(updates)
-      .where(eq(ordersTable.refund_id, entity.id));
+      .set(updateFields)
+      .where(eq(ordersTable.refund_id, refund.id));
 
-    console.log("✅ Refund update saved:", entity.id);
-    return res.status(200).send("Webhook processed");
+    if (result.rowCount > 0) {
+      console.log(`✅ Webhook updated refund ${refund.id} → ${refund.status}`);
+    } else {
+      console.warn(`⚠️ Webhook: No order found for refund_id ${refund.id}`);
+    }
+
+    return res.status(200).send("OK");
   } catch (err) {
-    console.error("❌ DB error:", err);
+    console.error("❌ DB error in webhook:", err);
     return res.status(500).send("Database update failed");
   }
 };
