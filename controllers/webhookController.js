@@ -51,10 +51,12 @@ const razorpayWebhookHandler = async (req, res) => {
   }
 
   const updates = {
-    refund_status: entity.status,
-    refund_completed_at: refundCompletedAt,
-    updatedAt: new Date().toISOString(),
-  };
+  refund_status: entity.status,
+  refund_completed_at: refundCompletedAt,
+  refund_speed: entity.speed_processed, // <- capture refund speed here too
+  updatedAt: new Date().toISOString(),
+};
+
 
   if (entity.status === 'processed') {
     updates.paymentStatus = 'refunded';
