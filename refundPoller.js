@@ -1,9 +1,10 @@
 // refundPoller.js
+
 import 'dotenv/config';
 import Razorpay from 'razorpay';
 import { db } from '../src/configs/index.js';
 import { ordersTable } from '../src/configs/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, and, isNotNull, not } from 'drizzle-orm';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_ID_KEY,
@@ -14,16 +15,17 @@ export const pollRefunds = async () => {
   console.log("🔄 Polling: Checking Razorpay refund statuses...");
 
   try {
-    // Find any orders marked refunded but without a completed timestamp
     const pending = await db
       .select({
-        id:            ordersTable.id,
-        refundId:      ordersTable.refund_id,
+        id: ordersTable.id,
+        refundId: ordersTable.refund_id,
       })
       .from(ordersTable)
       .where(
-        eq(ordersTable.paymentStatus, 'refunded'),
-        eq(ordersTable.refund_completed_at, null)
+        and(
+          isNotNull(ordersTable.refund_id),
+          not(eq(ordersTable.refund_status, 'processed'))
+        )
       );
 
     for (const order of pending) {
@@ -34,7 +36,6 @@ export const pollRefunds = async () => {
         const refund = await razorpay.refunds.fetch(refundId);
 
         if (refund.status === 'processed') {
-          // Use Razorpay's processed_at if present, else fallback to now
           const completedAt = refund.processed_at
             ? new Date(refund.processed_at * 1000).toISOString()
             : new Date().toISOString();
@@ -42,14 +43,14 @@ export const pollRefunds = async () => {
           await db
             .update(ordersTable)
             .set({
-              refund_status:       'processed',
+              refund_status: 'processed',
               refund_completed_at: completedAt,
-              refund_speed:        refund.speed_processed || null,
-              paymentStatus:       'refunded',
+              refund_speed: refund.speed_processed || null,
+              paymentStatus: 'refunded',
             })
             .where(eq(ordersTable.refund_id, refund.id));
 
-          console.log(`✅ Refund ${refund.id} for order ${orderId} finalized in DB`);
+          console.log(`✅ Refund ${refund.id} for order ${orderId} finalized`);
         } else {
           console.log(`⏳ Refund ${refund.id} still ${refund.status}`);
         }
@@ -58,6 +59,6 @@ export const pollRefunds = async () => {
       }
     }
   } catch (err) {
-    console.error("❌ DB polling error:", err.message);
+    console.error("❌ Polling DB error:", err.message);
   }
 };
