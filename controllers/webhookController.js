@@ -60,9 +60,7 @@ const razorpayWebhookHandler = async (req, res) => {
       case 'refund.processed':
         await db.update(ordersTable).set({
           refund_status: 'processed',
-          refund_completed_at: new Date(entity.processed_at * 1000).toISOString(),
           refund_speed: entity.speed_processed,
-          paymentStatus: 'refunded',
           updatedAt: now,
         }).where(eq(ordersTable.refund_id, entity.id));
         console.log(`✅ refund.processed → processed [${entity.id}]`);
