@@ -1,83 +1,97 @@
+// server/controllers/razorpayWebhookHandler.js
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
+// Mount this route with bodyParser.raw({ type: 'application/json' })
 const razorpayWebhookHandler = async (req, res) => {
-  console.log("🔔 Webhook handler invoked");
+  console.log("🔔 Razorpay Webhook invoked");
 
-  const signature = req.headers['x-razorpay-signature'];
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const body = req.body;
+  // 1️⃣ Signature verification
+  const signature = req.headers['x-razorpay-signature'];
+  const secret    = process.env.RAZORPAY_WEBHOOK_SECRET;
+  const bodyBuf   = req.body; // Buffer from raw parser
 
-  // Verify signature
-  const expected = crypto
-    .createHmac('sha256', secret)
-    .update(body)
-    .digest('hex');
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(bodyBuf)
+    .digest('hex');
 
-  if (signature !== expected) {
-    console.warn('⚠️ Invalid webhook signature');
-    return res.status(400).send('Invalid signature');
-  }
+  if (signature !== expected) {
+    console.warn('⚠️ Invalid webhook signature');
+    return res.status(400).send('Invalid signature');
+  }
 
-  let parsedBody;
-  try {
-    parsedBody = JSON.parse(body.toString());
-  } catch (err) {
-    console.error("❌ Failed to parse JSON from webhook:", err);
-    return res.status(400).send("Invalid JSON body");
-  }
+  // 2️⃣ Parse JSON
+  let payload;
+  try {
+    payload = JSON.parse(bodyBuf.toString('utf8'));
+  } catch (err) {
+    console.error('❌ JSON parse error:', err);
+    return res.status(400).send('Invalid JSON');
+  }
 
-  const { event, payload } = parsedBody;
+  const { event, payload: { refund } = {} } = payload;
+  const entity = refund?.entity;
+  if (!event.startsWith('refund.') || !entity) {
+    return res.status(200).send('Ignored event');
+  }
 
-  if (!event.startsWith('refund.')) {
-    return res.status(200).send('Ignored event');
-  }
+  // 3️⃣ Prepare update object
+  const now = new Date().toISOString();
+  try {
+    switch (event) {
 
-  const entity = payload?.refund?.entity;
-  if (!entity) {
-    return res.status(400).send("Missing refund entity");
-  }
+      // ◾ refund.created → mark in_progress
+      case 'refund.created':
+        await db.update(ordersTable).set({
+          refund_status:     'in_progress',
+          refund_created_at: new Date(entity.created_at * 1000).toISOString(),
+          refund_speed:      entity.speed_processed,
+          updatedAt:         now,
+        }).where(eq(ordersTable.refund_id, entity.id));
+        console.log(`🔄 refund.created → in_progress [${entity.id}]`);
+        return res.status(200).send('refund.created handled');
 
-  // Safely convert processed_at timestamp
-  let refundCompletedAt = null;
-  if (entity.status === 'processed' && entity.processed_at) {
-    try {
-      refundCompletedAt = new Date(entity.processed_at * 1000).toISOString();
-    } catch (e) {
-      console.warn("⚠️ Invalid processed_at timestamp:", entity.processed_at);
-    }
-  }
+      // ◾ refund.updated → speed change
+      case 'refund.updated':
+        await db.update(ordersTable).set({
+          refund_speed: entity.speed_processed,
+          updatedAt:    now,
+        }).where(eq(ordersTable.refund_id, entity.id));
+        console.log(`🔄 refund.updated → speed=${entity.speed_processed} [${entity.id}]`);
+        return res.status(200).send('refund.updated handled');
 
-  const updates = {
-  refund_status: entity.status,
-  refund_completed_at: refundCompletedAt,
-  refund_speed: entity.speed_processed, // <- capture refund speed here too
-  updatedAt: new Date().toISOString(),
-};
+      // ◾ refund.processed → completed
+      case 'refund.processed':
+        await db.update(ordersTable).set({
+          refund_status:       'completed',
+          refund_processed_at: new Date(entity.processed_at * 1000).toISOString(),
+          refund_speed:        entity.speed_processed,
+          updatedAt:           now,
+        }).where(eq(ordersTable.refund_id, entity.id));
+        console.log(`✅ refund.processed → completed [${entity.id}]`);
+        return res.status(200).send('refund.processed handled');
 
+      // ◾ refund.failed → failed
+      case 'refund.failed':
+        await db.update(ordersTable).set({
+          refund_status:    'failed',
+          refund_failed_at: now,
+          updatedAt:        now,
+        }).where(eq(ordersTable.refund_id, entity.id));
+        console.log(`❌ refund.failed → failed [${entity.id}]`);
+        return res.status(200).send('refund.failed handled');
 
-  if (entity.status === 'processed') {
-    updates.paymentStatus = 'refunded';
-    updates.status = 'Order Cancelled';
-  } else if (entity.status === 'failed') {
-    console.warn(`⚠️ Refund failed for refund_id: ${entity.id}`);
-  }
+      default:
+        return res.status(200).send('event ignored');
+    }
 
-  try {
-    const updated = await db
-      .update(ordersTable)
-      .set(updates)
-      .where(eq(ordersTable.refund_id, entity.id));
-
-    console.log("✅ Refund update saved:", entity.id);
-    return res.status(200).send("Webhook processed");
-  } catch (err) {
-    console.error("❌ DB error:", err);
-    return res.status(500).s
-end("Database update failed");
-  }
+  } catch (dbErr) {
+    console.error('❌ DB update error:', dbErr);
+    return res.status(500).send('Database update failed');
+  }
 };
 
 export default razorpayWebhookHandler;
