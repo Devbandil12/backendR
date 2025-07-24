@@ -4,6 +4,12 @@ import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
+const safeDate = (timestamp) => {
+  return (timestamp && typeof timestamp === 'number')
+    ? new Date(timestamp * 1000).toISOString()
+    : null;
+};
+
 const razorpayWebhookHandler = async (req, res) => {
   console.log("🔔 Razorpay Webhook invoked");
 
@@ -42,7 +48,7 @@ const razorpayWebhookHandler = async (req, res) => {
       case 'refund.created':
         await db.update(ordersTable).set({
           refund_status: 'in_progress',
-          refund_initiated_at: new Date(entity.created_at * 1000).toISOString(),
+          refund_initiated_at: safeDate(entity.created_at),
           refund_speed: entity.speed_processed,
           updatedAt: now,
         }).where(eq(ordersTable.refund_id, entity.id));
@@ -60,7 +66,9 @@ const razorpayWebhookHandler = async (req, res) => {
       case 'refund.processed':
         await db.update(ordersTable).set({
           refund_status: 'processed',
+          refund_completed_at: safeDate(entity.processed_at),
           refund_speed: entity.speed_processed,
+          paymentStatus: 'refunded',
           updatedAt: now,
         }).where(eq(ordersTable.refund_id, entity.id));
         console.log(`✅ refund.processed → processed [${entity.id}]`);
