@@ -4,7 +4,7 @@ import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
-// Mount this route with bodyParser.raw({ type: 'application/json' })
+// Use bodyParser.raw({ type: 'application/json' }) on this route
 const razorpayWebhookHandler = async (req, res) => {
   console.log("🔔 Razorpay Webhook invoked");
 
@@ -23,7 +23,7 @@ const razorpayWebhookHandler = async (req, res) => {
     return res.status(400).send('Invalid signature');
   }
 
-  // 2️⃣ Parse JSON
+  // 2️⃣ Parse JSON payload
   let payload;
   try {
     payload = JSON.parse(bodyBuf.toString('utf8'));
@@ -38,23 +38,20 @@ const razorpayWebhookHandler = async (req, res) => {
     return res.status(200).send('Ignored event');
   }
 
-  // 3️⃣ Prepare update object
   const now = new Date().toISOString();
+
   try {
     switch (event) {
-
-      // ◾ refund.created → mark in_progress
       case 'refund.created':
         await db.update(ordersTable).set({
-          refund_status:     'in_progress',
-          refund_created_at: new Date(entity.created_at * 1000).toISOString(),
-          refund_speed:      entity.speed_processed,
-          updatedAt:         now,
+          refund_status:        'in_progress',
+          refund_initiated_at:  new Date(entity.created_at * 1000).toISOString(),
+          refund_speed:         entity.speed_processed,
+          updatedAt:            now,
         }).where(eq(ordersTable.refund_id, entity.id));
         console.log(`🔄 refund.created → in_progress [${entity.id}]`);
         return res.status(200).send('refund.created handled');
 
-      // ◾ refund.updated → speed change
       case 'refund.updated':
         await db.update(ordersTable).set({
           refund_speed: entity.speed_processed,
@@ -63,29 +60,27 @@ const razorpayWebhookHandler = async (req, res) => {
         console.log(`🔄 refund.updated → speed=${entity.speed_processed} [${entity.id}]`);
         return res.status(200).send('refund.updated handled');
 
-      // ◾ refund.processed → completed
       case 'refund.processed':
         await db.update(ordersTable).set({
-          refund_status:       'completed',
-          refund_processed_at: new Date(entity.processed_at * 1000).toISOString(),
+          refund_status:       'processed',
+          refund_completed_at: new Date(entity.processed_at * 1000).toISOString(),
           refund_speed:        entity.speed_processed,
+          paymentStatus:       'refunded',
           updatedAt:           now,
         }).where(eq(ordersTable.refund_id, entity.id));
-        console.log(`✅ refund.processed → completed [${entity.id}]`);
+        console.log(`✅ refund.processed → processed [${entity.id}]`);
         return res.status(200).send('refund.processed handled');
 
-      // ◾ refund.failed → failed
       case 'refund.failed':
         await db.update(ordersTable).set({
-          refund_status:    'failed',
-          refund_failed_at: now,
-          updatedAt:        now,
+          refund_status: 'failed',
+          updatedAt:     now,
         }).where(eq(ordersTable.refund_id, entity.id));
         console.log(`❌ refund.failed → failed [${entity.id}]`);
         return res.status(200).send('refund.failed handled');
 
       default:
-        return res.status(200).send('event ignored');
+        return res.status(200).send('Event ignored');
     }
 
   } catch (dbErr) {
