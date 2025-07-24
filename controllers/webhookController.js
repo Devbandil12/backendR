@@ -4,14 +4,12 @@ import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
-// Use bodyParser.raw({ type: 'application/json' }) on this route
 const razorpayWebhookHandler = async (req, res) => {
   console.log("🔔 Razorpay Webhook invoked");
 
-  // 1️⃣ Signature verification
   const signature = req.headers['x-razorpay-signature'];
-  const secret    = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const bodyBuf   = req.body; // Buffer from raw parser
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  const bodyBuf = req.body;
 
   const expected = crypto
     .createHmac('sha256', secret)
@@ -23,16 +21,15 @@ const razorpayWebhookHandler = async (req, res) => {
     return res.status(400).send('Invalid signature');
   }
 
-  // 2️⃣ Parse JSON payload
-  let payload;
+  let parsed;
   try {
-    payload = JSON.parse(bodyBuf.toString('utf8'));
+    parsed = JSON.parse(bodyBuf.toString('utf8'));
   } catch (err) {
     console.error('❌ JSON parse error:', err);
     return res.status(400).send('Invalid JSON');
   }
 
-  const { event, payload: { refund } = {} } = payload;
+  const { event, payload: { refund } = {} } = parsed;
   const entity = refund?.entity;
   if (!event.startsWith('refund.') || !entity) {
     return res.status(200).send('Ignored event');
@@ -44,48 +41,49 @@ const razorpayWebhookHandler = async (req, res) => {
     switch (event) {
       case 'refund.created':
         await db.update(ordersTable).set({
-          refund_status:        'in_progress',
-          refund_initiated_at:  new Date(entity.created_at * 1000).toISOString(),
-          refund_speed:         entity.speed_processed,
-          updatedAt:            now,
+          refund_status: 'in_progress',
+          refund_initiated_at: new Date(entity.created_at * 1000).toISOString(),
+          refund_speed: entity.speed_processed,
+          updatedAt: now,
         }).where(eq(ordersTable.refund_id, entity.id));
         console.log(`🔄 refund.created → in_progress [${entity.id}]`);
-        return res.status(200).send('refund.created handled');
+        break;
 
-      case 'refund.updated':
+      case 'refund.speed_changed':
         await db.update(ordersTable).set({
           refund_speed: entity.speed_processed,
-          updatedAt:    now,
+          updatedAt: now,
         }).where(eq(ordersTable.refund_id, entity.id));
-        console.log(`🔄 refund.updated → speed=${entity.speed_processed} [${entity.id}]`);
-        return res.status(200).send('refund.updated handled');
+        console.log(`🔁 refund.speed_changed → ${entity.speed_processed} [${entity.id}]`);
+        break;
 
       case 'refund.processed':
         await db.update(ordersTable).set({
-          refund_status:       'processed',
+          refund_status: 'processed',
           refund_completed_at: new Date(entity.processed_at * 1000).toISOString(),
-          refund_speed:        entity.speed_processed,
-          paymentStatus:       'refunded',
-          updatedAt:           now,
+          refund_speed: entity.speed_processed,
+          paymentStatus: 'refunded',
+          updatedAt: now,
         }).where(eq(ordersTable.refund_id, entity.id));
         console.log(`✅ refund.processed → processed [${entity.id}]`);
-        return res.status(200).send('refund.processed handled');
+        break;
 
       case 'refund.failed':
         await db.update(ordersTable).set({
           refund_status: 'failed',
-          updatedAt:     now,
+          updatedAt: now,
         }).where(eq(ordersTable.refund_id, entity.id));
         console.log(`❌ refund.failed → failed [${entity.id}]`);
-        return res.status(200).send('refund.failed handled');
+        break;
 
       default:
-        return res.status(200).send('Event ignored');
+        console.log(`ℹ️ Event ignored: ${event}`);
     }
 
+    return res.status(200).send(`Handled ${event}`);
   } catch (dbErr) {
-    console.error('❌ DB update error:', dbErr);
-    return res.status(500).send('Database update failed');
+    console.error('❌ DB error:', dbErr.message);
+    return res.status(500).send('Webhook DB update failed');
   }
 };
 
