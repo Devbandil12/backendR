@@ -19,7 +19,7 @@ export const pollRefunds = async () => {
       .from(ordersTable)
       .where(
         and(
-          eq(ordersTable.refund_status, 'in_progress'),
+          eq(ordersTable.refund_status, 'processed'),
           isNotNull(ordersTable.refund_id)
         )
       );
