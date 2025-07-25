@@ -4,18 +4,18 @@ import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
-
+const safeDate = (timestamp) => {
+  return (timestamp && typeof timestamp === 'number')
+    ? new Date(timestamp * 1000).toISOString()
+    : null;
+};
 
 export const refundOrder = async (req, res) => {
   const razorpay = new Razorpay({
     key_id: process.env.RAZORPAY_ID_KEY,
     key_secret: process.env.RAZORPAY_SECRET_KEY,
   });
-const safeDate = (timestamp) => {
-  return (timestamp && typeof timestamp === 'number')
-    ? new Date(timestamp * 1000).toISOString()
-    : null;
-};
+
 
 
   try {
