@@ -11,6 +11,12 @@ export const refundOrder = async (req, res) => {
     key_id: process.env.RAZORPAY_ID_KEY,
     key_secret: process.env.RAZORPAY_SECRET_KEY,
   });
+const safeDate = (timestamp) => {
+  return (timestamp && typeof timestamp === 'number')
+    ? new Date(timestamp * 1000).toISOString()
+    : null;
+};
+
 
   try {
     const { orderId, amount } = req.body;
@@ -102,10 +108,11 @@ const refund = await razorpay.refunds.fetch(refundInit.id);
         refund_amount: refund.amount,
         refund_status: refund.status,
         refund_speed: refund.speed_processed,
-        refund_initiated_at: new Date(refund.created_at * 1000),
-        refund_completed_at: refund.status === 'processed'
-          ? new Date(refund.processed_at * 1000)
-          : null,
+        refund_initiated_at: safeDate(refund.created_at),
+refund_completed_at: refund.status === 'processed'
+  ? safeDate(refund.processed_at)
+  : null,
+
         updatedAt: new Date().toISOString(),
       })
       .where(eq(ordersTable.id, orderId));
