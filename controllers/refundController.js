@@ -4,11 +4,6 @@ import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
-const safeDate = (timestamp) => {
-  return (timestamp && typeof timestamp === 'number')
-    ? new Date(timestamp * 1000).toISOString()
-    : null;
-};
 
 export const refundOrder = async (req, res) => {
   const razorpay = new Razorpay({
@@ -85,14 +80,6 @@ const refundInit = await razorpay.payments.refund(order.paymentId, {
   speed: 'normal',
 });
 
-// 🛠️ NEW: Save refund_id early to prevent webhook race condition
-await db
-  .update(ordersTable)
-  .set({
-    refund_id: refundInit.id,
-    updatedAt: new Date().toISOString(),
-  })
-  .where(eq(ordersTable.id, orderId));
 
 
 // Step 6: Fetch accurate refund status
@@ -108,9 +95,9 @@ const refund = await razorpay.refunds.fetch(refundInit.id);
         refund_amount: refund.amount,
         refund_status: refund.status,
         refund_speed: refund.speed_processed,
-        refund_initiated_at: safeDate(refund.created_at),
+        refund_initiated_at: new Date(refund.created_at * 1000),
 refund_completed_at: refund.status === 'processed'
-  ? safeDate(refund.processed_at)
+  ? new Date(refund.processed_at * 1000)
   : null,
 
         updatedAt: new Date().toISOString(),
