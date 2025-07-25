@@ -76,8 +76,18 @@ export const refundOrder = async (req, res) => {
     // Step 5: Call refund
 const refundInit = await razorpay.payments.refund(order.paymentId, {
   amount: refundInPaise,
-  speed: 'optimum',
+  speed: 'normal',
 });
+
+// 🛠️ NEW: Save refund_id early to prevent webhook race condition
+await db
+  .update(ordersTable)
+  .set({
+    refund_id: refundInit.id,
+    updatedAt: new Date().toISOString(),
+  })
+  .where(eq(ordersTable.id, orderId));
+
 
 // Step 6: Fetch accurate refund status
 const refund = await razorpay.refunds.fetch(refundInit.id);
