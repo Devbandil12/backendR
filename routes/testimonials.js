@@ -1,6 +1,8 @@
 import express from 'express';
 import { db } from '../configs/index.js';
-import { testimonials } from '../schema.js';
+import { testimonials } from '../configs/schema.js';
+import { eq } from 'drizzle-orm';
+
 import { desc } from 'drizzle-orm';
 
 const router = express.Router();
