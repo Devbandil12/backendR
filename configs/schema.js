@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, uuid, varchar, bytea, PgSerial, timestamp, unique, boolean, } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, integer, uuid, varchar, binary, PgSerial, timestamp, unique, boolean, } from 'drizzle-orm/pg-core';
 
 
 const generateNumericId = () => {
@@ -142,7 +142,7 @@ export const testimonials = pgTable("testimonials", {
   title: text("title"),
   text: text("text").notNull(),
   rating: integer("rating").notNull(),
-  avatar: bytea("avatar"),
+  avatar: binary("avatar"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
