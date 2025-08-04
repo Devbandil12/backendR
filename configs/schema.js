@@ -136,5 +136,15 @@ export const couponsTable = pgTable('coupons', {
 
 });
 
+export const testimonials = pgTable("testimonials", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  title: text("title"),
+  text: text("text").notNull(),
+  rating: integer("rating").notNull(),
+  avatar: bytea("avatar"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
 
 
