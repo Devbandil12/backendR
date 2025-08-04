@@ -9,6 +9,8 @@ import couponsRouter from './routes/coupons.js';
 import addressRoutes from './routes/addressRoutes.js';
 import razorpayWebhookHandler from './controllers/webhookController.js';
 import refundPollerRoute from './routes/refundPollerRoute.js';
+import testimonialRoutes from './routes/testimonials.js';
+
 
 const app = express();
 const server = http.createServer(app);
@@ -45,6 +47,8 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/coupons', couponsRouter);
 app.use('/api/address', addressRoutes);
 app.use('/api/cron', refundPollerRoute);
+app.use('/api/testimonials', testimonialRoutes);
+
 
 
 // ───── Healthcheck & Root ─────
