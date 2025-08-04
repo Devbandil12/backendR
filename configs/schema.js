@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, integer, uuid, varchar, bytea, PgSerial, timestamp, unique, boolean, } from 'drizzle-orm/pg-core';
 
 
 const generateNumericId = () => {
