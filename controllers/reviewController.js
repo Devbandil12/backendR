@@ -1,4 +1,3 @@
-
 import { db } from "../configs/index.js";
 import {
   reviewsTable,
@@ -8,7 +7,7 @@ import {
 } from "../configs/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
-// âœ… Create Review
+// ✅ Create Review
 export const createReview = async (req, res) => {
   try {
     const {
@@ -17,7 +16,7 @@ export const createReview = async (req, res) => {
       comment,
       photoUrls,
       productId,
-      userId, // This could be Clerk ID or internal UUID
+      userId, // Can be Clerk ID or UUID
     } = req.body;
 
     if (!rating || !comment || !productId) {
@@ -25,29 +24,21 @@ export const createReview = async (req, res) => {
     }
 
     let internalUserId = null;
-    
-    // If userId is provided, try to find the user
-    if (userId) {
-      // First try to find by UUID (internal ID)
-      let [user] = await db
-        .select()
-        .from(usersTable)
-        .where(eq(usersTable.id, userId));
 
-      // If not found, try to find by Clerk ID
+    // 🔄 Map Clerk ID to internal UUID if needed
+    if (userId) {
+      let [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+
       if (!user) {
-        [user] = await db
-          .select()
-          .from(usersTable)
-          .where(eq(usersTable.clerkId, userId));
+        [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, userId));
       }
 
       if (user) {
-        internalUserId = user.id;
+        internalUserId = user.id; // UUID from DB
       }
     }
 
-    // ðŸ” Check if user has purchased the product (only if we have a user)
+    // 🔍 Check if user has purchased the product
     let isVerified = false;
     if (internalUserId) {
       const previousPurchases = await db
@@ -64,15 +55,15 @@ export const createReview = async (req, res) => {
       isVerified = previousPurchases.length > 0;
     }
 
-    // ðŸ“ Insert review
+    // 📝 Insert review
     const [review] = await db
       .insert(reviewsTable)
       .values({
-        name: name || 'Anonymous',
+        name: name || "Anonymous",
         userId: internalUserId,
         rating: parseInt(rating),
         comment,
-        photoUrls: photoUrls ? JSON.stringify(photoUrls) : null,
+        photoUrls: Array.isArray(photoUrls) ? photoUrls : [],
         productId,
         isVerifiedBuyer: isVerified,
         createdAt: new Date(),
@@ -82,12 +73,12 @@ export const createReview = async (req, res) => {
 
     res.status(201).json(review);
   } catch (err) {
-    console.error("âŒ Failed to create review:", err);
+    console.error("❌ Failed to create review:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// âœ… Get Reviews By Product
+// ✅ Get Reviews By Product
 export const getReviewsByProduct = async (req, res) => {
   const { productId } = req.params;
 
@@ -107,20 +98,20 @@ export const getReviewsByProduct = async (req, res) => {
       .where(eq(reviewsTable.productId, productId))
       .orderBy(desc(reviewsTable.createdAt));
 
-    // Parse photoUrls JSON string back to array
-    const parsedReviews = reviews.map(review => ({
+    // No need to parse if it's an array in DB
+    const parsedReviews = reviews.map((review) => ({
       ...review,
-      photoUrls: review.photoUrls ? JSON.parse(review.photoUrls) : []
+      photoUrls: Array.isArray(review.photoUrls) ? review.photoUrls : [],
     }));
 
     res.json(parsedReviews);
   } catch (err) {
-    console.error("âŒ Failed to fetch reviews:", err);
+    console.error("❌ Failed to fetch reviews:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// âœ… Get Review Stats
+// ✅ Get Review Stats
 export const getReviewStats = async (req, res) => {
   const { productId } = req.params;
 
@@ -138,12 +129,12 @@ export const getReviewStats = async (req, res) => {
       reviewCount: parseInt(stats.reviewCount || 0),
     });
   } catch (err) {
-    console.error("âŒ Failed to fetch review stats:", err);
+    console.error("❌ Failed to fetch review stats:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// âœ… Check Verified Buyer
+// ✅ Check Verified Buyer
 export const isVerifiedBuyer = async (req, res) => {
   const { userId, productId } = req.query;
 
@@ -152,17 +143,11 @@ export const isVerifiedBuyer = async (req, res) => {
       return res.json({ verified: false });
     }
 
-    // Try to find user by UUID first, then by Clerk ID
-    let [user] = await db
-      .select()
-      .from(usersTable)
-      .where(eq(usersTable.id, userId));
+    // Map Clerk ID to internal UUID
+    let [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
 
     if (!user) {
-      [user] = await db
-        .select()
-        .from(usersTable)
-        .where(eq(usersTable.clerkId, userId));
+      [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, userId));
     }
 
     if (!user) {
@@ -182,12 +167,12 @@ export const isVerifiedBuyer = async (req, res) => {
 
     res.json({ verified: orders.length > 0 });
   } catch (err) {
-    console.error("âŒ Failed to verify purchase:", err);
+    console.error("❌ Failed to verify purchase:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// âœ… Delete Review
+// ✅ Delete Review
 export const deleteReview = async (req, res) => {
   const { id } = req.params;
 
@@ -199,12 +184,12 @@ export const deleteReview = async (req, res) => {
 
     res.json({ success: true, deleted });
   } catch (err) {
-    console.error("âŒ Failed to delete review:", err);
+    console.error("❌ Failed to delete review:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// âœ… Update Review
+// ✅ Update Review
 export const updateReview = async (req, res) => {
   const { id } = req.params;
   const { rating, comment, photoUrls } = req.body;
@@ -215,7 +200,7 @@ export const updateReview = async (req, res) => {
       .set({
         ...(rating && { rating: parseInt(rating) }),
         ...(comment && { comment }),
-        ...(photoUrls && { photoUrls: JSON.stringify(photoUrls) }),
+        ...(photoUrls && { photoUrls }),
         updatedAt: new Date(),
       })
       .where(eq(reviewsTable.id, id))
@@ -223,7 +208,7 @@ export const updateReview = async (req, res) => {
 
     res.json({ success: true, updated });
   } catch (err) {
-    console.error("âŒ Failed to update review:", err);
+    console.error("❌ Failed to update review:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
