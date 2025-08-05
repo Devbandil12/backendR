@@ -1,186 +1,167 @@
-// src/contexts/UserContext.jsx
-import React, { createContext, useState, useEffect } from "react";
-import { useUser } from "@clerk/clerk-react";
-import { db } from "../../configs";
+import { db } from "../configs/index.js";
 import {
-  usersTable,
-  addressTable,
-  UserAddressTable,
-  ordersTable,
+  reviewsTable,
   orderItemsTable,
-  productsTable,
-} from "../../configs/schema";
-import { eq } from "drizzle-orm";
+  ordersTable
+} from "../configs/schema.js";
+import { eq, desc, sql, and } from "drizzle-orm";
 
-// Create the context
-export const UserContext = createContext();
+// Create Review
+export const createReview = async (req, res) => {
+  try {
+    const {
+      name,
+      rating,
+      comment,
+      photoUrls,
+      productId,
+      userId,
+    } = req.body;
 
-export const UserProvider = ({ children }) => {
-  const [userdetails, setUserdetails] = useState(null);
-  const [address, setAddress] = useState([]);
-  const [orders, setOrders] = useState([]);
-  const { user } = useUser();
+    if (!rating || !comment || !productId) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
 
-  // 🔍 Get or Create user in DB
-  const getUserDetail = async () => {
-    try {
-      const email = user?.primaryEmailAddress?.emailAddress;
-      const clerkId = user?.id;
-      const name = `${user?.firstName || ""} ${user?.lastName || ""}`.trim();
+    let isVerified = false;
 
-      if (!email || !clerkId) {
-        console.warn("❌ Clerk user missing email or ID");
-        return;
-      }
-
-      console.log("🔍 Checking for user in DB:", email);
-
-      const res = await db
+    if (userId) {
+      const previousPurchases = await db
         .select()
-        .from(usersTable)
-        .where(eq(usersTable.email, email));
+        .from(orderItemsTable)
+        .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
+        .where(
+          and(
+            eq(ordersTable.userId, userId),
+            eq(orderItemsTable.productId, productId)
+          )
+        );
 
-      if (res.length > 0) {
-        const dbUser = res[0];
-
-        // ✅ Update missing clerkId
-        if (!dbUser.clerkId) {
-          await db
-            .update(usersTable)
-            .set({ clerkId })
-            .where(eq(usersTable.id, dbUser.id));
-
-          dbUser.clerkId = clerkId;
-          console.log("🛠️ Added missing Clerk ID to user.");
-        }
-
-        setUserdetails(dbUser);
-      } else {
-        // 🆕 New user insert
-        const [newUser] = await db
-          .insert(usersTable)
-          .values({
-            name,
-            email,
-            role: "user",
-            cartLength: 0,
-            clerkId,
-          })
-          .returning();
-
-        console.log("✅ New user inserted into DB");
-        setUserdetails(newUser);
-      }
-    } catch (err) {
-      console.error("❌ Error getting/creating user:", err);
+      isVerified = previousPurchases.length > 0;
     }
-  };
 
-  // 📦 Get user's orders
-  const getMyOrders = async () => {
-    if (!userdetails?.id) return;
+    const [review] = await db
+      .insert(reviewsTable)
+      .values({
+        name,
+        userId,
+        rating: parseInt(rating),
+        comment,
+        photoUrls,
+        productId,
+        isVerifiedBuyer: isVerified,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
 
-    try {
-      const res = await db
-        .select({
-          orderId: ordersTable.id,
-          totalAmount: ordersTable.totalAmount,
-          status: ordersTable.status,
-          paymentMode: ordersTable.paymentMode,
-          paymentStatus: ordersTable.paymentStatus,
-          createdAt: ordersTable.createdAt,
-          productId: orderItemsTable.productId,
-          quantity: orderItemsTable.quantity,
-          price: orderItemsTable.price,
-          productName: productsTable.name,
-          productImage: productsTable.imageurl,
-        })
-        .from(ordersTable)
-        .innerJoin(orderItemsTable, eq(ordersTable.id, orderItemsTable.orderId))
-        .innerJoin(productsTable, eq(orderItemsTable.productId, productsTable.id))
-        .where(eq(ordersTable.userId, userdetails.id))
-        .orderBy(ordersTable.createdAt);
+    res.status(201).json(review);
+  } catch (err) {
+    console.error("❌ Failed to create review:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
 
-      const groupedOrders = res.reduce((acc, item) => {
-        const orderId = item.orderId;
-        if (!acc[orderId]) {
-          acc[orderId] = {
-            orderId: item.orderId,
-            totalAmount: item.totalAmount,
-            status: item.status,
-            createdAt: item.createdAt,
-            paymentStatus: item.paymentStatus,
-            paymentMode: item.paymentMode,
-            items: [],
-          };
-        }
-        acc[orderId].items.push({
-          productId: item.productId,
-          productName: item.productName,
-          productImage: item.productImage,
-          quantity: item.quantity,
-          price: item.price,
-        });
-        return acc;
-      }, {});
+// Get Reviews By Product
+export const getReviewsByProduct = async (req, res) => {
+  const { productId } = req.params;
 
-      setOrders(Object.values(groupedOrders));
-    } catch (error) {
-      console.error("❌ Failed to get orders:", error);
-    }
-  };
+  try {
+    const reviews = await db
+      .select()
+      .from(reviewsTable)
+      .where(eq(reviewsTable.productId, productId))
+      .orderBy(desc(reviewsTable.createdAt));
 
-  // 🏠 Get legacy address (optional)
-  const getAddress = async () => {
-    try {
-      const res = await db
-        .select()
-        .from(addressTable)
-        .where(eq(addressTable.userId, userdetails?.id));
-      console.log("🏠 Address (legacy):", res);
-    } catch (error) {
-      console.error("❌ Failed to get address:", error);
-    }
-  };
+    res.json(reviews);
+  } catch (err) {
+    console.error("❌ Failed to fetch reviews:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
 
-  // 🏠 Get user addresses
-  const getUserAddress = async () => {
-    try {
-      const res = await db
-        .select()
-        .from(UserAddressTable)
-        .where(eq(UserAddressTable.userId, userdetails?.id));
-      setAddress(res);
-    } catch (error) {
-      console.error("❌ Failed to get user address:", error);
-    }
-  };
+// Get Review Stats
+export const getReviewStats = async (req, res) => {
+  const { productId } = req.params;
 
-  // ⏳ Run on Clerk load
-  useEffect(() => {
-    if (user) getUserDetail();
-  }, [user]);
+  try {
+    const [stats] = await db
+      .select({
+        averageRating: sql`ROUND(AVG(${reviewsTable.rating})::numeric, 1)`,
+        reviewCount: sql`COUNT(*)`,
+      })
+      .from(reviewsTable)
+      .where(eq(reviewsTable.productId, productId));
 
-  // ⏳ Run once userdetails is set
-  useEffect(() => {
-    if (userdetails) {
-      getMyOrders();
-      getAddress();
-      getUserAddress();
-    }
-  }, [userdetails]);
+    res.json({
+      averageRating: parseFloat(stats.averageRating || 0),
+      reviewCount: parseInt(stats.reviewCount || 0),
+    });
+  } catch (err) {
+    console.error("❌ Failed to fetch review stats:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
 
-  return (
-    <UserContext.Provider
-      value={{
-        userdetails,
-        setUserdetails,
-        orders,
-        address,
-        setAddress,
-      }}
-    >
-      {children}
-    </UserContext.Provider>
-  );
+// Check Verified Buyer
+export const isVerifiedBuyer = async (req, res) => {
+  const { userId, productId } = req.query;
+
+  try {
+    const orders = await db
+      .select()
+      .from(orderItemsTable)
+      .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
+      .where(
+        and(
+          eq(ordersTable.userId, userId),
+          eq(orderItemsTable.productId, productId)
+        )
+      );
+
+    res.json({ verified: orders.length > 0 });
+  } catch (err) {
+    console.error("❌ Failed to verify purchase:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// Delete Review
+export const deleteReview = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const deleted = await db
+      .delete(reviewsTable)
+      .where(eq(reviewsTable.id, id))
+      .returning();
+
+    res.json({ success: true, deleted });
+  } catch (err) {
+    console.error("❌ Failed to delete review:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// Update Review
+export const updateReview = async (req, res) => {
+  const { id } = req.params;
+  const { rating, comment, photoUrls } = req.body;
+
+  try {
+    const updated = await db
+      .update(reviewsTable)
+      .set({
+        ...(rating && { rating: parseInt(rating) }),
+        ...(comment && { comment }),
+        ...(photoUrls && { photoUrls }),
+        updatedAt: new Date(),
+      })
+      .where(eq(reviewsTable.id, id))
+      .returning();
+
+    res.json({ success: true, updated });
+  } catch (err) {
+    console.error("❌ Failed to update review:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 };
