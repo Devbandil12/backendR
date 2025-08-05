@@ -2,11 +2,12 @@ import { db } from "../configs/index.js";
 import {
   reviewsTable,
   orderItemsTable,
-  ordersTable
+  ordersTable,
+  usersTable, // ✅ Needed for Clerk ID to UUID mapping
 } from "../configs/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
-// Create Review
+// ✅ Create Review
 export const createReview = async (req, res) => {
   try {
     const {
@@ -15,35 +16,45 @@ export const createReview = async (req, res) => {
       comment,
       photoUrls,
       productId,
-      userId,
+      userId, // Clerk ID
     } = req.body;
 
-    if (!rating || !comment || !productId) {
+    if (!rating || !comment || !productId || !userId) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    let isVerified = false;
+    // 🔄 Find user UUID from Clerk ID
+    const [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.clerkId, userId));
 
-    if (userId) {
-      const previousPurchases = await db
-        .select()
-        .from(orderItemsTable)
-        .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
-        .where(
-          and(
-            eq(ordersTable.userId, userId),
-            eq(orderItemsTable.productId, productId)
-          )
-        );
-
-      isVerified = previousPurchases.length > 0;
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
     }
 
+    const internalUserId = user.id;
+
+    // 🔍 Check if user has purchased the product
+    const previousPurchases = await db
+      .select()
+      .from(orderItemsTable)
+      .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
+      .where(
+        and(
+          eq(ordersTable.userId, internalUserId),
+          eq(orderItemsTable.productId, productId)
+        )
+      );
+
+    const isVerified = previousPurchases.length > 0;
+
+    // 📝 Insert review
     const [review] = await db
       .insert(reviewsTable)
       .values({
         name,
-        userId,
+        userId: internalUserId, // ✅ UUID, not Clerk ID
         rating: parseInt(rating),
         comment,
         photoUrls,
@@ -61,7 +72,7 @@ export const createReview = async (req, res) => {
   }
 };
 
-// Get Reviews By Product
+// ✅ Get Reviews By Product
 export const getReviewsByProduct = async (req, res) => {
   const { productId } = req.params;
 
@@ -79,7 +90,7 @@ export const getReviewsByProduct = async (req, res) => {
   }
 };
 
-// Get Review Stats
+// ✅ Get Review Stats
 export const getReviewStats = async (req, res) => {
   const { productId } = req.params;
 
@@ -102,18 +113,30 @@ export const getReviewStats = async (req, res) => {
   }
 };
 
-// Check Verified Buyer
+// ✅ Check Verified Buyer
 export const isVerifiedBuyer = async (req, res) => {
-  const { userId, productId } = req.query;
+  const { userId, productId } = req.query; // Clerk ID
 
   try {
+    // 🔄 Map Clerk ID to UUID
+    const [user] = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.clerkId, userId));
+
+    if (!user) {
+      return res.json({ verified: false });
+    }
+
+    const internalUserId = user.id;
+
     const orders = await db
       .select()
       .from(orderItemsTable)
       .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
       .where(
         and(
-          eq(ordersTable.userId, userId),
+          eq(ordersTable.userId, internalUserId),
           eq(orderItemsTable.productId, productId)
         )
       );
@@ -125,7 +148,7 @@ export const isVerifiedBuyer = async (req, res) => {
   }
 };
 
-// Delete Review
+// ✅ Delete Review
 export const deleteReview = async (req, res) => {
   const { id } = req.params;
 
@@ -142,7 +165,7 @@ export const deleteReview = async (req, res) => {
   }
 };
 
-// Update Review
+// ✅ Update Review
 export const updateReview = async (req, res) => {
   const { id } = req.params;
   const { rating, comment, photoUrls } = req.body;
