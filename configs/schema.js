@@ -148,14 +148,28 @@ export const testimonials = pgTable("testimonials", {
 
 
 
+
 export const reviewsTable = pgTable('product_reviews', {
   id: uuid('id').defaultRandom().primaryKey(),
+
   productId: uuid('product_id')
     .notNull()
     .references(() => productsTable.id, { onDelete: 'cascade' }),
-  name: text('name').notNull(), // name of the reviewer
+
+  userId: uuid('user_id')
+    .references(() => usersTable.id, { onDelete: 'set null' }),
+
+  name: text('name').notNull(),
+
   rating: integer('rating').notNull(), // 1–5
+
   comment: text('comment').notNull(),
-  photoUrl: varchar('photo_url', { length: 1000 }), // optional image
+
+  photoUrls: text('photo_urls').array(), // ✅ supports multiple images
+
+  isVerifiedBuyer: boolean('is_verified_buyer').default(false),
+
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
