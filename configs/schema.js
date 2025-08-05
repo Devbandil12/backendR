@@ -11,6 +11,7 @@ const generateNumericId = () => {
 
 export const usersTable = pgTable('users', {
   id: uuid("id").defaultRandom().primaryKey(),
+clerkId: text("clerk_id").notNull().unique(), 
   name: text('name').notNull(),
   phone: text('phone').default(null),
   email: text('email').notNull(),
@@ -156,8 +157,7 @@ export const reviewsTable = pgTable('product_reviews', {
     .notNull()
     .references(() => productsTable.id, { onDelete: 'cascade' }),
 
-  userId: text('user_id'),
-
+  userId: uuid('user_id').notNull().references(() => usersTable.id), 
   name: text('name').notNull(),
 
   rating: integer('rating').notNull(), // 1–5
