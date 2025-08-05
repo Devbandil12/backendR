@@ -1,5 +1,9 @@
 import { db } from "../configs/index.js";
-import { reviewsTable, orderItemsTable } from "../configs/schema.js";
+import {
+  reviewsTable,
+  orderItemsTable,
+  ordersTable
+} from "../configs/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
 // Create Review
@@ -24,12 +28,14 @@ export const createReview = async (req, res) => {
       const previousPurchases = await db
         .select()
         .from(orderItemsTable)
+        .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
         .where(
           and(
-            eq(orderItemsTable.userId, userId),
+            eq(ordersTable.userId, userId),
             eq(orderItemsTable.productId, productId)
           )
         );
+
       isVerified = previousPurchases.length > 0;
     }
 
@@ -43,8 +49,8 @@ export const createReview = async (req, res) => {
         photoUrls,
         productId,
         isVerifiedBuyer: isVerified,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
       })
       .returning();
 
@@ -104,9 +110,10 @@ export const isVerifiedBuyer = async (req, res) => {
     const orders = await db
       .select()
       .from(orderItemsTable)
+      .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
       .where(
         and(
-          eq(orderItemsTable.userId, userId),
+          eq(ordersTable.userId, userId),
           eq(orderItemsTable.productId, productId)
         )
       );
@@ -123,7 +130,11 @@ export const deleteReview = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const deleted = await db.delete(reviewsTable).where(eq(reviewsTable.id, id)).returning();
+    const deleted = await db
+      .delete(reviewsTable)
+      .where(eq(reviewsTable.id, id))
+      .returning();
+
     res.json({ success: true, deleted });
   } catch (err) {
     console.error("❌ Failed to delete review:", err);
@@ -143,7 +154,7 @@ export const updateReview = async (req, res) => {
         ...(rating && { rating: parseInt(rating) }),
         ...(comment && { comment }),
         ...(photoUrls && { photoUrls }),
-        updatedAt: new Date().toISOString(),
+        updatedAt: new Date(),
       })
       .where(eq(reviewsTable.id, id))
       .returning();
