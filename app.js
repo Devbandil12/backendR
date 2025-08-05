@@ -10,6 +10,9 @@ import addressRoutes from './routes/addressRoutes.js';
 import razorpayWebhookHandler from './controllers/webhookController.js';
 import refundPollerRoute from './routes/refundPollerRoute.js';
 import testimonialRoutes from './routes/testimonials.js';
+import reviewRoutes from './routes/reviewRoutes.js';
+
+
 
 
 const app = express();
@@ -49,6 +52,7 @@ app.use('/api/coupons', couponsRouter);
 app.use('/api/address', addressRoutes);
 app.use('/api/cron', refundPollerRoute);
 app.use('/api/testimonials', testimonialRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 
 
