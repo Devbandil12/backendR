@@ -1,5 +1,5 @@
-import { db } from "../db.js";
-import { reviewsTable } from "../schema.js";
+import { db } from "../configs/index.js";
+import { reviewsTable } from "../configs/schema.js";
 import { eq, desc, sql } from "drizzle-orm";
 
 export const createReview = async (req, res) => {
