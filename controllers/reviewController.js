@@ -1,4 +1,4 @@
-// contexts/UserContext.jsx
+// src/contexts/UserContext.jsx
 import React, { createContext, useState, useEffect } from "react";
 import { useUser } from "@clerk/clerk-react";
 import { db } from "../../configs";
@@ -12,6 +12,7 @@ import {
 } from "../../configs/schema";
 import { eq } from "drizzle-orm";
 
+// Create the context
 export const UserContext = createContext();
 
 export const UserProvider = ({ children }) => {
@@ -78,6 +79,7 @@ export const UserProvider = ({ children }) => {
   // 📦 Get user's orders
   const getMyOrders = async () => {
     if (!userdetails?.id) return;
+
     try {
       const res = await db
         .select({
@@ -99,9 +101,10 @@ export const UserProvider = ({ children }) => {
         .where(eq(ordersTable.userId, userdetails.id))
         .orderBy(ordersTable.createdAt);
 
-      const grouped = res.reduce((acc, item) => {
-        if (!acc[item.orderId]) {
-          acc[item.orderId] = {
+      const groupedOrders = res.reduce((acc, item) => {
+        const orderId = item.orderId;
+        if (!acc[orderId]) {
+          acc[orderId] = {
             orderId: item.orderId,
             totalAmount: item.totalAmount,
             status: item.status,
@@ -111,7 +114,7 @@ export const UserProvider = ({ children }) => {
             items: [],
           };
         }
-        acc[item.orderId].items.push({
+        acc[orderId].items.push({
           productId: item.productId,
           productName: item.productName,
           productImage: item.productImage,
@@ -121,34 +124,48 @@ export const UserProvider = ({ children }) => {
         return acc;
       }, {});
 
-      setOrders(Object.values(grouped));
+      setOrders(Object.values(groupedOrders));
     } catch (error) {
       console.error("❌ Failed to get orders:", error);
     }
   };
 
-  // 🏠 UserAddress Table
+  // 🏠 Get legacy address (optional)
+  const getAddress = async () => {
+    try {
+      const res = await db
+        .select()
+        .from(addressTable)
+        .where(eq(addressTable.userId, userdetails?.id));
+      console.log("🏠 Address (legacy):", res);
+    } catch (error) {
+      console.error("❌ Failed to get address:", error);
+    }
+  };
+
+  // 🏠 Get user addresses
   const getUserAddress = async () => {
     try {
       const res = await db
         .select()
         .from(UserAddressTable)
         .where(eq(UserAddressTable.userId, userdetails?.id));
-
       setAddress(res);
     } catch (error) {
       console.error("❌ Failed to get user address:", error);
     }
   };
 
-  // ⏳ Effects
+  // ⏳ Run on Clerk load
   useEffect(() => {
     if (user) getUserDetail();
   }, [user]);
 
+  // ⏳ Run once userdetails is set
   useEffect(() => {
     if (userdetails) {
       getMyOrders();
+      getAddress();
       getUserAddress();
     }
   }, [userdetails]);
