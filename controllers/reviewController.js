@@ -81,93 +81,111 @@ export const createReview = async (req, res) => {
 };
 
 // ✅ Get Reviews By Product — with optional star rating filter
+
 export const getReviewsByProduct = async (req, res) => {
-  const { productId } = req.params;
-  const { rating, page = 1, limit = 10 } = req.query;
+  const { productId } = req.params;
+  const {
+    rating,
+    limit = 10,
+    cursor, // ISO timestamp string
+  } = req.query;
 
-  const parsedPage = parseInt(page, 10);
-  const parsedLimit = parseInt(limit, 10);
-  const offset = (parsedPage - 1) * parsedLimit;
+  const parsedLimit = Math.min(parseInt(limit, 10) || 10, 50); // Limit max per request
+  const parsedRating = rating ? parseInt(rating, 10) : null;
 
-  try {
-    // Base WHERE condition
-    let whereClause = eq(reviewsTable.productId, productId);
+  try {
+    // 🧱 Base WHERE clause
+    let baseWhere = eq(reviewsTable.productId, productId);
 
-    // Add optional rating filter
-    if (rating) {
-      whereClause = and(
-        eq(reviewsTable.productId, productId),
-        eq(reviewsTable.rating, parseInt(rating))
-      );
-    }
+    if (parsedRating) {
+      baseWhere = and(
+        baseWhere,
+        eq(reviewsTable.rating, parsedRating)
+      );
+    }
 
-    // Get total review count (for pagination UI)
-    const countResult = await db
-      .select({ count: sql`COUNT(*)` })
-      .from(reviewsTable)
-      .where(whereClause);
+    // 🧭 Cursor condition (createdAt < cursor)
+    let fullWhere = baseWhere;
+    if (cursor) {
+      const cursorDate = new Date(decodeURIComponent(cursor));
+      fullWhere = and(
+        baseWhere,
+        sql`${reviewsTable.createdAt} < ${cursorDate.toISOString()}`
+      );
+    }
 
-    const totalReviews = parseInt(countResult[0]?.count || 0);
-    const totalPages = Math.ceil(totalReviews / parsedLimit);
+    // 🚀 Fetch reviews with cursor-based pagination
+    const reviews = await db
+      .select({
+        id: reviewsTable.id,
+        name: reviewsTable.name,
+        userId: reviewsTable.userId,
+        rating: reviewsTable.rating,
+        comment: reviewsTable.comment,
+        photoUrls: reviewsTable.photoUrls,
+        isVerifiedBuyer: reviewsTable.isVerifiedBuyer,
+        createdAt: reviewsTable.createdAt,
+      })
+      .from(reviewsTable)
+      .where(fullWhere)
+      .orderBy(desc(reviewsTable.createdAt))
+      .limit(parsedLimit);
 
-// 🔧 Get all ratings for the product (regardless of filter or pagination)
-const allRatings = await db
-  .select({ rating: reviewsTable.rating })
-  .from(reviewsTable)
-  .where(eq(reviewsTable.productId, productId));
+    // 📊 Fetch review stats in ONE fast SQL query
+    const [stats] = await db.execute(sql`
+      SELECT
+        COUNT(*) AS total_reviews,
+        ROUND(AVG(rating)::numeric, 1) AS average_rating,
+        COUNT(*) FILTER (WHERE rating = 5) AS five_star,
+        COUNT(*) FILTER (WHERE rating = 4) AS four_star,
+        COUNT(*) FILTER (WHERE rating = 3) AS three_star,
+        COUNT(*) FILTER (WHERE rating = 2) AS two_star,
+        COUNT(*) FILTER (WHERE rating = 1) AS one_star
+      FROM product_reviews
+      WHERE product_id = ${productId}
+    `);
 
-// 🔢 Calculate ratingCounts and averageRating
-const ratingCounts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-let ratingSum = 0;
+    const totalReviews = parseInt(stats.total_reviews || 0);
+    const averageRating = parseFloat(stats.average_rating || 0);
 
-allRatings.forEach((r) => {
-  const rate = r.rating;
-  ratingCounts[rate] += 1;
-  ratingSum += rate;
-});
+    const ratingCounts = {
+      5: parseInt(stats.five_star || 0),
+      4: parseInt(stats.four_star || 0),
+      3: parseInt(stats.three_star || 0),
+      2: parseInt(stats.two_star || 0),
+      1: parseInt(stats.one_star || 0),
+    };
 
-const averageRating = allRatings.length
-  ? parseFloat((ratingSum / allRatings.length).toFixed(1))
-  : 0;
+    // 🧭 Set next cursor (for frontend)
+    const lastReview = reviews[reviews.length - 1];
+    const nextCursor = lastReview
+      ? encodeURIComponent(lastReview.createdAt.toISOString())
+      : null;
 
+    // 🧼 Sanitize photo URLs
+    const parsedReviews = reviews.map((r) => ({
+      ...r,
+      photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
+    }));
 
-    // Fetch paginated reviews
-    const reviews = await db
-      .select({
-        id: reviewsTable.id,
-        name: reviewsTable.name,
-        userId: reviewsTable.userId,
-        rating: reviewsTable.rating,
-        comment: reviewsTable.comment,
-        photoUrls: reviewsTable.photoUrls,
-        isVerifiedBuyer: reviewsTable.isVerifiedBuyer,
-        createdAt: reviewsTable.createdAt,
-      })
-      .from(reviewsTable)
-      .where(whereClause)
-      .orderBy(desc(reviewsTable.createdAt))
-      .limit(parsedLimit)
-      .offset(offset);
+    // ✅ Return response
+    return res.json({
+      reviews: parsedReviews,
+      totalReviews,
+      averageRating,
+      ratingCounts,
+      nextCursor,
+      hasMore: reviews.length === parsedLimit,
+    });
 
-    const parsedReviews = reviews.map((review) => ({
-      ...review,
-      photoUrls: Array.isArray(review.photoUrls) ? review.photoUrls : [],
-    }));
-
-    res.json({
-  reviews: parsedReviews,
-  totalReviews,
-  totalPages,
-  currentPage: parsedPage,
-  averageRating,
-  ratingCounts,
-});
-
-  } catch (err) {
-    console.error("❌ Failed to fetch reviews:", err);
-    res.status(500).json({ error: "Server error" });
-  }
+  } catch (err) {
+    console.error("❌ Error in getReviewsByProduct:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 };
+
+
+
 
 // ✅ Get Review Stats
 export const getReviewStats = async (req, res) => {
