@@ -7,6 +7,36 @@ import {
 } from "../configs/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
+// 🔧 Helper: Map Clerk ID or UUID → internal UUID
+const resolveUserId = async (userId) => {
+  if (!userId) return null;
+
+  let [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+  if (!user) {
+    [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, userId));
+  }
+
+  return user ? user.id : null;
+};
+
+// 🔧 Helper: Check if user has purchased a product
+const hasPurchasedProduct = async (internalUserId, productId) => {
+  if (!internalUserId || !productId) return false;
+
+  const purchases = await db
+    .select()
+    .from(orderItemsTable)
+    .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
+    .where(
+      and(
+        eq(ordersTable.userId, internalUserId),
+        eq(orderItemsTable.productId, productId)
+      )
+    );
+
+  return purchases.length > 0;
+};
+
 // ✅ Create Review
 export const createReview = async (req, res) => {
   try {
@@ -16,46 +46,16 @@ export const createReview = async (req, res) => {
       comment,
       photoUrls,
       productId,
-      userId, // Can be Clerk ID or UUID
+      userId, // Clerk ID or UUID
     } = req.body;
 
     if (!rating || !comment || !productId) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    let internalUserId = null;
+    const internalUserId = await resolveUserId(userId);
+    const isVerified = await hasPurchasedProduct(internalUserId, productId);
 
-    // 🔄 Map Clerk ID to internal UUID if needed
-    if (userId) {
-      let [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
-
-      if (!user) {
-        [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, userId));
-      }
-
-      if (user) {
-        internalUserId = user.id; // UUID from DB
-      }
-    }
-
-    // 🔍 Check if user has purchased the product
-    let isVerified = false;
-    if (internalUserId) {
-      const previousPurchases = await db
-        .select()
-        .from(orderItemsTable)
-        .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
-        .where(
-          and(
-            eq(ordersTable.userId, internalUserId),
-            eq(orderItemsTable.productId, productId)
-          )
-        );
-
-      isVerified = previousPurchases.length > 0;
-    }
-
-    // 📝 Insert review
     const [review] = await db
       .insert(reviewsTable)
       .values({
@@ -78,12 +78,13 @@ export const createReview = async (req, res) => {
   }
 };
 
-// ✅ Get Reviews By Product
+// ✅ Get Reviews By Product — with optional star rating filter
 export const getReviewsByProduct = async (req, res) => {
   const { productId } = req.params;
+  const { rating } = req.query;
 
   try {
-    const reviews = await db
+    let query = db
       .select({
         id: reviewsTable.id,
         name: reviewsTable.name,
@@ -95,10 +96,20 @@ export const getReviewsByProduct = async (req, res) => {
         createdAt: reviewsTable.createdAt,
       })
       .from(reviewsTable)
-      .where(eq(reviewsTable.productId, productId))
-      .orderBy(desc(reviewsTable.createdAt));
+      .where(eq(reviewsTable.productId, productId));
 
-    // No need to parse if it's an array in DB
+    // Optional: filter by star rating
+    if (rating) {
+      query = query.where(
+        and(
+          eq(reviewsTable.productId, productId),
+          eq(reviewsTable.rating, parseInt(rating))
+        )
+      );
+    }
+
+    const reviews = await query.orderBy(desc(reviewsTable.createdAt));
+
     const parsedReviews = reviews.map((review) => ({
       ...review,
       photoUrls: Array.isArray(review.photoUrls) ? review.photoUrls : [],
@@ -125,8 +136,8 @@ export const getReviewStats = async (req, res) => {
       .where(eq(reviewsTable.productId, productId));
 
     res.json({
-      averageRating: parseFloat(stats.averageRating || 0),
-      reviewCount: parseInt(stats.reviewCount || 0),
+      averageRating: parseFloat(stats?.averageRating || 0),
+      reviewCount: parseInt(stats?.reviewCount || 0),
     });
   } catch (err) {
     console.error("❌ Failed to fetch review stats:", err);
@@ -139,33 +150,9 @@ export const isVerifiedBuyer = async (req, res) => {
   const { userId, productId } = req.query;
 
   try {
-    if (!userId) {
-      return res.json({ verified: false });
-    }
-
-    // Map Clerk ID to internal UUID
-    let [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
-
-    if (!user) {
-      [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, userId));
-    }
-
-    if (!user) {
-      return res.json({ verified: false });
-    }
-
-    const orders = await db
-      .select()
-      .from(orderItemsTable)
-      .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
-      .where(
-        and(
-          eq(ordersTable.userId, user.id),
-          eq(orderItemsTable.productId, productId)
-        )
-      );
-
-    res.json({ verified: orders.length > 0 });
+    const internalUserId = await resolveUserId(userId);
+    const isVerified = await hasPurchasedProduct(internalUserId, productId);
+    res.json({ verified: isVerified });
   } catch (err) {
     console.error("❌ Failed to verify purchase:", err);
     res.status(500).json({ error: "Server error" });
@@ -189,18 +176,30 @@ export const deleteReview = async (req, res) => {
   }
 };
 
-// ✅ Update Review
+// ✅ Update Review — includes rechecking isVerifiedBuyer
 export const updateReview = async (req, res) => {
   const { id } = req.params;
   const { rating, comment, photoUrls } = req.body;
 
   try {
+    const [existing] = await db
+      .select()
+      .from(reviewsTable)
+      .where(eq(reviewsTable.id, id));
+
+    if (!existing) {
+      return res.status(404).json({ error: "Review not found" });
+    }
+
+    const isVerified = await hasPurchasedProduct(existing.userId, existing.productId);
+
     const updated = await db
       .update(reviewsTable)
       .set({
         ...(rating && { rating: parseInt(rating) }),
         ...(comment && { comment }),
         ...(photoUrls && { photoUrls }),
+        isVerifiedBuyer: isVerified,
         updatedAt: new Date(),
       })
       .where(eq(reviewsTable.id, id))
