@@ -87,24 +87,19 @@ export const getReviewsByProduct = async (req, res) => {
   const {
     rating,
     limit = 10,
-    cursor, // ISO timestamp string
+    cursor, // ISO string for createdAt pagination
   } = req.query;
 
-  const parsedLimit = Math.min(parseInt(limit, 10) || 10, 50); // Limit max per request
+  const parsedLimit = Math.min(parseInt(limit, 10) || 10, 50);
   const parsedRating = rating ? parseInt(rating, 10) : null;
 
   try {
-    // 🧱 Base WHERE clause
+    // 🧱 Build WHERE clause
     let baseWhere = eq(reviewsTable.productId, productId);
-
     if (parsedRating) {
-      baseWhere = and(
-        baseWhere,
-        eq(reviewsTable.rating, parsedRating)
-      );
+      baseWhere = and(baseWhere, eq(reviewsTable.rating, parsedRating));
     }
 
-    // 🧭 Cursor condition (createdAt < cursor)
     let fullWhere = baseWhere;
     if (cursor) {
       const cursorDate = new Date(decodeURIComponent(cursor));
@@ -114,7 +109,7 @@ export const getReviewsByProduct = async (req, res) => {
       );
     }
 
-    // 🚀 Fetch reviews with cursor-based pagination
+    // 🔎 Fetch paginated reviews
     const reviews = await db
       .select({
         id: reviewsTable.id,
@@ -131,32 +126,32 @@ export const getReviewsByProduct = async (req, res) => {
       .orderBy(desc(reviewsTable.createdAt))
       .limit(parsedLimit);
 
-    // 📊 Fetch review stats in ONE fast SQL query
-    const [stats] = await db.execute(sql`
-      SELECT
-        COUNT(*) AS total_reviews,
-        ROUND(AVG(rating)::numeric, 1) AS average_rating,
-        COUNT(*) FILTER (WHERE rating = 5) AS five_star,
-        COUNT(*) FILTER (WHERE rating = 4) AS four_star,
-        COUNT(*) FILTER (WHERE rating = 3) AS three_star,
-        COUNT(*) FILTER (WHERE rating = 2) AS two_star,
-        COUNT(*) FILTER (WHERE rating = 1) AS one_star
-      FROM product_reviews
-      WHERE product_id = ${productId}
-    `);
-
-    const totalReviews = parseInt(stats.total_reviews || 0);
-    const averageRating = parseFloat(stats.average_rating || 0);
+    // 📊 Review statistics using Drizzle-style SQL
+    const [stats] = await db
+      .select({
+        average_rating: sql`ROUND(AVG(${reviewsTable.rating})::numeric, 1)`.as("average_rating"),
+        one_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 1)`.as("one_star"),
+        two_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 2)`.as("two_star"),
+        three_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 3)`.as("three_star"),
+        four_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 4)`.as("four_star"),
+        five_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 5)`.as("five_star"),
+        total_reviews: sql`COUNT(*)`.as("total_reviews"),
+      })
+      .from(reviewsTable)
+      .where(eq(reviewsTable.productId, productId));
 
     const ratingCounts = {
-      5: parseInt(stats.five_star || 0),
-      4: parseInt(stats.four_star || 0),
-      3: parseInt(stats.three_star || 0),
-      2: parseInt(stats.two_star || 0),
-      1: parseInt(stats.one_star || 0),
+      1: Number(stats.one_star || 0),
+      2: Number(stats.two_star || 0),
+      3: Number(stats.three_star || 0),
+      4: Number(stats.four_star || 0),
+      5: Number(stats.five_star || 0),
     };
 
-    // 🧭 Set next cursor (for frontend)
+    const averageRating = Number(stats.average_rating || 0);
+    const totalReviews = Number(stats.total_reviews || 0);
+
+    // 🔁 Cursor pagination
     const lastReview = reviews[reviews.length - 1];
     const nextCursor = lastReview
       ? encodeURIComponent(lastReview.createdAt.toISOString())
@@ -168,7 +163,7 @@ export const getReviewsByProduct = async (req, res) => {
       photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
     }));
 
-    // ✅ Return response
+    // ✅ Response
     return res.json({
       reviews: parsedReviews,
       totalReviews,
@@ -177,10 +172,9 @@ export const getReviewsByProduct = async (req, res) => {
       nextCursor,
       hasMore: reviews.length === parsedLimit,
     });
-
   } catch (err) {
     console.error("❌ Error in getReviewsByProduct:", err);
-    res.status(500).json({ error: "Server error" });
+    return res.status(500).json({ error: "Server error" });
   }
 };
 
