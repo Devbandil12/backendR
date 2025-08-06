@@ -110,6 +110,27 @@ export const getReviewsByProduct = async (req, res) => {
     const totalReviews = parseInt(countResult[0]?.count || 0);
     const totalPages = Math.ceil(totalReviews / parsedLimit);
 
+// 🔧 Get all ratings for the product (regardless of filter or pagination)
+const allRatings = await db
+  .select({ rating: reviewsTable.rating })
+  .from(reviewsTable)
+  .where(eq(reviewsTable.productId, productId));
+
+// 🔢 Calculate ratingCounts and averageRating
+const ratingCounts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+let ratingSum = 0;
+
+allRatings.forEach((r) => {
+  const rate = r.rating;
+  ratingCounts[rate] += 1;
+  ratingSum += rate;
+});
+
+const averageRating = allRatings.length
+  ? parseFloat((ratingSum / allRatings.length).toFixed(1))
+  : 0;
+
+
     // Fetch paginated reviews
     const reviews = await db
       .select({
@@ -134,11 +155,14 @@ export const getReviewsByProduct = async (req, res) => {
     }));
 
     res.json({
-      reviews: parsedReviews,
-      totalReviews,
-      totalPages,
-      currentPage: parsedPage,
-    });
+  reviews: parsedReviews,
+  totalReviews,
+  totalPages,
+  currentPage: parsedPage,
+  averageRating,
+  ratingCounts,
+});
+
   } catch (err) {
     console.error("❌ Failed to fetch reviews:", err);
     res.status(500).json({ error: "Server error" });
