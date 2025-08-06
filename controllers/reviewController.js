@@ -83,10 +83,35 @@ export const createReview = async (req, res) => {
 // ✅ Get Reviews By Product — with optional star rating filter
 export const getReviewsByProduct = async (req, res) => {
   const { productId } = req.params;
-  const { rating } = req.query;
+  const { rating, page = 1, limit = 10 } = req.query;
+
+  const parsedPage = parseInt(page, 10);
+  const parsedLimit = parseInt(limit, 10);
+  const offset = (parsedPage - 1) * parsedLimit;
 
   try {
-    let query = db
+    // Base WHERE condition
+    let whereClause = eq(reviewsTable.productId, productId);
+
+    // Add optional rating filter
+    if (rating) {
+      whereClause = and(
+        eq(reviewsTable.productId, productId),
+        eq(reviewsTable.rating, parseInt(rating))
+      );
+    }
+
+    // Get total review count (for pagination UI)
+    const countResult = await db
+      .select({ count: sql`COUNT(*)` })
+      .from(reviewsTable)
+      .where(whereClause);
+
+    const totalReviews = parseInt(countResult[0]?.count || 0);
+    const totalPages = Math.ceil(totalReviews / parsedLimit);
+
+    // Fetch paginated reviews
+    const reviews = await db
       .select({
         id: reviewsTable.id,
         name: reviewsTable.name,
@@ -98,26 +123,22 @@ export const getReviewsByProduct = async (req, res) => {
         createdAt: reviewsTable.createdAt,
       })
       .from(reviewsTable)
-      .where(eq(reviewsTable.productId, productId));
-
-    // Optional: filter by star rating
-    if (rating) {
-      query = query.where(
-        and(
-          eq(reviewsTable.productId, productId),
-          eq(reviewsTable.rating, parseInt(rating))
-        )
-      );
-    }
-
-    const reviews = await query.orderBy(desc(reviewsTable.createdAt));
+      .where(whereClause)
+      .orderBy(desc(reviewsTable.createdAt))
+      .limit(parsedLimit)
+      .offset(offset);
 
     const parsedReviews = reviews.map((review) => ({
       ...review,
       photoUrls: Array.isArray(review.photoUrls) ? review.photoUrls : [],
     }));
 
-    res.json(parsedReviews);
+    res.json({
+      reviews: parsedReviews,
+      totalReviews,
+      totalPages,
+      currentPage: parsedPage,
+    });
   } catch (err) {
     console.error("❌ Failed to fetch reviews:", err);
     res.status(500).json({ error: "Server error" });
