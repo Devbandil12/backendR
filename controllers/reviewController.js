@@ -47,14 +47,15 @@ export const createReview = async (req, res) => {
       photoUrls,
       productId,
       userId, // Clerk ID or UUID
-      vlerkId
+      clerkId
     } = req.body;
 
     if (!rating || !comment || !productId) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const internalUserId = await resolveUserId(userId);
+    const internalUserId = await resolveUserId(userId || clerkId);
+
     const isVerified = await hasPurchasedProduct(internalUserId, productId);
 
     const [review] = await db
@@ -148,10 +149,10 @@ export const getReviewStats = async (req, res) => {
 
 // ✅ Check Verified Buyer
 export const isVerifiedBuyer = async (req, res) => {
-  const { userId, productId } = req.query;
+  const { userId, clerkId, productId } = req.query;
 
   try {
-    const internalUserId = await resolveUserId(userId);
+    const internalUserId = await resolveUserId(userId || clerkId);
     const isVerified = await hasPurchasedProduct(internalUserId, productId);
     res.json({ verified: isVerified });
   } catch (err) {
