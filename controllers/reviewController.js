@@ -47,6 +47,7 @@ export const createReview = async (req, res) => {
       photoUrls,
       productId,
       userId, // Clerk ID or UUID
+      vlerkId
     } = req.body;
 
     if (!rating || !comment || !productId) {
