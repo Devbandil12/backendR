@@ -171,4 +171,12 @@ export const reviewsTable = pgTable('product_reviews', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
-});
+
+
+}, (table) => ({
+  productIdIdx: index('idx_reviews_product_id').on(table.productId),
+  ratingIdx: index('idx_reviews_rating').on(table.rating),
+  createdAtIdx: index('idx_reviews_created_at').on(table.createdAt),
+})
+
+);
