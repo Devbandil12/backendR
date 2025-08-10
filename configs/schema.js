@@ -98,15 +98,32 @@ export const addressTable = pgTable('address', {
 export const UserAddressTable = pgTable('user_address', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
+
   name: text('name').notNull(),
-  phone: text("phone").notNull(),
+  phone: text('phone').notNull(),
+  altPhone: text('alt_phone').default(null),
+
+  address: text('address').notNull(),
   city: text('city').notNull(),
   state: text('state').notNull(),
   postalCode: text('postal_code').notNull(),
-  country: text('country').notNull(),
-  address: text("address").notNull().default(""),
+  country: text('country').notNull().default('India'),
+  landmark: text('landmark').default(null),
 
+  deliveryInstructions: text('delivery_instructions').default(null),
+  addressType: text('address_type').default(null),
+  label: text('label').default(null),
 
+  latitude: text('latitude').default(null),
+  longitude: text('longitude').default(null),
+  geoAccuracy: text('geo_accuracy').default(null),
+
+  isDefault: boolean('is_default').default(false),
+  isVerified: boolean('is_verified').default(false),
+  isDeleted: boolean('is_deleted').default(false),
+
+  createdAt: text('created_at').default('now()'),
+  updatedAt: text('updated_at').default('now()'),
 });
 
 export const orderItemsTable = pgTable('order_items', {
