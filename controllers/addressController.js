@@ -1,263 +1,232 @@
-// src/controllers/addressController.js
-import { db } from '../configs/index.js';
-import { UserAddressTable } from '../configs/schema.js';
-import { eq, and, desc, ne } from "drizzle-orm";
-import fetch from "node-fetch";
+// src/components/AddressSelection.jsx
+import React, { useState } from "react";
 
-// Helper: Reverse Geocode using Google Maps API
-async function reverseGeocode(lat, lng) {
-  const res = await fetch(
-    `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${process.env.GOOGLE_API_KEY}`
-  );
-  const data = await res.json();
-  if (data.results?.[0]) {
-    const updated = {};
-    data.results[0].address_components.forEach((c) => {
-      if (c.types.includes("postal_code")) updated.postalCode = c.long_name;
-      if (c.types.includes("locality")) updated.city = c.long_name;
-      if (c.types.includes("administrative_area_level_1")) updated.state = c.long_name;
-      if (c.types.includes("country")) updated.country = c.long_name;
+const API_BASE = `${import.meta.env.VITE_BACKEND_URL.replace(/\/$/, "")}/api/address`;
+
+export default function AddressSelection({
+  // Existing props you already had
+  addresses,
+  setAddresses,
+  setSelectedAddress,
+  selectedAddressIndex,
+  setSelectedAddressIndex,
+  newAddress,
+  setNewAddress,
+  handlePincodeBlur,
+  addressFieldsOrder,
+  emptyAddress,
+  editingIndex,
+  setEditingIndex,
+
+  // NEW props for API integration
+  userId, // required for API calls
+}) {
+  const [showForm, setShowForm] = useState(false);
+
+  // --------------------
+  // API CALLS
+  // --------------------
+  const fetchAddresses = async () => {
+    const res = await fetch(`${API_BASE}/list/${userId}`);
+    const data = await res.json();
+    if (data.success) setAddresses(data.data);
+  };
+
+  const saveAddressAPI = async () => {
+    const res = await fetch(`${API_BASE}/save`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...newAddress, userId }),
     });
-    updated.address = data.results[0].formatted_address;
-    return updated;
-  }
-  return {};
-}
-
-// POST /api/address/save
-export async function saveAddress(req, res) {
-  try {
-    let {
-      userId, name, phone, altPhone, address, city, state, postalCode, country,
-      landmark, latitude, longitude, addressType = "Home", isDefault = false
-    } = req.body;
-
-    // Basic validation
-    if (!userId || !name || !phone) {
-      return res.status(400).json({ success: false, msg: "Missing required fields" });
+    const data = await res.json();
+    if (data.success) {
+      await fetchAddresses();
+      setShowForm(false);
     }
+  };
 
-    // If lat/lng provided but address fields are empty → reverse geocode
-    if ((!address || !city || !state || !postalCode || !country) && latitude && longitude) {
-      const geoData = await reverseGeocode(latitude, longitude);
-      address = address || geoData.address;
-      city = city || geoData.city;
-      state = state || geoData.state;
-      postalCode = postalCode || geoData.postalCode;
-      country = country || geoData.country;
+  const updateAddressAPI = async (id) => {
+    const res = await fetch(`${API_BASE}/update/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newAddress),
+    });
+    const data = await res.json();
+    if (data.success) {
+      await fetchAddresses();
+      setShowForm(false);
     }
+  };
 
-    if (!address || !city || !state || !postalCode || !country) {
-      return res.status(400).json({ success: false, msg: "Incomplete address details" });
+  const deleteAddressAPI = async (id) => {
+    const res = await fetch(`${API_BASE}/soft-delete/${id}`, { method: "DELETE" });
+    const data = await res.json();
+    if (data.success) await fetchAddresses();
+  };
+
+  const setDefaultAPI = async (id) => {
+    const res = await fetch(`${API_BASE}/set-default/${id}`, { method: "PUT" });
+    const data = await res.json();
+    if (data.success) await fetchAddresses();
+  };
+
+  // --------------------
+  // LOCATION HANDLER
+  // --------------------
+  const useMyLocation = () => {
+    if (!navigator.geolocation) return alert("Geolocation is not supported");
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      const { latitude, longitude } = pos.coords;
+      const res = await fetch(`${API_BASE}/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, latitude, longitude, name: "My Location", phone: "" }),
+      });
+      const data = await res.json();
+      if (data.success) fetchAddresses();
+    });
+  };
+
+  // --------------------
+  // UI EVENT HANDLERS
+  // --------------------
+  const onSelectAddress = (addr, idx) => {
+    setSelectedAddressIndex(idx);
+    setSelectedAddress(addr);
+    setEditingIndex(null);
+    setNewAddress(emptyAddress);
+    setShowForm(false);
+  };
+
+  const onAddNewClick = () => {
+    setEditingIndex(null);
+    setNewAddress(emptyAddress);
+    setSelectedAddress(null);
+    setSelectedAddressIndex(null);
+    setShowForm(true);
+  };
+
+  const onEditClick = (idx) => {
+    setEditingIndex(idx);
+    setNewAddress(addresses[idx]);
+    setShowForm(true);
+  };
+
+  const onSaveClick = () => {
+    if (editingIndex !== null) {
+      updateAddressAPI(addresses[editingIndex].id);
+    } else {
+      saveAddressAPI();
     }
+  };
 
-    // If isDefault true → unset other defaults
-    if (isDefault) {
-      await db
-        .update(UserAddressTable)
-        .set({ isDefault: false })
-        .where(eq(UserAddressTable.userId, userId));
-    }
+  // --------------------
+  // RENDER
+  // --------------------
+  return (
+    <div className="address-selection">
+      <h2>Select or Add Delivery Address</h2>
 
-    const inserted = await db
-      .insert(UserAddressTable)
-      .values({
-        userId,
-        name: name.trim(),
-        phone: phone.trim(),
-        altPhone: altPhone?.trim() || null,
-        address: address.trim(),
-        city: city.trim(),
-        state: state.trim(),
-        postalCode: postalCode.trim(),
-        country: country.trim(),
-        landmark: landmark?.trim() || null,
-        latitude,
-        longitude,
-        addressType,
-        isDefault
-      })
-      .returning();
+      <div className="address-actions">
+        <button className="add-new-btn" onClick={onAddNewClick}>
+          + Add New Address
+        </button>
+        <button className="use-location-btn" onClick={useMyLocation}>
+          📍 Use My Location
+        </button>
+      </div>
 
-    return res.json({ success: true, msg: "Address saved", data: inserted[0] });
-  } catch (err) {
-    console.error("saveAddress error:", err);
-    return res.status(500).json({ success: false, msg: "Server error" });
-  }
-}
+      <div className="address-selection__content">
+        {/* Address List */}
+        <div className="address-selection__list">
+          {addresses.map((addr, i) => (
+            <div
+              key={addr.id}
+              className={`address-card ${selectedAddressIndex === i ? "address-card--active" : ""}`}
+              onClick={() => onSelectAddress(addr, i)}
+            >
+              <div className="address-card__header">
+                <strong>{addr.name}</strong>
+                {addr.isDefault && <span className="default-badge">Default</span>}
+                <div className="address-card__actions">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditClick(i);
+                    }}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteAddressAPI(addr.id);
+                    }}
+                  >
+                    🗑
+                  </button>
+                </div>
+              </div>
+              <p>{addr.address}, {addr.city}, {addr.state} – {addr.postalCode}</p>
+              <p>{addr.country}</p>
+              {addr.phone && <p>📞 {addr.phone}</p>}
+              <button
+                className="set-default-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDefaultAPI(addr.id);
+                }}
+              >
+                Set as Default
+              </button>
+            </div>
+          ))}
+        </div>
 
-// PUT /api/address/update/:id
-export async function updateAddress(req, res) {
-  try {
-    const { id } = req.params;
-    let {
-      name, phone, altPhone, address, city, state, postalCode, country,
-      landmark, latitude, longitude, addressType, isDefault
-    } = req.body;
-
-    if (!id) return res.status(400).json({ success: false, msg: "Missing address ID" });
-
-    // Reverse geocode if needed
-    if ((!address || !city || !state || !postalCode || !country) && latitude && longitude) {
-      const geoData = await reverseGeocode(latitude, longitude);
-      address = address || geoData.address;
-      city = city || geoData.city;
-      state = state || geoData.state;
-      postalCode = postalCode || geoData.postalCode;
-      country = country || geoData.country;
-    }
-
-    if (isDefault) {
-      const existing = await db
-        .select()
-        .from(UserAddressTable)
-        .where(eq(UserAddressTable.id, id));
-
-      if (existing.length > 0) {
-        await db
-          .update(UserAddressTable)
-          .set({ isDefault: false })
-          .where(and(
-            eq(UserAddressTable.userId, existing[0].userId),
-            eq(UserAddressTable.isDefault, true)
-          ));
-      }
-    }
-
-    const updated = await db
-      .update(UserAddressTable)
-      .set({
-        name: name?.trim(),
-        phone: phone?.trim(),
-        altPhone: altPhone?.trim() || null,
-        address: address?.trim(),
-        city: city?.trim(),
-        state: state?.trim(),
-        postalCode: postalCode?.trim(),
-        country: country?.trim(),
-        landmark: landmark?.trim() || null,
-        latitude,
-        longitude,
-        addressType,
-        isDefault,
-        updatedAt: new Date()
-      })
-      .where(eq(UserAddressTable.id, id))
-      .returning();
-
-    return res.json({ success: true, msg: "Address updated", data: updated[0] });
-  } catch (err) {
-    console.error("updateAddress error:", err);
-    return res.status(500).json({ success: false, msg: "Server error" });
-  }
-}
-
-// GET /api/address/list/:userId
-export async function listAddresses(req, res) {
-  try {
-    const { userId } = req.params;
-    if (!userId) return res.status(400).json({ success: false, msg: "Missing user ID" });
-
-    const addresses = await db
-      .select()
-      .from(UserAddressTable)
-      .where(and(
-        eq(UserAddressTable.userId, userId),
-        eq(UserAddressTable.isDeleted, false)
-      ))
-      .orderBy(desc(UserAddressTable.isDefault), desc(UserAddressTable.updatedAt));
-
-    return res.json({ success: true, data: addresses });
-  } catch (err) {
-    console.error("listAddresses error:", err);
-    return res.status(500).json({ success: false, msg: "Server error" });
-  }
-}
-
-// DELETE /api/address/soft-delete/:id
-export async function softDeleteAddress(req, res) {
-  try {
-    const { id } = req.params;
-    if (!id) return res.status(400).json({ success: false, msg: "Missing address ID" });
-
-    const existing = await db
-      .select()
-      .from(UserAddressTable)
-      .where(eq(UserAddressTable.id, id));
-
-    if (existing.length === 0) {
-      return res.status(404).json({ success: false, msg: "Address not found" });
-    }
-
-    const userId = existing[0].userId;
-
-    // Prevent deleting last address
-    const total = await db
-      .select()
-      .from(UserAddressTable)
-      .where(and(eq(UserAddressTable.userId, userId), eq(UserAddressTable.isDeleted, false)));
-
-    if (total.length <= 1) {
-      return res.status(400).json({ success: false, msg: "Cannot delete last remaining address" });
-    }
-
-    await db
-      .update(UserAddressTable)
-      .set({ isDeleted: true, updatedAt: new Date() })
-      .where(eq(UserAddressTable.id, id));
-
-    // If deleted was default → set latest as default
-    if (existing[0].isDefault) {
-      const latest = await db
-        .select()
-        .from(UserAddressTable)
-        .where(and(eq(UserAddressTable.userId, userId), eq(UserAddressTable.isDeleted, false)))
-        .orderBy(desc(UserAddressTable.updatedAt))
-        .limit(1);
-
-      if (latest.length > 0) {
-        await db
-          .update(UserAddressTable)
-          .set({ isDefault: true })
-          .where(eq(UserAddressTable.id, latest[0].id));
-      }
-    }
-
-    return res.json({ success: true, msg: "Address deleted successfully" });
-  } catch (err) {
-    console.error("softDeleteAddress error:", err);
-    return res.status(500).json({ success: false, msg: "Server error" });
-  }
-}
-
-// PUT /api/address/set-default/:id
-export async function setDefaultAddress(req, res) {
-  try {
-    const { id } = req.params;
-    if (!id) return res.status(400).json({ success: false, msg: "Missing address ID" });
-
-    const existing = await db
-      .select()
-      .from(UserAddressTable)
-      .where(eq(UserAddressTable.id, id));
-
-    if (existing.length === 0) {
-      return res.status(404).json({ success: false, msg: "Address not found" });
-    }
-
-    await db
-      .update(UserAddressTable)
-      .set({ isDefault: false })
-      .where(eq(UserAddressTable.userId, existing[0].userId));
-
-    await db
-      .update(UserAddressTable)
-      .set({ isDefault: true, updatedAt: new Date() })
-      .where(eq(UserAddressTable.id, id));
-
-    return res.json({ success: true, msg: "Default address updated" });
-  } catch (err) {
-    console.error("setDefaultAddress error:", err);
-    return res.status(500).json({ success: false, msg: "Server error" });
-  }
+        {/* Address Form */}
+        {showForm && (
+          <div className="address-selection__form">
+            <h3>{editingIndex !== null ? "Edit Address" : "Add New Address"}</h3>
+            <div className="address-form__fields">
+              {addressFieldsOrder.map((field) => (
+                <label key={field}>
+                  <span>{field[0].toUpperCase() + field.slice(1)}</span>
+                  <input
+                    name={field}
+                    value={newAddress[field] || ""}
+                    onChange={(e) => setNewAddress({ ...newAddress, [field]: e.target.value })}
+                    onKeyDown={
+                      field === "postalCode"
+                        ? (e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handlePincodeBlur();
+                            }
+                          }
+                        : undefined
+                    }
+                  />
+                </label>
+              ))}
+              <label>
+                <span>Default Address</span>
+                <input
+                  type="checkbox"
+                  checked={newAddress.isDefault || false}
+                  onChange={(e) =>
+                    setNewAddress({ ...newAddress, isDefault: e.target.checked })
+                  }
+                />
+              </label>
+            </div>
+            <div className="address-form__actions">
+              <button onClick={onSaveClick}>
+                {editingIndex !== null ? "Update Address" : "Save Address"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
