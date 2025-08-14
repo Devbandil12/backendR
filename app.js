@@ -13,6 +13,8 @@ import testimonialRoutes from './routes/testimonials.js';
 import reviewRoutes from './routes/reviewRoutes.js';
 import userRoutes from "./routes/User.js";
 import orderRoutes from "./routes/orders.js";
+import cartRoutes from "./routes/cart.js";
+
 
 
 
@@ -58,7 +60,7 @@ app.use('/api/testimonials', testimonialRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/orders", orderRoutes);
-
+app.use("/api/cart", cartRoutes);
 
 
 // ───── Healthcheck & Root ─────
