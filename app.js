@@ -14,6 +14,8 @@ import reviewRoutes from './routes/reviewRoutes.js';
 import userRoutes from "./routes/User.js";
 import orderRoutes from "./routes/orders.js";
 import cartRoutes from "./routes/cart.js";
+import productRoutes from "./routes/products.js";
+
 
 
 
@@ -61,7 +63,7 @@ app.use('/api/reviews', reviewRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/cart", cartRoutes);
-
+app.use("/api/products", productRoutes);
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));
