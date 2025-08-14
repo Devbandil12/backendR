@@ -11,6 +11,7 @@ import razorpayWebhookHandler from './controllers/webhookController.js';
 import refundPollerRoute from './routes/refundPollerRoute.js';
 import testimonialRoutes from './routes/testimonials.js';
 import reviewRoutes from './routes/reviewRoutes.js';
+import userRoutes from "./routes/user.js";
 
 
 
@@ -53,6 +54,7 @@ app.use('/api/address', addressRoutes);
 app.use('/api/cron', refundPollerRoute);
 app.use('/api/testimonials', testimonialRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use("/api/users", userRoutes);
 
 
 
