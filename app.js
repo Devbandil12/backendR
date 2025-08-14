@@ -12,6 +12,8 @@ import refundPollerRoute from './routes/refundPollerRoute.js';
 import testimonialRoutes from './routes/testimonials.js';
 import reviewRoutes from './routes/reviewRoutes.js';
 import userRoutes from "./routes/User.js";
+import orderRoutes from "./routes/orders.js";
+
 
 
 
@@ -55,6 +57,7 @@ app.use('/api/cron', refundPollerRoute);
 app.use('/api/testimonials', testimonialRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/orders", orderRoutes);
 
 
 
