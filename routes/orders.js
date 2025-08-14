@@ -8,7 +8,7 @@ import {
   productsTable,
   usersTable,
 } from "../configs/schema.js";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, and } from "drizzle-orm";
 
 const router = express.Router();
 
@@ -44,8 +44,12 @@ router.get("/:userId", async (req, res) => {
         refundCompletedAt: ordersTable.refund_completed_at,
       })
       .from(ordersTable)
-      .where(eq(ordersTable.userId, userId))
-      .where(inArray(ordersTable.paymentStatus, ["paid", "refunded", "pending"]))
+      .where(
+        and(
+          eq(ordersTable.userId, userId),
+          inArray(ordersTable.paymentStatus, ["paid", "refunded", "pending"])
+        )
+      )
       .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
       .leftJoin(addressTable, eq(addressTable.userId, ordersTable.userId));
 
@@ -58,7 +62,8 @@ router.get("/:userId", async (req, res) => {
         orderId: orderItemsTable.orderId,
         productId: orderItemsTable.productId,
         quantity: orderItemsTable.quantity,
-        price: orderItemsTable.price,
+        oprice: productsTable.oprice,
+        discount: productsTable.discount,
         productName: productsTable.name,
         img: productsTable.imageurl,
         size: productsTable.size,
