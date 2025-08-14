@@ -1,8 +1,8 @@
 // routes/cart.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { cartTable, productsTable } from "../configs/schema.js";
-import { eq, inArray } from "drizzle-orm";
+import { addToCartTable, productsTable } from "../configs/schema.js";
+import { eq } from "drizzle-orm";
 
 const router = express.Router();
 
@@ -12,17 +12,18 @@ router.get("/:userId", async (req, res) => {
     const { userId } = req.params;
     const cartItems = await db
       .select({
-        id: cartTable.id,
-        productId: cartTable.productId,
-        quantity: cartTable.quantity,
+        id: addToCartTable.id,
+        productId: addToCartTable.productId,
+        quantity: addToCartTable.quantity,
         productName: productsTable.name,
-        price: productsTable.price,
+        oprice: productsTable.oprice,      // original price
+        discount: productsTable.discount,  // discount %
         img: productsTable.imageurl,
         size: productsTable.size,
       })
-      .from(cartTable)
-      .innerJoin(productsTable, eq(cartTable.productId, productsTable.id))
-      .where(eq(cartTable.userId, userId));
+      .from(addToCartTable)
+      .innerJoin(productsTable, eq(addToCartTable.productId, productsTable.id))
+      .where(eq(addToCartTable.userId, userId));
 
     res.json(cartItems);
   } catch (error) {
@@ -36,7 +37,7 @@ router.post("/", async (req, res) => {
   try {
     const { userId, productId, quantity } = req.body;
     const [newItem] = await db
-      .insert(cartTable)
+      .insert(addToCartTable)
       .values({ userId, productId, quantity })
       .returning();
 
@@ -52,7 +53,7 @@ router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const { quantity } = req.body;
-    await db.update(cartTable).set({ quantity }).where(eq(cartTable.id, id));
+    await db.update(addToCartTable).set({ quantity }).where(eq(addToCartTable.id, id));
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error updating cart:", error);
@@ -64,7 +65,7 @@ router.put("/:id", async (req, res) => {
 router.delete("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    await db.delete(cartTable).where(eq(cartTable.id, id));
+    await db.delete(addToCartTable).where(eq(addToCartTable.id, id));
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error removing cart item:", error);
