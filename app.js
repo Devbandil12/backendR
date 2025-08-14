@@ -11,7 +11,7 @@ import razorpayWebhookHandler from './controllers/webhookController.js';
 import refundPollerRoute from './routes/refundPollerRoute.js';
 import testimonialRoutes from './routes/testimonials.js';
 import reviewRoutes from './routes/reviewRoutes.js';
-import userRoutes from "./routes/user.js";
+import userRoutes from "./routes/User.js";
 
 
 
