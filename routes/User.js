@@ -1,25 +1,16 @@
-// routes/user.js
 import express from "express";
 import { db } from "../configs/index.js";
-import {
-  usersTable,
-  ordersTable,
-  orderItemsTable,
-  productsTable,
-  UserAddressTable,
-} from "../configs/schema.js";
+import { usersTable, ordersTable, orderItemsTable, productsTable, UserAddressTable } from "../configs/schema.js";
 import { eq } from "drizzle-orm";
 
 const router = express.Router();
 
-/**
- * GET user by email
- * Example: GET /api/users?email=test@example.com
- */
 router.get("/", async (req, res) => {
   try {
     const email = req.query.email;
-    if (!email) return res.status(400).json({ error: "Email required" });
+    if (!email) {
+      return res.status(400).json({ error: "Email required for user lookup." });
+    }
 
     const user = await db
       .select()
@@ -28,36 +19,60 @@ router.get("/", async (req, res) => {
 
     res.json(user[0] || null);
   } catch (error) {
-    console.error("❌ Error fetching user:", error);
-    res.status(500).json({ error: "Server error" });
+    console.error("❌ [BACKEND] Error fetching user by email:", error);
+    res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 });
 
-/**
- * POST create new user
- */
 router.post("/", async (req, res) => {
   try {
-    const { name, email } = req.body;
-    if (!name || !email) {
-      return res.status(400).json({ error: "Name and email required" });
+    if (Object.keys(req.body).length === 0) {
+      return res.status(400).json({ 
+        error: "Request body is empty.",
+        hint: "Check your frontend fetch call. Is the `Content-Type: application/json` header set? Is the body being sent?" 
+      });
+    }
+
+    const { name, email, clerk_id } = req.body; // Destructure clerk_id from the body
+
+    if (!name || !email || !clerk_id) {
+      return res.status(400).json({ 
+        error: "Missing required fields.",
+        details: "The request body must contain 'name', 'email', and 'clerk_id'.",
+        receivedBody: req.body
+      });
     }
 
     const [newUser] = await db
       .insert(usersTable)
-      .values({ name, email, role: "user", cartLength: 0 })
+      .values({ name, email, clerk_id, role: "user", cartLength: 0 }) // Add clerk_id to the insert values
       .returning();
 
-    res.json(newUser);
+    if (!newUser) {
+      return res.status(500).json({ 
+        error: "Failed to insert new user into database.",
+        details: "Drizzle returned an empty result. Check database connection and schema."
+      });
+    }
+    
+    res.status(201).json(newUser);
+
   } catch (error) {
-    console.error("❌ Error creating user:", error);
-    res.status(500).json({ error: "Server error" });
+    console.error("❌ [BACKEND] Error creating new user:", error);
+    if (error.message.includes("duplicate key")) {
+        return res.status(409).json({ 
+            error: "User already exists.", 
+            details: "A user with this email address already exists in the database. A unique constraint was violated.",
+            receivedEmail: req.body.email
+        });
+    }
+    res.status(500).json({ 
+        error: "Internal Server Error", 
+        details: error.message 
+    });
   }
 });
 
-/**
- * GET orders for a user
- */
 router.get("/:id/orders", async (req, res) => {
   try {
     const userId = req.params.id;
@@ -82,7 +97,6 @@ router.get("/:id/orders", async (req, res) => {
       .where(eq(ordersTable.userId, userId))
       .orderBy(ordersTable.createdAt);
 
-    // Group by orderId
     const groupedOrders = result.reduce((acc, item) => {
       if (!acc[item.orderId]) {
         acc[item.orderId] = {
@@ -107,14 +121,11 @@ router.get("/:id/orders", async (req, res) => {
 
     res.json(Object.values(groupedOrders));
   } catch (error) {
-    console.error("❌ Failed to get orders:", error);
-    res.status(500).json({ error: "Server error" });
+    console.error("❌ [BACKEND] Failed to get orders:", error);
+    res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 });
 
-/**
- * GET addresses for a user
- */
 router.get("/:id/addresses", async (req, res) => {
   try {
     const userId = req.params.id;
@@ -126,8 +137,8 @@ router.get("/:id/addresses", async (req, res) => {
 
     res.json(addresses);
   } catch (error) {
-    console.error("❌ Failed to get addresses:", error);
-    res.status(500).json({ error: "Server error" });
+    console.error("❌ [BACKEND] Failed to get addresses:", error);
+    res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 });
 
