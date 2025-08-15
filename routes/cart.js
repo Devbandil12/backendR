@@ -1,6 +1,6 @@
 import express from "express";
-import { db } from "../configs/index";
-import { addToCartTable, productsTable, wishlistTable } from "../configs/schema";
+import { db } from "../configs/index.js";
+import { addToCartTable, productsTable, wishlistTable } from "../configs/schema.js";
 import { and, eq } from "drizzle-orm";
 
 const router = express.Router();
