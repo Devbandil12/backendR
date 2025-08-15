@@ -31,7 +31,7 @@ router.get("/:userId", async (req, res) => {
         status: ordersTable.status,
         progressStep: ordersTable.progressStep,
         createdAt: ordersTable.createdAt,
-        street: UserAddressTable.street,
+        address: UserAddressTable.address,
         city: UserAddressTable.city,
         state: UserAddressTable.state,
         postalCode: UserAddressTable.postalCode,
