@@ -2,7 +2,7 @@
 import express from "express";
 import { db } from "../configs/index.js";
 import {
-  addressTable,
+  UserAddressTable,
   orderItemsTable,
   ordersTable,
   productsTable,
@@ -31,11 +31,11 @@ router.get("/:userId", async (req, res) => {
         status: ordersTable.status,
         progressStep: ordersTable.progressStep,
         createdAt: ordersTable.createdAt,
-        street: addressTable.street,
-        city: addressTable.city,
-        state: addressTable.state,
-        postalCode: addressTable.postalCode,
-        country: addressTable.country,
+        street: UserAddressTable.street,
+        city: UserAddressTable.city,
+        state: UserAddressTable.state,
+        postalCode: UserAddressTable.postalCode,
+        country: UserAddressTable.country,
         refundId: ordersTable.refund_id,
         refundAmount: ordersTable.refund_amount,
         refundStatus: ordersTable.refund_status,
@@ -51,7 +51,7 @@ router.get("/:userId", async (req, res) => {
         )
       )
       .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
-      .leftJoin(addressTable, eq(addressTable.userId, ordersTable.userId));
+      .leftJoin(UserAddressTable, eq(UserAddressTable.userId, ordersTable.userId));
 
     const orderIds = orderQuery.map((o) => o.orderId);
     if (!orderIds.length) return res.json([]);
