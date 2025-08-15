@@ -5,21 +5,22 @@ import { eq } from "drizzle-orm";
 
 const router = express.Router();
 
-router.get("/", async (req, res) => {
+// New GET route to find user by clerkId
+router.get("/find-by-clerk-id", async (req, res) => {
   try {
-    const email = req.query.email;
-    if (!email) {
-      return res.status(400).json({ error: "Email required for user lookup." });
+    const clerkId = req.query.clerkId;
+    if (!clerkId) {
+      return res.status(400).json({ error: "clerkId required for user lookup." });
     }
 
     const user = await db
       .select()
       .from(usersTable)
-      .where(eq(usersTable.email, email));
+      .where(eq(usersTable.clerkId, clerkId)); // Use clerkId column name
 
     res.json(user[0] || null);
   } catch (error) {
-    console.error("❌ [BACKEND] Error fetching user by email:", error);
+    console.error("❌ [BACKEND] Error fetching user by clerkId:", error);
     res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 });
@@ -33,19 +34,19 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const { name, email, clerk_id } = req.body; // Destructure clerk_id from the body
+    const { name, email, clerkId } = req.body; // Destructure clerkId
 
-    if (!name || !email || !clerk_id) {
+    if (!name || !email || !clerkId) {
       return res.status(400).json({ 
         error: "Missing required fields.",
-        details: "The request body must contain 'name', 'email', and 'clerk_id'.",
+        details: "The request body must contain 'name', 'email', and 'clerkId'.",
         receivedBody: req.body
       });
     }
 
     const [newUser] = await db
       .insert(usersTable)
-      .values({ name, email, clerk_id, role: "user", cartLength: 0 }) // Add clerk_id to the insert values
+      .values({ name, email, clerkId, role: "user", cartLength: 0 }) // Use clerkId column name
       .returning();
 
     if (!newUser) {
@@ -73,6 +74,7 @@ router.post("/", async (req, res) => {
   }
 });
 
+// The following routes remain unchanged
 router.get("/:id/orders", async (req, res) => {
   try {
     const userId = req.params.id;
