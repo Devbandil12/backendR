@@ -1,5 +1,5 @@
 import express from "express";
-import { db } from "../../configs";
+import { db } from "../configs/index";
 import { addToCartTable, productsTable, wishlistTable } from "../configs/schema";
 import { and, eq } from "drizzle-orm";
 
