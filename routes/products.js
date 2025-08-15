@@ -5,7 +5,7 @@ import { productsTable } from "../configs/schema.js";
 
 const router = express.Router();
 
-// Get all products
+// Get all products from the database and return as a JSON response
 router.get("/", async (req, res) => {
   try {
     const products = await db.select().from(productsTable);
