@@ -40,8 +40,7 @@ export const productsTable = pgTable('products', {
   discount: integer('discount').notNull(),
   oprice: integer('oprice').notNull(),
   size: integer('size').notNull(),
-  imageurl: varchar('imageurl', { length: 500 }).notNull(),
-  galleryImages: jsonb("gallery_images").notNull().default([]),
+  imageurl: jsonb("imageurl").notNull().default([]), 
 });
 
 export const addToCartTable = pgTable('add_to_cart', {
