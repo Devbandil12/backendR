@@ -42,15 +42,15 @@ router.post("/validate", async (req, res) => {
     // Fetch coupon
     const [coupon] = await db.select().from(couponsTable).where(eq(couponsTable.code, code));
     if (!coupon) {
-      return res.status(404).json({ error: "Coupon not found" });
+      return res.status(404).json({ message: "Coupon not found" });
     }
 
     const now = new Date();
     if (coupon.validFrom && now < new Date(coupon.validFrom)) {
-      return res.status(400).json({ error: "Coupon not yet valid" });
+      return res.status(400).json({ message: "Coupon not yet valid" });
     }
     if (coupon.validUntil && now > new Date(coupon.validUntil)) {
-      return res.status(400).json({ error: "Coupon expired" });
+      return res.status(400).json({ message: "Coupon expired" });
     }
 
     // First order only check
@@ -60,7 +60,7 @@ router.post("/validate", async (req, res) => {
         .from(ordersTable)
         .where(eq(ordersTable.userId, userId));
       if (userOrders.length > 0) {
-        return res.status(400).json({ error: "Coupon only valid for first order" });
+        return res.status(400).json({ message: "Coupon only valid for first order" });
       }
     }
 
@@ -79,16 +79,20 @@ router.post("/validate", async (req, res) => {
       coupon.maxUsagePerUser !== null &&
       usedCouponOrders.length >= coupon.maxUsagePerUser
     ) {
-      return res.status(400).json({ error: "Coupon usage limit reached" });
+      return res.status(400).json({ message: "Coupon usage limit reached" });
     }
 
-    res.json({ success: true, coupon });
+    // THIS IS THE KEY CHANGE
+    // Instead of { success: true, coupon: coupon }, just send the coupon object
+    res.json(coupon);
 
   } catch (err) {
     console.error("Coupon validation failed:", err);
-    res.status(500).json({ error: "Server error" });
+    res.status(500).json({ message: "Server error" });
   }
 });
+
+
 
 // GET /api/coupons/available — list valid coupons for user
 router.get("/available", async (req, res) => {
