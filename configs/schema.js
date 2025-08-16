@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, index, } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, index, jsonb, } from 'drizzle-orm/pg-core';
 
 
 const generateNumericId = () => {
@@ -41,6 +41,7 @@ export const productsTable = pgTable('products', {
   oprice: integer('oprice').notNull(),
   size: integer('size').notNull(),
   imageurl: varchar('imageurl', { length: 500 }).notNull(),
+  galleryImages: jsonb("gallery_images").notNull().default([]),
 });
 
 export const addToCartTable = pgTable('add_to_cart', {
