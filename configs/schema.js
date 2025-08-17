@@ -1,5 +1,6 @@
-import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, index, jsonb, sql, } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, index, jsonb, } from 'drizzle-orm/pg-core';
 
+import { sql } from 'drizzle-orm';
 
 const generateNumericId = () => {
   const timestamp = Date.now(); // milliseconds since epoch
