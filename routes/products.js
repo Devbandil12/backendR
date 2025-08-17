@@ -2,7 +2,7 @@
 import express from "express";
 import { db } from "../configs/index.js";
 import { productsTable } from "../configs/schema.js";
-import { eq } from "drizzle-orm"; // New import
+import { eq } from "drizzle-orm";
 
 const router = express.Router();
 
@@ -11,7 +11,6 @@ router.get("/", async (req, res) => {
   try {
     const products = await db.select().from(productsTable);
 
-    // Ensure imageurl is an array before sending to the frontend
     const transformedProducts = products.map(product => {
       if (typeof product.imageurl === 'string') {
         try {
@@ -60,7 +59,7 @@ router.put("/:id", async (req, res) => {
   const { id } = req.params;
   const updatedData = req.body;
   
-  // Ensure imageurl is handled correctly if provided
+  // The client sends imageurl as a JSON array, so we stringify it before the database operation
   if (updatedData.imageurl && Array.isArray(updatedData.imageurl)) {
     updatedData.imageurl = JSON.stringify(updatedData.imageurl);
   }
@@ -69,7 +68,7 @@ router.put("/:id", async (req, res) => {
     const [updatedProduct] = await db
       .update(productsTable)
       .set(updatedData)
-      .where(eq(productsTable.id, Number(id)))
+      .where(eq(productsTable.id, id)) // Removed Number()
       .returning();
 
     if (!updatedProduct) {
@@ -89,14 +88,14 @@ router.delete("/:id", async (req, res) => {
   try {
     const [deletedProduct] = await db
       .delete(productsTable)
-      .where(eq(productsTable.id, Number(id)))
+      .where(eq(productsTable.id, id)) // Removed Number()
       .returning();
 
     if (!deletedProduct) {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    res.json({ message: "Product deleted successfully." });
+    res.json(deletedProduct);
   } catch (error) {
     console.error("❌ Error deleting product:", error);
     res.status(500).json({ error: "Server error" });
