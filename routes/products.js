@@ -4,31 +4,26 @@ import { productsTable } from "../configs/schema.js";
 
 const router = express.Router();
 
-// Get all products from the database and return as a JSON response
+// GET all products from the database
 router.get("/", async (req, res) => {
   try {
     const products = await db.select().from(productsTable);
 
-    // CRITICAL FIX: Transform the imageurl field from a JSON string to an array
+    // Ensure imageurl is an array before sending to the frontend
     const transformedProducts = products.map(product => {
-      // Check if imageurl is a string (which it will be if it was stringified on insert)
       if (typeof product.imageurl === 'string') {
         try {
-          // Parse the JSON string back into a JavaScript array
-          const parsedImageUrl = JSON.parse(product.imageurl);
-          // If the parsing is successful and the result is an array, use it
-          if (Array.isArray(parsedImageUrl)) {
+          const parsedUrls = JSON.parse(product.imageurl);
+          if (Array.isArray(parsedUrls)) {
             return {
               ...product,
-              imageurl: parsedImageUrl
+              imageurl: parsedUrls
             };
           }
         } catch (parseError) {
-          // In case of a parsing error, log it and return the product as is
-          console.error("❌ Error parsing imageurl:", parseError);
+          console.error("❌ Error parsing imageurl from database:", parseError);
         }
       }
-      // If imageurl is already an array or parsing failed, return the product as is
       return product;
     });
 
@@ -36,6 +31,27 @@ router.get("/", async (req, res) => {
   } catch (error) {
     console.error("❌ Error fetching products:", error);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST a new product to the database
+router.post("/", async (req, res) => {
+  const productData = req.body;
+  try {
+    const [newProduct] = await db
+      .insert(productsTable)
+      .values({
+        ...productData,
+        imageurl: JSON.stringify(productData.imageurl),
+      })
+      .returning();
+      
+    res.status(201).json(newProduct);
+  } catch (error) {
+    console.error("❌ Error adding product:", error);
+    res.status(500).json({
+      error: "Failed to add product to the database."
+    });
   }
 });
 
