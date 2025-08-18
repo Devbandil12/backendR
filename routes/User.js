@@ -5,13 +5,22 @@ import { eq } from "drizzle-orm";
 
 const router = express.Router();
 
-// New GET route to fetch all users for the admin panel
+// New GET route to fetch all users for the admin panel with their addresses and orders
 router.get("/", async (req, res) => {
   try {
-    const allUsers = await db.select().from(usersTable);
+    const allUsers = await db.query.usersTable.findMany({
+      with: {
+        orders: {
+          with: {
+            orderItems: true, // Also include the products for each order
+          },
+        },
+        addresses: true,
+      },
+    });
     res.json(allUsers);
   } catch (error) {
-    console.error("❌ [BACKEND] Error fetching all users:", error);
+    console.error("❌ [BACKEND] Error fetching all users with details:", error);
     res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 });
@@ -28,7 +37,7 @@ router.get("/find-by-clerk-id", async (req, res) => {
     const user = await db
       .select()
       .from(usersTable)
-      .where(eq(usersTable.clerkId, clerkId)); // Use clerkId column name
+      .where(eq(usersTable.clerkId, clerkId));
 
     res.json(user[0] || null);
   } catch (error) {
@@ -37,109 +46,39 @@ router.get("/find-by-clerk-id", async (req, res) => {
   }
 });
 
-// The following routes remain unchanged
-router.post("/", async (req, res) => {
+// New PUT endpoint to update user details
+router.put("/:id", async (req, res) => {
+  const { id } = req.params;
   try {
-    if (Object.keys(req.body).length === 0) {
-      return res.status(400).json({
-        error: "Request body is empty.",
-        hint: "Check your frontend fetch call. Is the `Content-Type: application/json` header set? Is the body being sent?"
-      });
-    }
-
-    const { name, email, clerkId } = req.body; // Destructure clerkId
-
-    if (!name || !email || !clerkId) {
-      return res.status(400).json({
-        error: "Missing required fields.",
-        details: "The request body must contain 'name', 'email', and 'clerkId'.",
-        receivedBody: req.body
-      });
-    }
-
-    const [newUser] = await db
-      .insert(usersTable)
-      .values({ name, email, clerkId, role: "user", cartLength: 0 }) // Use clerkId column name
+    const [updatedUser] = await db
+      .update(usersTable)
+      .set(req.body)
+      .where(eq(usersTable.id, id))
       .returning();
 
-    if (!newUser) {
-      return res.status(500).json({
-        error: "Failed to insert new user into database.",
-        details: "Drizzle returned an empty result. Check database connection and schema."
-      });
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
     }
-
-    res.status(201).json(newUser);
-
-  } catch (error) {
-    console.error("❌ [BACKEND] Error creating new user:", error);
-    if (error.message.includes("duplicate key")) {
-        return res.status(409).json({
-            error: "User already exists.",
-            details: "A user with this email address already exists in the database. A unique constraint was violated.",
-            receivedEmail: req.body.email
-        });
-    }
-    res.status(500).json({
-        error: "Internal Server Error",
-        details: error.message
-    });
+    res.json(updatedUser);
+  } catch (err) {
+    console.error("Failed to update user:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-router.get("/:id/orders", async (req, res) => {
+// New DELETE endpoint to delete a user
+router.delete("/:id", async (req, res) => {
+  const { id } = req.params;
   try {
-    const userId = req.params.id;
-
-    const result = await db
-      .select({
-        orderId: ordersTable.id,
-        totalAmount: ordersTable.totalAmount,
-        status: ordersTable.status,
-        paymentMode: ordersTable.paymentMode,
-        paymentStatus: ordersTable.paymentStatus,
-        createdAt: ordersTable.createdAt,
-        productId: orderItemsTable.productId,
-        quantity: orderItemsTable.quantity,
-        price: orderItemsTable.price,
-        productName: productsTable.name,
-        productImage: productsTable.imageurl,
-      })
-      .from(ordersTable)
-      .innerJoin(orderItemsTable, eq(ordersTable.id, orderItemsTable.orderId))
-      .innerJoin(productsTable, eq(orderItemsTable.productId, productsTable.id))
-      .where(eq(ordersTable.userId, userId))
-      .orderBy(ordersTable.createdAt);
-
-    const groupedOrders = result.reduce((acc, item) => {
-      if (!acc[item.orderId]) {
-        acc[item.orderId] = {
-          orderId: item.orderId,
-          totalAmount: item.totalAmount,
-          status: item.status,
-          createdAt: item.createdAt,
-          paymentStatus: item.paymentStatus,
-          paymentMode: item.paymentMode,
-          items: [],
-        };
-      }
-      acc[item.orderId].items.push({
-        productId: item.productId,
-        productName: item.productName,
-        productImage: item.productImage,
-        quantity: item.quantity,
-        price: item.price,
-      });
-      return acc;
-    }, {});
-
-    res.json(Object.values(groupedOrders));
-  } catch (error) {
-    console.error("❌ [BACKEND] Failed to get orders:", error);
-    res.status(500).json({ error: "Internal Server Error", details: error.message });
+    await db.delete(usersTable).where(eq(usersTable.id, id));
+    res.status(204).send();
+  } catch (err) {
+    console.error("Failed to delete user:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
+// The remaining routes from your original file are for fetching a user's specific orders, which is distinct from the admin panel's needs. We will keep them for the frontend logic.
 router.get("/:id/addresses", async (req, res) => {
   try {
     const userId = req.params.id;
@@ -151,9 +90,101 @@ router.get("/:id/addresses", async (req, res) => {
 
     res.json(addresses);
   } catch (error) {
-    console.error("❌ [BACKEND] Failed to get addresses:", error);
+    console.error("❌ [BACKEND] Failed to get user addresses:", error);
+    res.status(500).json({ error: "Internal Server Error", details: error.message });
+  }
+});
+
+router.get("/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const orderQuery = await db
+      .select({
+        phone: ordersTable.phone,
+        orderId: ordersTable.id,
+        userId: ordersTable.userId,
+        userName: usersTable.name,
+        email: usersTable.email,
+        paymentMode: ordersTable.paymentMode,
+        totalAmount: ordersTable.totalAmount,
+        paymentStatus: ordersTable.paymentStatus,
+        transactionId: ordersTable.transactionId,
+        status: ordersTable.status,
+        progressStep: ordersTable.progressStep,
+        createdAt: ordersTable.createdAt,
+        address: ordersTable.address,
+        city: ordersTable.city,
+        state: ordersTable.state,
+        zip: ordersTable.zip,
+        country: ordersTable.country,
+        refundId: ordersTable.refund_id,
+        refundAmount: ordersTable.refund_amount,
+        refundStatus: ordersTable.refund_status,
+        refundSpeed: ordersTable.refund_speed,
+        refundInitiatedAt: ordersTable.refund_initiated_at,
+        refundCompletedAt: ordersTable.refund_completed_at,
+      })
+      .from(ordersTable)
+      .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
+      .where(eq(ordersTable.userId, userId))
+      .orderBy(asc(ordersTable.createdAt));
+
+    if (!orderQuery.length) {
+      return res.json([]);
+    }
+
+    const orderIds = orderQuery.map((o) => o.orderId);
+
+    const productQuery = await db
+      .select({
+        orderId: orderItemsTable.orderId,
+        productId: orderItemsTable.productId,
+        quantity: orderItemsTable.quantity,
+        oprice: productsTable.oprice,
+        discount: productsTable.discount,
+        productName: productsTable.name,
+        img: productsTable.imageurl,
+        size: productsTable.size,
+      })
+      .from(orderItemsTable)
+      .innerJoin(productsTable, eq(orderItemsTable.productId, productsTable.id))
+      .where(inArray(orderItemsTable.orderId, orderIds));
+
+    const map = new Map();
+    orderQuery.forEach((o) => {
+      map.set(o.orderId, {
+        ...o,
+        refund: {
+          id: o.refundId,
+          amount: o.refundAmount,
+          status: o.refundStatus,
+          speedProcessed: o.refundSpeed,
+          created_at: o.refundInitiatedAt
+            ? new Date(o.refundInitiatedAt).getTime() / 1000
+            : null,
+          processed_at:
+            o.refundCompletedAt
+              ? Math.floor(new Date(o.refundCompletedAt).getTime() / 1000)
+              : o.refundStatus === "processed"
+              ? Math.floor(Date.now() / 1000)
+              : null,
+        },
+        items: [],
+      });
+    });
+
+    productQuery.forEach((p) => {
+      const entry = map.get(p.orderId);
+      if (entry) entry.items.push(p);
+    });
+
+    res.json(Array.from(map.values()));
+  } catch (error) {
+    console.error("❌ [BACKEND] Failed to get orders:", error);
     res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 });
 
 export default router;
+
