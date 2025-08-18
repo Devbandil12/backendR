@@ -1,4 +1,3 @@
-// routes/orders.js
 import express from "express";
 import { db } from "../configs/index.js";
 import {
@@ -22,7 +21,7 @@ router.get("/", async (req, res) => {
         status: ordersTable.status,
         totalAmount: ordersTable.totalAmount,
         createdAt: ordersTable.createdAt,
-        userEmail: usersTable.email, // Join to get user email
+        userEmail: usersTable.email,
       })
       .from(ordersTable)
       .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
@@ -57,7 +56,6 @@ router.get("/:id", async (req, res) => {
         zip: ordersTable.zip,
         country: ordersTable.country,
         userEmail: usersTable.email,
-        // ... (include other fields if needed, like refund)
       })
       .from(ordersTable)
       .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
@@ -113,12 +111,32 @@ router.put("/:id/status", async (req, res) => {
   }
 });
 
+// PUT /api/orders/:id/cancel — cancel an order
+router.put("/:id/cancel", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [canceledOrder] = await db
+      .update(ordersTable)
+      .set({ status: "Canceled" })
+      .where(eq(ordersTable.id, Number(id)))
+      .returning();
+
+    if (!canceledOrder) {
+      return res.status(404).json({ message: "Order not found." });
+    }
+
+    res.json(canceledOrder);
+  } catch (err) {
+    console.error("Failed to cancel order:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // The remaining routes are for fetching a user's specific orders, which is distinct from the admin panel's needs
 router.get("/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    // Fetch orders
     const orderQuery = await db
       .select({
         phone: ordersTable.phone,
@@ -156,7 +174,6 @@ router.get("/:userId", async (req, res) => {
 
     const orderIds = orderQuery.map((o) => o.orderId);
 
-    // Fetch order items
     const productQuery = await db
       .select({
         orderId: orderItemsTable.orderId,
@@ -172,7 +189,6 @@ router.get("/:userId", async (req, res) => {
       .innerJoin(productsTable, eq(orderItemsTable.productId, productsTable.id))
       .where(inArray(orderItemsTable.orderId, orderIds));
 
-    // Merge results
     const map = new Map();
     orderQuery.forEach((o) => {
       map.set(o.orderId, {
