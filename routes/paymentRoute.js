@@ -8,8 +8,7 @@ import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
 import { createOrder, verifyPayment } from '../controllers/paymentController.js';
-import { refundOrder }               from '../controllers/refundController.js';
-import { getPriceBreakdown }         from '../controllers/priceController.js';
+import { getPriceBreakdown } from '../controllers/priceController.js';
 
 const router = express.Router();
 
@@ -32,7 +31,6 @@ router.use(express.urlencoded({ extended: false }));
 router.post('/breakdown',     getPriceBreakdown);
 router.post('/createOrder',   createOrder);
 router.post('/verify-payment', verifyPayment);
-router.post('/refund',        refundOrder);
 
 
 // ─── 2️⃣ PDF UPLOAD & PARSE ────────────────────────────────
