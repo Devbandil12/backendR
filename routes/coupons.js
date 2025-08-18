@@ -1,3 +1,4 @@
+// routes/coupons.js
 import express from "express";
 import { db } from "../configs/index.js";
 import { couponsTable, ordersTable } from "../configs/schema.js";
@@ -19,10 +20,13 @@ router.get("/", async (req, res) => {
 // POST /api/coupons — create new
 router.post("/", async (req, res) => {
   try {
-    const [inserted] = await db
-      .insert(couponsTable)
-      .values(req.body)
-      .returning();
+    const payload = {
+      ...req.body,
+      // Convert the date strings back to Date objects for Drizzle
+      validFrom: req.body.validFrom ? new Date(req.body.validFrom) : null,
+      validUntil: req.body.validUntil ? new Date(req.body.validUntil) : null,
+    };
+    const [inserted] = await db.insert(couponsTable).values(payload).returning();
     res.status(201).json(inserted);
   } catch (err) {
     console.error("Failed to insert coupon:", err);
@@ -92,8 +96,6 @@ router.post("/validate", async (req, res) => {
   }
 });
 
-
-
 // GET /api/coupons/available — list valid coupons for user
 router.get("/available", async (req, res) => {
   const userId = req.query.userId;
@@ -154,14 +156,19 @@ router.get("/available", async (req, res) => {
   }
 });
 
-
 // PUT /api/coupons/:id — update existing
 router.put("/:id", async (req, res) => {
   const id = Number(req.params.id);
   try {
+    const payload = {
+      ...req.body,
+      // Convert the date strings back to Date objects for Drizzle
+      validFrom: req.body.validFrom ? new Date(req.body.validFrom) : null,
+      validUntil: req.body.validUntil ? new Date(req.body.validUntil) : null,
+    };
     await db
       .update(couponsTable)
-      .set(req.body)
+      .set(payload)
       .where(eq(couponsTable.id, id));
     const [updated] = await db
       .select()
@@ -185,7 +192,5 @@ router.delete("/:id", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
-
 
 export default router;
