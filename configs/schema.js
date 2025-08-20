@@ -91,6 +91,7 @@ export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
 export const ordersTable = pgTable('orders', {
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
+userAddressId: uuid('user_address_id').notNull().references(() => UserAddressTable.id),
   razorpay_order_id: text('razorpay_order_id'),
   totalAmount: integer('total_amount').notNull(),
   status: text('status').default('order placed'),
