@@ -46,6 +46,37 @@ router.get("/find-by-clerk-id", async (req, res) => {
   }
 });
 
+// New POST endpoint to create a user if they do not exist
+router.post("/", async (req, res) => {
+  try {
+    const { name, email, clerkId } = req.body;
+    
+    // Check if user already exists based on clerkId
+    const existingUser = await db
+      .select()
+      .from(usersTable)
+      .where(eq(usersTable.clerkId, clerkId));
+
+    if (existingUser.length > 0) {
+      return res.status(200).json(existingUser[0]);
+    }
+
+    // Insert new user into the database
+    const [newUser] = await db
+      .insert(usersTable)
+      .values({ name, email, clerkId })
+      .returning();
+
+    res.status(201).json(newUser);
+  } catch (error) {
+    console.error("❌ [BACKEND] Error creating user:", error);
+    res.status(500).json({ error: "Internal Server Error", details: error.message });
+  }
+});
+
+
+
+
 // New PUT endpoint to update user details
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
