@@ -15,13 +15,17 @@ const razorpay = new Razorpay({
 
 export const createOrder = async (req, res) => {
   try {
-    const { user, phone, couponCode = null, paymentMode = 'online', cartItems } = req.body;
+    const { user, phone, couponCode = null, paymentMode = 'online', cartItems,userAddressId } = req.body;
 
     if (!user) {
       return res.status(401).json({ success: false, msg: 'Please log in first' });
     }
     if (!Array.isArray(cartItems) || cartItems.length === 0) {
       return res.status(400).json({ success: false, msg: 'Cart is empty' });
+    }
+    // Add validation for userAddressId when payment mode is COD
+    if (paymentMode === 'cod' && !userAddressId) {
+      return res.status(400).json({ success: false, msg: 'User address ID is required for COD orders' });
     }
 
     let productTotal = 0;
@@ -94,6 +98,7 @@ export const createOrder = async (req, res) => {
       await db.insert(ordersTable).values({
         id: orderId,
         userId: user.id,
+        userAddressId,
         razorpay_order_id: null,
         totalAmount: finalAmount,
         status: 'order placed',
@@ -149,10 +154,13 @@ export const verifyPayment = async (req, res) => {
       cartItems,
       couponCode = null,
       orderId,
+      userAddressId,
     } = req.body;
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({ success: false, error: "Missing fields" });
+
+     // Add userAddressId to the validation check
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !userAddressId) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
     }
 
     const generatedSignature = crypto
@@ -227,6 +235,7 @@ export const verifyPayment = async (req, res) => {
     await db.insert(ordersTable).values({
       id: orderId,
       userId: user.id,
+      userAddressId,
       razorpay_order_id,
       totalAmount: finalAmount,
       status: 'order placed',
