@@ -36,7 +36,6 @@ router.get("/", async (req, res) => {
 
 
 
-// GET order details by order ID
 router.get("/:id", async (req, res) => {
   try {
     const orderId = req.params.id;
@@ -47,13 +46,24 @@ router.get("/:id", async (req, res) => {
       with: {
         user: {
           columns: {
-            name: true, // This is working
-          },
+            name: true,
+            phone: true // Fetching the user's phone number
+          }
         },
-        address: true, // Fetch the full address details
+        address: {
+          columns: {
+            address: true,
+            landmark: true, 
+            city: true,
+            state: true,
+            postalCode: true,
+            country: true,
+            phone: true, 
+          }
+        },
         orderItems: {
           with: {
-            product: true, // Fetch the product details for each item
+            product: true,
           },
         },
       },
@@ -63,17 +73,18 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: "Order not found" });
     }
 
-    // You should clean up and format the data before sending it
+    // Format the response for the frontend
     const formattedOrder = {
       ...order,
       userName: order.user?.name, // Use optional chaining to be safe
-      shippingAddress: order.address,
+      phone: order.user?.phone, // Phone from user table
+      shippingAddress: order.address, // Full address object
       products: order.orderItems?.map(item => ({
         ...item.product,
         quantity: item.quantity,
         price: item.price,
       })),
-      user: undefined, // Remove user and address to clean up the object
+      user: undefined, // Remove nested user and address to clean up the object
       address: undefined,
       orderItems: undefined,
     };
@@ -84,7 +95,6 @@ router.get("/:id", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
-
 
 router.post("/get-my-orders", async (req, res) => {
   try {
