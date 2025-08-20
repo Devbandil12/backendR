@@ -34,42 +34,51 @@ router.get("/", async (req, res) => {
   }
 });
 
+
+
 // GET order details by order ID
 router.get("/:id", async (req, res) => {
   try {
     const orderId = req.params.id;
-    
-    // Fetch order details
+
+    // Fetch order details including order items, products, the user, and the address
     const order = await db.query.ordersTable.findFirst({
-        where: eq(ordersTable.id, orderId),
-        with: {
-            orderItems: {
-                with: {
-                    product: true,
-                },
-            },
+      where: eq(ordersTable.id, orderId),
+      with: {
+        orderItems: {
+          with: {
+            product: true,
+          },
         },
+        user: {
+          columns: {
+            name: true, // Fetching the user's name
+          },
+        },
+        address: true, // Fetching the associated address
+      },
     });
 
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
     }
-    
-    // Check if the order has orderItems and if each orderItem has a product
-    if (order.orderItems) {
-      order.orderItems.forEach(item => {
-        if (!item.product) {
-          console.warn(`Product not found for order item ID: ${item.id}`);
-        }
-      });
-    }
 
-    res.json(order);
+    // You should also clean up the response before sending it
+    const formattedOrder = {
+      ...order,
+      userName: order.user.name,
+      shippingAddress: { ...order.address },
+      user: undefined,
+      address: undefined,
+    };
+
+    res.json(formattedOrder);
   } catch (error) {
     console.error("❌ Error fetching order details:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
 
 router.post("/get-my-orders", async (req, res) => {
   try {
