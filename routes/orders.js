@@ -81,6 +81,7 @@ router.get("/:id", async (req, res) => {
       shippingAddress: order.address, // Full address object
       products: order.orderItems?.map(item => ({
         ...item.product,
+        productName: item.product.name, 
         quantity: item.quantity,
         price: item.price,
       })),
