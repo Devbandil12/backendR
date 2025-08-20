@@ -111,10 +111,16 @@ export const ordersTable = pgTable('orders', {
   discountAmount: integer('discount_amount'),
 });
 
+// Update the ordersRelations to include the new one-to-one relationship
 export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
   user: one(usersTable, {
     fields: [ordersTable.userId],
     references: [usersTable.id],
+  }),
+  // New relationship to get the address
+  address: one(UserAddressTable, {
+    fields: [ordersTable.userAddressId],
+    references: [UserAddressTable.id],
   }),
   orderItems: many(orderItemsTable),
 }));
