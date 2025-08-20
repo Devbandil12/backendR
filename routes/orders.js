@@ -41,21 +41,21 @@ router.get("/:id", async (req, res) => {
   try {
     const orderId = req.params.id;
 
-    // Fetch order details including order items, products, the user, and the address
+    // Fetch order details including user, address, and all products
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.id, orderId),
       with: {
-        orderItems: {
-          with: {
-            product: true,
-          },
-        },
         user: {
           columns: {
-            name: true, // Fetching the user's name
+            name: true, // This is working
           },
         },
-        address: true, // Fetching the associated address
+        address: true, // Fetch the full address details
+        orderItems: {
+          with: {
+            product: true, // Fetch the product details for each item
+          },
+        },
       },
     });
 
@@ -63,13 +63,19 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: "Order not found" });
     }
 
-    // You should also clean up the response before sending it
+    // You should clean up and format the data before sending it
     const formattedOrder = {
       ...order,
-      userName: order.user.name,
-      shippingAddress: { ...order.address },
-      user: undefined,
+      userName: order.user?.name, // Use optional chaining to be safe
+      shippingAddress: order.address,
+      products: order.orderItems?.map(item => ({
+        ...item.product,
+        quantity: item.quantity,
+        price: item.price,
+      })),
+      user: undefined, // Remove user and address to clean up the object
       address: undefined,
+      orderItems: undefined,
     };
 
     res.json(formattedOrder);
