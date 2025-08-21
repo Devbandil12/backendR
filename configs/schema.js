@@ -95,7 +95,7 @@ userAddressId: uuid('user_address_id').notNull().references(() => UserAddressTab
   razorpay_order_id: text('razorpay_order_id'),
   totalAmount: integer('total_amount').notNull(),
   status: text('status').default('order placed'),
-  progressStep: text('progressStep').default('0'),
+  progressStep: integer('progressStep').default('0'),
   paymentMode: text('payment_mode').notNull(),
   transactionId: text('transaction_id').default("null"),
   paymentStatus: text("payment_status").default("pending"),
