@@ -3,11 +3,14 @@ import express from "express";
 import { db } from "../configs/index.js";
 import { couponsTable, ordersTable } from "../configs/schema.js";
 import { eq, and } from "drizzle-orm";
+// 🟢 Import your cache middleware
+import { cache, invalidateCache } from "./cacheMiddleware.js";
 
 const router = express.Router();
 
 // GET /api/coupons — list all
-router.get("/", async (req, res) => {
+// 🟢 Cache this route as it's a list of all coupons and likely doesn't change often.
+router.get("/", cache("all-coupons", 3600), async (req, res) => {
   try {
     const all = await db.select().from(couponsTable);
     res.json(all);
@@ -22,11 +25,14 @@ router.post("/", async (req, res) => {
   try {
     const payload = {
       ...req.body,
-      // Convert the date strings back to Date objects for Drizzle
       validFrom: req.body.validFrom ? new Date(req.body.validFrom) : null,
       validUntil: req.body.validUntil ? new Date(req.body.validUntil) : null,
     };
     const [inserted] = await db.insert(couponsTable).values(payload).returning();
+    // 🟢 Invalidate the cache for all coupons after a new one is created.
+    await invalidateCache("all-coupons");
+    await invalidateCache("available-coupons");
+    await invalidateCache("coupon-validation");
     res.status(201).json(inserted);
   } catch (err) {
     console.error("Failed to insert coupon:", err);
@@ -35,15 +41,14 @@ router.post("/", async (req, res) => {
 });
 
 // POST /api/coupons/validate — validate coupon code for user
-router.post("/validate", async (req, res) => {
+// 🟢 Cache this route. The key should include both `code` and `userId` to be unique.
+router.post("/validate", cache("coupon-validation", 60), async (req, res) => {
   const { code, userId } = req.body;
-
   if (!code || !userId) {
     return res.status(400).json({ error: "Coupon code and user ID are required" });
   }
 
   try {
-    // Fetch coupon
     const [coupon] = await db.select().from(couponsTable).where(eq(couponsTable.code, code));
     if (!coupon) {
       return res.status(404).json({ message: "Coupon not found" });
@@ -57,7 +62,6 @@ router.post("/validate", async (req, res) => {
       return res.status(400).json({ message: "Coupon expired" });
     }
 
-    // First order only check
     if (coupon.firstOrderOnly) {
       const userOrders = await db
         .select()
@@ -68,7 +72,6 @@ router.post("/validate", async (req, res) => {
       }
     }
 
-    // User usage of this coupon
     const usedCouponOrders = await db
       .select()
       .from(ordersTable)
@@ -86,10 +89,7 @@ router.post("/validate", async (req, res) => {
       return res.status(400).json({ message: "Coupon usage limit reached" });
     }
 
-    // THIS IS THE KEY CHANGE
-    // Instead of { success: true, coupon: coupon }, just send the coupon object
     res.json(coupon);
-
   } catch (err) {
     console.error("Coupon validation failed:", err);
     res.status(500).json({ message: "Server error" });
@@ -97,23 +97,19 @@ router.post("/validate", async (req, res) => {
 });
 
 // GET /api/coupons/available — list valid coupons for user
-router.get("/available", async (req, res) => {
+// 🟢 Cache this route. The middleware already handles the unique URL for each user ID.
+router.get("/available", cache("available-coupons", 300), async (req, res) => {
   const userId = req.query.userId;
   if (!userId || typeof userId !== "string") {
     return res.status(400).json({ error: "Valid userId is required" });
   }
 
   try {
-    // Fetch all coupons
     const allCoupons = await db.select().from(couponsTable);
-
-    // Fetch user's orders
     const usages = await db
       .select()
       .from(ordersTable)
       .where(eq(ordersTable.userId, userId));
-
-    // Build map of couponCode -> usage count
     const usageMap = {};
     usages.forEach(order => {
       if (order.couponCode) {
@@ -122,30 +118,15 @@ router.get("/available", async (req, res) => {
     });
 
     const now = new Date();
-
-    // Filter coupons
     const availableCoupons = allCoupons.filter(coupon => {
       const usageCount = usageMap[coupon.code] || 0;
-
-      if (coupon.maxUsagePerUser !== null && usageCount >= coupon.maxUsagePerUser) {
-        return false;
-      }
-
-      if (coupon.validFrom && now < new Date(coupon.validFrom)) {
-        return false;
-      }
-
-      if (coupon.validUntil && now > new Date(coupon.validUntil)) {
-        return false;
-      }
-
+      if (coupon.maxUsagePerUser !== null && usageCount >= coupon.maxUsagePerUser) return false;
+      if (coupon.validFrom && now < new Date(coupon.validFrom)) return false;
+      if (coupon.validUntil && now > new Date(coupon.validUntil)) return false;
       if (coupon.firstOrderOnly) {
         const userOrderCount = usages.length;
-        if (userOrderCount > 0) {
-          return false;
-        }
+        if (userOrderCount > 0) return false;
       }
-
       return true;
     });
 
@@ -162,18 +143,18 @@ router.put("/:id", async (req, res) => {
   try {
     const payload = {
       ...req.body,
-      // Convert the date strings back to Date objects for Drizzle
       validFrom: req.body.validFrom ? new Date(req.body.validFrom) : null,
       validUntil: req.body.validUntil ? new Date(req.body.validUntil) : null,
     };
-    await db
+    const [updated] = await db
       .update(couponsTable)
       .set(payload)
-      .where(eq(couponsTable.id, id));
-    const [updated] = await db
-      .select()
-      .from(couponsTable)
-      .where(eq(couponsTable.id, id));
+      .where(eq(couponsTable.id, id))
+      .returning();
+    // 🟢 Invalidate the cache for all coupons after a modification.
+    await invalidateCache("all-coupons");
+    await invalidateCache("available-coupons");
+    await invalidateCache("coupon-validation");
     res.json(updated);
   } catch (err) {
     console.error("Failed to update coupon:", err);
@@ -186,6 +167,10 @@ router.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
   try {
     await db.delete(couponsTable).where(eq(couponsTable.id, id));
+    // 🟢 Invalidate the cache for all coupons after a deletion.
+    await invalidateCache("all-coupons");
+    await invalidateCache("available-coupons");
+    await invalidateCache("coupon-validation");
     res.sendStatus(204);
   } catch (err) {
     console.error("Failed to delete coupon:", err);
