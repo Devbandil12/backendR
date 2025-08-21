@@ -8,11 +8,14 @@ import {
   usersTable,
 } from "../configs/schema.js";
 import { eq, inArray, and, asc } from "drizzle-orm";
+// 🟢 Import your cache and invalidateCache middleware
+import { cache, invalidateCache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
 // New GET endpoint to fetch all orders for admin panel
-router.get("/", async (req, res) => {
+// 🟢 Cache this GET route with a generous TTL
+router.get("/", cache("all-orders", 600), async (req, res) => {
   try {
     const allOrders = await db
       .select({
@@ -34,20 +37,17 @@ router.get("/", async (req, res) => {
   }
 });
 
-
-
-router.get("/:id", async (req, res) => {
+router.get("/:id", cache("order-details", 3600), async (req, res) => {
   try {
     const orderId = req.params.id;
 
-    // Fetch order details including user, address, and all products
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.id, orderId),
       with: {
         user: {
           columns: {
             name: true,
-            phone: true // Fetching the user's phone number
+            phone: true
           }
         },
         address: {
@@ -58,7 +58,7 @@ router.get("/:id", async (req, res) => {
             state: true,
             postalCode: true,
             country: true,
-            phone: true, 
+            phone: true,
           }
         },
         orderItems: {
@@ -73,19 +73,18 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: "Order not found" });
     }
 
-    // Format the response for the frontend
     const formattedOrder = {
       ...order,
-      userName: order.user?.name, // Use optional chaining to be safe
-      phone: order.user?.phone, // Phone from user table
-      shippingAddress: order.address, // Full address object
+      userName: order.user?.name,
+      phone: order.user?.phone,
+      shippingAddress: order.address,
       products: order.orderItems?.map(item => ({
         ...item.product,
         productName: item.product.name, 
         quantity: item.quantity,
         price: item.price,
       })),
-      user: undefined, // Remove nested user and address to clean up the object
+      user: undefined,
       address: undefined,
       orderItems: undefined,
     };
@@ -97,7 +96,8 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-router.post("/get-my-orders", async (req, res) => {
+// 🟢 Cache this POST route as it's a read operation
+router.post("/get-my-orders", cache("user-orders", 300), async (req, res) => {
   try {
     const { userId } = req.body;
     if (!userId) {
@@ -140,6 +140,10 @@ router.put("/:id/status", async (req, res) => {
     if (!updatedOrder) {
       return res.status(404).json({ error: "Order not found" });
     }
+    // 🟢 Invalidate the cache for all orders and the specific order
+    await invalidateCache("all-orders");
+    await invalidateCache("order-details");
+    await invalidateCache("user-orders");
 
     res.status(200).json({ message: "Order status updated successfully", updatedOrder });
   } catch (error) {
@@ -164,6 +168,10 @@ router.put("/:id/cancel", async (req, res) => {
     if (!canceledOrder) {
       return res.status(404).json({ error: "Order not found or cannot be canceled" });
     }
+    // 🟢 Invalidate the cache for all orders and the specific order
+    await invalidateCache("all-orders");
+    await invalidateCache("order-details");
+    await invalidateCache("user-orders");
 
     res.status(200).json({ message: "Order canceled successfully", canceledOrder });
   } catch (error) {
