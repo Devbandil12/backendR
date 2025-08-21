@@ -131,9 +131,29 @@ router.put("/:id/status", async (req, res) => {
     if (!id || !status) {
       return res.status(400).json({ error: "Order ID and status are required" });
     }
+
+    let newProgressStep = 1;
+    switch (status) {
+      case "Processing":
+        newProgressStep = 2;
+        break;
+      case "Shipped":
+        newProgressStep = 3;
+        break;
+      case "Delivered":
+        newProgressStep = 4;
+        break;
+      default:
+        newProgressStep = 1;
+    }
+
+
     const [updatedOrder] = await db
       .update(ordersTable)
-      .set({ status })
+      .set({ 
+        status: status,
+        progressStep: newProgressStep.toString() 
+      })
       .where(eq(ordersTable.id, id))
       .returning();
 
