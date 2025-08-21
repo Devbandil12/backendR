@@ -1,4 +1,4 @@
-import { redis } from "../configs/redis.js";
+import { redis } from "../src/configs/redis.js";
 
 /**
  * Cache middleware for GET requests
