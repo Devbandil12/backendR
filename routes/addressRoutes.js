@@ -8,7 +8,7 @@ import {
   softDeleteAddress,
   setDefaultAddress
 } from "../controllers/addressController.js";
-import { cache, invalidateCache } from "./cacheMiddleware.js";
+import { cache, invalidateCache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
