@@ -3,7 +3,7 @@ import { db } from "../configs/index.js";
 import { usersTable, ordersTable, orderItemsTable, productsTable, UserAddressTable } from "../configs/schema.js";
 import { eq, asc, inArray } from "drizzle-orm";
 // 🟢 Import your cache middleware
-import { cache, invalidateCache } from "./cacheMiddleware.js";
+import { cache, invalidateCache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
