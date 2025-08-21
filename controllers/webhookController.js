@@ -1,4 +1,3 @@
-// server/controllers/razorpayWebhookHandler.js
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
@@ -44,42 +43,69 @@ const razorpayWebhookHandler = async (req, res) => {
   const now = new Date().toISOString();
 
   try {
+    // 🟢 Fetch the existing order to check its current status (idempotency check)
+    const [existingOrder] = await db
+      .select()
+      .from(ordersTable)
+      .where(eq(ordersTable.refund_id, entity.id));
+
+    if (!existingOrder) {
+      console.warn(`⚠️ Order not found for refund ID: ${entity.id}`);
+      return res.status(404).send('Order not found');
+    }
+
     switch (event) {
       case 'refund.created':
-        await db.update(ordersTable).set({
-          refund_status: 'in_progress',
-          refund_initiated_at: safeDate(entity.created_at),
-          refund_speed: entity.speed_processed,
-          updatedAt: now,
-        }).where(eq(ordersTable.refund_id, entity.id));
-        console.log(`🔄 refund.created → in_progress [${entity.id}]`);
+        if (existingOrder.refund_status !== 'in_progress') {
+          await db.update(ordersTable).set({
+            refund_status: 'in_progress',
+            refund_initiated_at: safeDate(entity.created_at),
+            refund_speed: entity.speed_processed,
+            updatedAt: now,
+          }).where(eq(ordersTable.refund_id, entity.id));
+          console.log(`🔄 refund.created → in_progress [${entity.id}]`);
+        } else {
+          console.log(`ℹ️ Duplicate event for refund created [${entity.id}]`);
+        }
         break;
 
       case 'refund.speed_changed':
-        await db.update(ordersTable).set({
-          refund_speed: entity.speed_processed,
-          updatedAt: now,
-        }).where(eq(ordersTable.refund_id, entity.id));
-        console.log(`🔁 refund.speed_changed → ${entity.speed_processed} [${entity.id}]`);
+        if (existingOrder.refund_speed !== entity.speed_processed) {
+          await db.update(ordersTable).set({
+            refund_speed: entity.speed_processed,
+            updatedAt: now,
+          }).where(eq(ordersTable.refund_id, entity.id));
+          console.log(`🔁 refund.speed_changed → ${entity.speed_processed} [${entity.id}]`);
+        } else {
+          console.log(`ℹ️ Duplicate speed change event [${entity.id}]`);
+        }
         break;
 
       case 'refund.processed':
-        await db.update(ordersTable).set({
-          refund_status: 'processed',
-          refund_completed_at: safeDate(entity.processed_at),
-          refund_speed: entity.speed_processed,
-          paymentStatus: 'refunded',
-          updatedAt: now,
-        }).where(eq(ordersTable.refund_id, entity.id));
-        console.log(`✅ refund.processed → processed [${entity.id}]`);
+        if (existingOrder.refund_status !== 'processed') {
+          await db.update(ordersTable).set({
+            refund_status: 'processed',
+            refund_completed_at: safeDate(entity.processed_at),
+            refund_speed: entity.speed_processed,
+            paymentStatus: 'refunded',
+            updatedAt: now,
+          }).where(eq(ordersTable.refund_id, entity.id));
+          console.log(`✅ refund.processed → processed [${entity.id}]`);
+        } else {
+          console.log(`ℹ️ Duplicate event for processed refund [${entity.id}]`);
+        }
         break;
 
       case 'refund.failed':
-        await db.update(ordersTable).set({
-          refund_status: 'failed',
-          updatedAt: now,
-        }).where(eq(ordersTable.refund_id, entity.id));
-        console.log(`❌ refund.failed → failed [${entity.id}]`);
+        if (existingOrder.refund_status !== 'failed') {
+          await db.update(ordersTable).set({
+            refund_status: 'failed',
+            updatedAt: now,
+          }).where(eq(ordersTable.refund_id, entity.id));
+          console.log(`❌ refund.failed → failed [${entity.id}]`);
+        } else {
+          console.log(`ℹ️ Duplicate failed event [${entity.id}]`);
+        }
         break;
 
       default:
