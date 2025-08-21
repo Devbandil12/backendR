@@ -8,7 +8,7 @@ import {
   isVerifiedBuyer,
 } from "../controllers/reviewController.js";
 // 🟢 Add this import to bring in your cache functions
-import { cache, invalidateCache } from "./cacheMiddleware.js";
+import { cache, invalidateCache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
