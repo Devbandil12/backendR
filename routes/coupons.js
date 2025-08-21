@@ -4,7 +4,7 @@ import { db } from "../configs/index.js";
 import { couponsTable, ordersTable } from "../configs/schema.js";
 import { eq, and } from "drizzle-orm";
 // 🟢 Import your cache middleware
-import { cache, invalidateCache } from "./cacheMiddleware.js";
+import { cache, invalidateCache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
