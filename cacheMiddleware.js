@@ -44,7 +44,12 @@ export async function invalidateCache(prefix) {
   try {
     const keys = await redis.keys(`${prefix}:*`);
     if (keys.length > 0) {
-      await redis.del(keys);
+      // 🟢 Use a pipeline for more efficient deletion
+      const pipeline = redis.pipeline();
+      for (const key of keys) {
+        pipeline.del(key);
+      }
+      await pipeline.exec();
       console.log(`♻️ Cache invalidated for prefix: ${prefix}`);
     }
   } catch (err) {
