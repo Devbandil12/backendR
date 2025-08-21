@@ -1,18 +1,21 @@
 import express from "express";
 import { db } from "../configs/index.js";
 import { usersTable, ordersTable, orderItemsTable, productsTable, UserAddressTable } from "../configs/schema.js";
-import { eq } from "drizzle-orm";
+import { eq, asc, inArray } from "drizzle-orm";
+// 🟢 Import your cache middleware
+import { cache, invalidateCache } from "./cacheMiddleware.js";
 
 const router = express.Router();
 
-// New GET route to fetch all users for the admin panel with their addresses and orders
-router.get("/", async (req, res) => {
+// 1. Caching the admin panel route
+// This is a great candidate as it's a heavy query
+router.get("/", cache("all-users", 3600), async (req, res) => {
   try {
     const allUsers = await db.query.usersTable.findMany({
       with: {
         orders: {
           with: {
-            orderItems: true, // Also include the products for each order
+            orderItems: true,
           },
         },
         addresses: true,
@@ -26,8 +29,9 @@ router.get("/", async (req, res) => {
 });
 
 
-// Existing route to find user by clerkId
-router.get("/find-by-clerk-id", async (req, res) => {
+// 2. Caching the find-by-clerk-id route
+// This route will be hit frequently for user data
+router.get("/find-by-clerk-id", cache("user-clerk-id", 300), async (req, res) => {
   try {
     const clerkId = req.query.clerkId;
     if (!clerkId) {
@@ -46,12 +50,12 @@ router.get("/find-by-clerk-id", async (req, res) => {
   }
 });
 
-// New POST endpoint to create a user if they do not exist
+// 3. Post endpoint for creating a user
+// No cache middleware is needed here as it's a POST request
 router.post("/", async (req, res) => {
   try {
     const { name, email, clerkId } = req.body;
     
-    // Check if user already exists based on clerkId
     const existingUser = await db
       .select()
       .from(usersTable)
@@ -61,11 +65,15 @@ router.post("/", async (req, res) => {
       return res.status(200).json(existingUser[0]);
     }
 
-    // Insert new user into the database
     const [newUser] = await db
       .insert(usersTable)
       .values({ name, email, clerkId })
       .returning();
+
+    // 🟢 Invalidate the cache for all-users after a new user is created
+    await invalidateCache("all-users");
+    // 🟢 Invalidate the cache for the specific user found by their clerk ID
+    await invalidateCache("user-clerk-id");
 
     res.status(201).json(newUser);
   } catch (error) {
@@ -75,9 +83,8 @@ router.post("/", async (req, res) => {
 });
 
 
-
-
-// New PUT endpoint to update user details
+// 4. PUT endpoint for updating user details
+// Invalidate cache after an update
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
   try {
@@ -90,6 +97,10 @@ router.put("/:id", async (req, res) => {
     if (!updatedUser) {
       return res.status(404).json({ message: "User not found" });
     }
+    // 🟢 Invalidate the cache for all-users after an update
+    await invalidateCache("all-users");
+    // 🟢 Invalidate the cache for the specific user
+    await invalidateCache("user-details");
     res.json(updatedUser);
   } catch (err) {
     console.error("Failed to update user:", err);
@@ -97,11 +108,16 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-// New DELETE endpoint to delete a user
+// 5. DELETE endpoint for a user
+// Invalidate cache after deletion
 router.delete("/:id", async (req, res) => {
   const { id } = req.params;
   try {
     await db.delete(usersTable).where(eq(usersTable.id, id));
+    // 🟢 Invalidate the cache for all-users after a deletion
+    await invalidateCache("all-users");
+    // 🟢 Invalidate the cache for the specific user that was deleted
+    await invalidateCache("user-details");
     res.status(204).send();
   } catch (err) {
     console.error("Failed to delete user:", err);
@@ -109,8 +125,10 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-// The remaining routes from your original file are for fetching a user's specific orders, which is distinct from the admin panel's needs. We will keep them for the frontend logic.
-router.get("/:id/addresses", async (req, res) => {
+
+// 6. Caching the addresses and orders routes
+// These are also good candidates for caching
+router.get("/:id/addresses", cache("user-addresses", 300), async (req, res) => {
   try {
     const userId = req.params.id;
 
@@ -126,12 +144,13 @@ router.get("/:id/addresses", async (req, res) => {
   }
 });
 
-router.get("/:userId", async (req, res) => {
+router.get("/:userId", cache("user-orders", 300), async (req, res) => {
   try {
     const { userId } = req.params;
 
     const orderQuery = await db
       .select({
+        // ... (rest of your select fields)
         phone: ordersTable.phone,
         orderId: ordersTable.id,
         userId: ordersTable.userId,
