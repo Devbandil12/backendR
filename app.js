@@ -41,6 +41,13 @@ app.post(
   razorpayWebhookHandler
 );
 
+
+// ───── JSON Body Parser (must be before routes using req.body) ─────
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+
+
 const errorStore = [];
 
 // ───── Utility: map error to original source dynamically ─────
