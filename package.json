@@ -26,6 +26,7 @@
     "pdf-parse": "^1.1.1",
     "razorpay": "^2.8.6",
     "node-fetch": "^3.3.2",
+    "source-map": "^0.7.4", 
     "ioredis": "^5.4.1"
   },
   "devDependencies": {
