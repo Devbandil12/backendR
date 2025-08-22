@@ -52,6 +52,13 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: false, limit: '5mb' }));
 
 
+app.post("/api/log-error", (req, res) => {
+  console.log("Client error reported:", req.body);
+  res.sendStatus(200);
+});
+
+
+
 // ───── Routes ─────
 app.use('/api/payments', paymentRoutes);
 app.use('/api/coupons', couponsRouter);
