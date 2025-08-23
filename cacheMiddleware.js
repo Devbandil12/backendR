@@ -2,17 +2,15 @@ import { redis } from "../src/configs/redis.js";
 
 /**
  * Cache middleware for GET requests
- * @param {string} prefix - cache key prefix (e.g. "products")
- * @param {number} ttl - cache expiration in seconds
+ * @param {string|function} keyOrFn - cache key or function(req) => key
+ * @param {number} ttl - expiration in seconds
  */
-export function cache(prefix, ttl = 60) {
+export function cache(keyOrFn, ttl = 60) {
   return async (req, res, next) => {
     try {
-      // Skip cache for non-GET requests
       if (req.method !== "GET") return next();
 
-      // Build unique key (prefix + URL)
-      const key = `${prefix}:${req.originalUrl}`;
+      const key = typeof keyOrFn === "function" ? keyOrFn(req) : keyOrFn;
       const cached = await redis.get(key);
 
       if (cached) {
@@ -20,7 +18,7 @@ export function cache(prefix, ttl = 60) {
         return res.json(JSON.parse(cached));
       }
 
-      // Wrap res.json to store response in cache
+      // Wrap res.json to cache fresh data
       const originalJson = res.json.bind(res);
       res.json = (data) => {
         redis.set(key, JSON.stringify(data), "EX", ttl).catch(console.error);
@@ -30,27 +28,28 @@ export function cache(prefix, ttl = 60) {
       next();
     } catch (err) {
       console.error("⚠️ Cache middleware error:", err.message);
-      next(); // fallback
+      next();
     }
   };
 }
 
 /**
- * Invalidate cache for a given prefix
- * Use this after POST/PUT/DELETE to avoid stale data
- * @param {string} prefix - cache key prefix
+ * Invalidate cache by exact key or prefix
+ * If prefix = true, deletes all matching keys
  */
-export async function invalidateCache(prefix) {
+export async function invalidateCache(key, prefix = false) {
   try {
-    const keys = await redis.keys(`${prefix}:*`);
-    if (keys.length > 0) {
-      // 🟢 Use a pipeline for more efficient deletion
-      const pipeline = redis.pipeline();
-      for (const key of keys) {
-        pipeline.del(key);
+    if (prefix) {
+      const keys = await redis.keys(`${key}*`);
+      if (keys.length > 0) {
+        const pipeline = redis.pipeline();
+        keys.forEach((k) => pipeline.del(k));
+        await pipeline.exec();
+        console.log(`♻️ Cache invalidated (prefix): ${key}`);
       }
-      await pipeline.exec();
-      console.log(`♻️ Cache invalidated for prefix: ${prefix}`);
+    } else {
+      await redis.del(key);
+      console.log(`♻️ Cache invalidated (single): ${key}`);
     }
   } catch (err) {
     console.error("⚠️ Failed to invalidate cache:", err.message);
