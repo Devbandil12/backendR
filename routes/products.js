@@ -1,4 +1,3 @@
-// routes/products.js
 import express from "express";
 import { db } from "../configs/index.js";
 import { productsTable } from "../configs/schema.js";
@@ -9,7 +8,7 @@ const router = express.Router();
 
 /**
  * 🟢 GET all products
- * Cache: 1 hour
+ * Cache for 1 hour
  */
 router.get("/", cache("all-products", 3600), async (req, res) => {
   try {
@@ -38,31 +37,38 @@ router.get("/", cache("all-products", 3600), async (req, res) => {
 
 /**
  * 🟢 GET single product by ID
- * Cache: 30 min
+ * Cache for 30 min
  */
-router.get("/:id", cache((req) => `product-${req.params.id}`, 1800), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const [product] = await db.select().from(productsTable).where(eq(productsTable.id, id));
+router.get(
+  "/:id",
+  cache((req) => `product-${req.params.id}`, 1800),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const [product] = await db
+        .select()
+        .from(productsTable)
+        .where(eq(productsTable.id, id));
 
-    if (!product) return res.status(404).json({ error: "Product not found" });
+      if (!product) return res.status(404).json({ error: "Product not found" });
 
-    if (typeof product.imageurl === "string") {
-      try {
-        product.imageurl = JSON.parse(product.imageurl);
-      } catch {}
+      if (typeof product.imageurl === "string") {
+        try {
+          product.imageurl = JSON.parse(product.imageurl);
+        } catch {}
+      }
+
+      res.json(product);
+    } catch (error) {
+      console.error("❌ Error fetching product:", error);
+      res.status(500).json({ error: "Server error" });
     }
-
-    res.json(product);
-  } catch (error) {
-    console.error("❌ Error fetching product:", error);
-    res.status(500).json({ error: "Server error" });
   }
-});
+);
 
 /**
- * 🟢 POST new product
- * Clears cache if DB insert succeeds
+ * 🟢 POST add new product
+ * Clears cache only AFTER DB success
  */
 router.post("/", async (req, res) => {
   try {
@@ -76,8 +82,8 @@ router.post("/", async (req, res) => {
       })
       .returning();
 
-    // ✅ Invalidate cache AFTER DB success
-    await invalidateCache("all-products");
+    // ✅ Invalidate caches
+    await invalidateCache("all-products", true);
     await invalidateCache(`product-${newProduct.id}`);
 
     res.status(201).json(newProduct);
@@ -89,7 +95,7 @@ router.post("/", async (req, res) => {
 
 /**
  * 🟢 PUT update product
- * Clears cache if DB update succeeds
+ * Clears cache only AFTER DB success
  */
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
@@ -110,8 +116,8 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    // ✅ Invalidate cache AFTER DB success
-    await invalidateCache("all-products");
+    // ✅ Invalidate caches
+    await invalidateCache("all-products", true);
     await invalidateCache(`product-${id}`);
 
     res.json(updatedProduct);
@@ -123,7 +129,7 @@ router.put("/:id", async (req, res) => {
 
 /**
  * 🟢 DELETE product
- * Clears cache if DB delete succeeds
+ * Clears cache only AFTER DB success
  */
 router.delete("/:id", async (req, res) => {
   const { id } = req.params;
@@ -137,8 +143,8 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    // ✅ Invalidate cache AFTER DB success
-    await invalidateCache("all-products");
+    // ✅ Invalidate caches
+    await invalidateCache("all-products", true);
     await invalidateCache(`product-${id}`);
 
     res.json({ success: true, deletedProduct });
