@@ -55,4 +55,20 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
+
+// GET /api/contact/user/:email
+router.get("/user/:email", async (req, res) => {
+    try {
+        const { email } = req.params;
+        const queries = await db.select().from(querytable).where(eq(querytable.email, email));
+        res.json(queries);
+    } catch (error) {
+        console.error("❌ Error fetching user queries:", error);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+
+
+
 export default router;
