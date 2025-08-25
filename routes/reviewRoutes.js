@@ -61,4 +61,20 @@ router.put("/:id", async (req, res, next) => {
   }
 });
 
+
+
+// GET /api/reviews/user/:userId
+router.get("/user/:userId", async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const reviews = await db.select().from(reviewsTable).where(eq(reviewsTable.userId, userId));
+        res.json(reviews);
+    } catch (error) {
+        console.error("❌ Error fetching user reviews:", error);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+
+
 export default router;
