@@ -271,3 +271,16 @@ export const updateReview = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
+
+
+// ✅ Get Reviews by User
+export const getReviewsByUser = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const reviews = await db.select().from(reviewsTable).where(eq(reviewsTable.userId, userId));
+        res.json(reviews);
+    } catch (error) {
+        console.error("❌ Error fetching user reviews:", error);
+        res.status(500).json({ error: "Server error" });
+    }
+};
