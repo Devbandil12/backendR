@@ -114,6 +114,25 @@ export const createOrder = async (req, res) => {
 
       await db.insert(orderItemsTable).values(enrichedItems);
 
+      // 🔴 Reduce stock for each product
+  for (const item of cartItems) {
+    const [product] = await db
+      .select()
+      .from(productsTable)
+      .where(eq(productsTable.id, item.id));
+
+    if (!product || product.stock < item.quantity) {
+      return res.status(400).json({ success: false, msg: `Not enough stock for ${product?.name || 'product'}` });
+    }
+
+    await db
+      .update(productsTable)
+      .set({ stock: product.stock - item.quantity })
+      .where(eq(productsTable.id, item.id));
+  }
+
+
+
       return res.json({
         success: true,
         orderId,
@@ -250,6 +269,23 @@ export const verifyPayment = async (req, res) => {
     });
 
     await db.insert(orderItemsTable).values(enrichedItems);
+
+   // 🔴 Reduce stock for each product
+for (const item of cartItems) {
+  const [product] = await db
+    .select()
+    .from(productsTable)
+    .where(eq(productsTable.id, item.id));
+
+  if (!product || product.stock < item.quantity) {
+    return res.status(400).json({ success: false, msg: `Not enough stock for ${product?.name || 'product'}` });
+  }
+
+  await db
+    .update(productsTable)
+    .set({ stock: product.stock - item.quantity })
+    .where(eq(productsTable.id, item.id));
+}
 
     return res.json({ success: true, message: "Payment verified & order placed." });
 
