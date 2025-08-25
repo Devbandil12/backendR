@@ -30,7 +30,6 @@ router.get("/", cache("all-users", 3600), async (req, res) => {
 
 
 // 2. Caching the find-by-clerk-id route
-// This route will be hit frequently for user data
 router.get("/find-by-clerk-id", cache("user-clerk-id", 300), async (req, res) => {
   try {
     const clerkId = req.query.clerkId;
@@ -43,12 +42,23 @@ router.get("/find-by-clerk-id", cache("user-clerk-id", 300), async (req, res) =>
       .from(usersTable)
       .where(eq(usersTable.clerkId, clerkId));
 
-    res.json(user[0] || null);
+    if (!user[0]) return res.json(null);
+
+    // Add new fields without changing existing logic
+    const userData = {
+      ...user[0],
+      profileImage: user[0].profileImage || null,
+      dob: user[0].dob || null,
+      gender: user[0].gender || null,
+    };
+
+    res.json(userData);
   } catch (error) {
     console.error("❌ [BACKEND] Error fetching user by clerkId:", error);
     res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 });
+
 
 // 3. Post endpoint for creating a user
 // No cache middleware is needed here as it's a POST request
@@ -84,29 +94,38 @@ router.post("/", async (req, res) => {
 
 
 // 4. PUT endpoint for updating user details
-// Invalidate cache after an update
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
   try {
+    // Include new fields in update
+    const { profileImage, dob, gender, ...rest } = req.body;
+
     const [updatedUser] = await db
       .update(usersTable)
-      .set(req.body)
+      .set({
+        ...rest,
+        ...(profileImage !== undefined && { profileImage }),
+        ...(dob !== undefined && { dob }),
+        ...(gender !== undefined && { gender }),
+      })
       .where(eq(usersTable.id, id))
       .returning();
 
     if (!updatedUser) {
       return res.status(404).json({ message: "User not found" });
     }
-    // 🟢 Invalidate the cache for all-users after an update
+
+    // Invalidate caches
     await invalidateCache("all-users");
-    // 🟢 Invalidate the cache for the specific user
     await invalidateCache("user-details");
+
     res.json(updatedUser);
   } catch (err) {
     console.error("Failed to update user:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
+
 
 // 5. DELETE endpoint for a user
 // Invalidate cache after deletion
