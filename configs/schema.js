@@ -39,10 +39,10 @@ export const productsTable = pgTable('products', {
   description: varchar('description', { length: 255 }).notNull(),
   fragrance: varchar('fragrance', { length: 255 }).notNull(),
   fragranceNotes: varchar('fragranceNotes', { length: 255 }).notNull(),
-  quantity: integer('quantity').notNull().default(1),
   discount: integer('discount').notNull(),
   oprice: integer('oprice').notNull(),
   size: integer('size').notNull(),
+  stock: integer("stock").notNull().default(0),
   imageurl: jsonb("imageurl").notNull().default(sql`'[]'::jsonb`),
 });
 
