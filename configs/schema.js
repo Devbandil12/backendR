@@ -14,6 +14,9 @@ export const usersTable = pgTable('users', {
   email: text('email').notNull(),
   role: text('role').default('user'),
   cartlength: integer("cart_length").default(0),
+  profileImage: text('profile_image').default(null),
+  dob: timestamp('dob', { withTimezone: true }).default(null),
+  gender: text('gender').default(null),
 });
 
 export const usersRelations = relations(usersTable, ({ many }) => ({
