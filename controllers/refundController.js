@@ -104,6 +104,22 @@ refund_completed_at: refund.status === 'processed'
       })
       .where(eq(ordersTable.id, orderId));
 
+      
+     // Step 8: Restore stock for each product in the refunded order
+const orderItems = await db
+  .select()
+  .from(orderItemsTable)
+  .where(eq(orderItemsTable.orderId, orderId));
+
+for (const item of orderItems) {
+  await db
+    .update(productsTable)
+    .set({ stock: sql`${productsTable.stock} + ${item.quantity}` })
+    .where(eq(productsTable.id, item.productId));
+}
+
+
+
     return res.json({ success: true, refund });
 
   } catch (err) {
