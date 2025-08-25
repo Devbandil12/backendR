@@ -178,7 +178,8 @@ router.put("/:id/cancel", async (req, res) => {
     if (!id) {
       return res.status(400).json({ error: "Order ID is required" });
     }
-    
+
+    // Update order status
     const [canceledOrder] = await db
       .update(ordersTable)
       .set({ status: "Canceled" })
@@ -188,7 +189,21 @@ router.put("/:id/cancel", async (req, res) => {
     if (!canceledOrder) {
       return res.status(404).json({ error: "Order not found or cannot be canceled" });
     }
-    // 🟢 Invalidate the cache for all orders and the specific order
+
+    // Restore stock for all items in this order
+    const orderItems = await db
+      .select()
+      .from(orderItemsTable)
+      .where(eq(orderItemsTable.orderId, id));
+
+    for (const item of orderItems) {
+      await db
+        .update(productsTable)
+        .set({ stock: sql`${productsTable.stock} + ${item.quantity}` })
+        .where(eq(productsTable.id, item.productId));
+    }
+
+    // Invalidate caches
     await invalidateCache("all-orders");
     await invalidateCache("order-details");
     await invalidateCache("user-orders");
