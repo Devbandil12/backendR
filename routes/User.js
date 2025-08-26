@@ -97,7 +97,6 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
   try {
-    // Include new fields in update
     const { profileImage, dob, gender, ...rest } = req.body;
 
     const [updatedUser] = await db
@@ -105,7 +104,7 @@ router.put("/:id", async (req, res) => {
       .set({
         ...rest,
         ...(profileImage !== undefined && { profileImage }),
-        ...(dob !== undefined && { dob: new Date(dob)  }),
+        ...(dob !== undefined && { dob: new Date(dob) }),
         ...(gender !== undefined && { gender }),
       })
       .where(eq(usersTable.id, id))
@@ -115,9 +114,9 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    // Invalidate caches
-    await invalidateCache("all-users");
-    await invalidateCache("user-details");
+    // ✅ Proper cache invalidation
+    await invalidateCache("all-users"); // user list
+    await invalidateCache("user-clerk-id"); // single user
 
     res.json(updatedUser);
   } catch (err) {
@@ -125,6 +124,7 @@ router.put("/:id", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 
 
 // 5. DELETE endpoint for a user
