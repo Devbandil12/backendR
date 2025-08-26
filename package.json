@@ -8,7 +8,7 @@
     "start": "nodemon app.js",
     "drizzle:generate": "drizzle-kit generate",
     "drizzle:push": "drizzle-kit push",
-    "postinstall": "npx puppeteer browsers install"
+    "postinstall": "PUPPETEER_CACHE_DIR=/tmp npx puppeteer browsers install" install"
   },
   "keywords": [],
   "author": "",
