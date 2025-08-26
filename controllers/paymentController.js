@@ -294,3 +294,113 @@ for (const item of cartItems) {
     return res.status(500).json({ success: false, error: "Server error during verification." });
   }
 };
+
+
+
+// New function to handle manual bill creation from front-end data
+export const createManualBill = async (req, res) => {
+  const { user, deliveryPartner, paymentMode, utrNo, products } = req.body;
+
+  try {
+    const productTotal = products.reduce((sum, p) => {
+      const discountedPrice = Number(p.price || 0) * (1 - Number(p.discount || 0) / 100);
+      return sum + discountedPrice * Number(p.qty || 0);
+    }, 0);
+
+    const invoiceNumber = `DA-${Date.now()}`;
+    const invoiceDate = new Date().toLocaleDateString("en-GB");
+
+    // Build the HTML for the invoice
+    const productsHtml = products
+      .map(
+        (p) => `
+        <tr style="border-bottom: 1px solid #e5e7eb;">
+          <td style="padding: 12px; font-weight: bold;">${p.name}</td>
+          <td style="padding: 12px;">${p.size}</td>
+          <td style="padding: 12px;">${p.qty}</td>
+          <td style="padding: 12px;">₹${p.price}</td>
+          <td style="padding: 12px;">${p.discount}%</td>
+          <td style="padding: 12px; text-align: right;">₹${(Number(p.price || 0) * (1 - Number(p.discount || 0) / 100) * Number(p.qty || 0)).toFixed(2)}</td>
+        </tr>
+      `
+      )
+      .join("");
+
+    const invoiceHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Manual Invoice</title>
+        <style>
+          body { font-family: sans-serif; margin: 0; padding: 20px; color: #333; }
+          .container { max-width: 800px; margin: auto; }
+          .header { text-align: center; margin-bottom: 40px; }
+          .header h1 { color: #2563eb; }
+          .details-box { border: 1px solid #e5e7eb; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+          .details-box h2 { margin-top: 0; color: #4b5563; }
+          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+          th, td { text-align: left; padding: 12px; border-bottom: 1px solid #e5e7eb; }
+          th { background-color: #f3f4f6; }
+          .summary { margin-top: 40px; text-align: right; }
+          .summary-item { margin: 5px 0; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>DEVID AURA Invoice</h1>
+            <p>Invoice #: ${invoiceNumber}</p>
+            <p>Date: ${invoiceDate}</p>
+          </div>
+          <div class="details-box">
+            <h2>Customer Details</h2>
+            <p>Name: ${user.name}</p>
+            <p>Address: ${user.address}</p>
+            <p>Phone: ${user.phone}</p>
+            <p>Delivery Partner: ${deliveryPartner}</p>
+            ${paymentMode === 'UPI' ? `<p>UTR No: ${utrNo}</p>` : ''}
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Size</th>
+                <th>Qty</th>
+                <th>Price</th>
+                <th>Discount</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${productsHtml}
+            </tbody>
+          </table>
+          <div class="summary">
+            <div class="summary-item"><strong>Total Amount:</strong> ₹${productTotal.toFixed(2)}</div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    // Generate PDF using Puppeteer or Playwright
+    // Assuming you have Puppeteer installed.
+    const puppeteer = (await import("puppeteer")).default;
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
+    await page.setContent(invoiceHtml, { waitUntil: 'networkidle0' });
+    const pdfBuffer = await page.pdf({
+      format: 'A4',
+      margin: { top: '20mm', right: '20mm', bottom: '20mm', left: '20mm' },
+    });
+
+    await browser.close();
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="manual_invoice_${invoiceNumber}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error('❌ Manual bill creation error:', err);
+    return res.status(500).json({ success: false, msg: 'Server error during manual bill creation.' });
+  }
+};
