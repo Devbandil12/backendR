@@ -27,7 +27,8 @@
     "razorpay": "^2.8.6",
     "node-fetch": "^3.3.2",
     "source-map": "^0.7.4", 
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "puppeteer": "^22.0.0"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.4"
