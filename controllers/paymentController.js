@@ -383,11 +383,11 @@ export const createManualBill = async (req, res) => {
       </body>
       </html>
     `;
-
-    const puppeteer = (await import("puppeteer")).default;
+    
+    // ✅ Fix: Properly await the dynamic import to get the puppeteer module
+    const { default: puppeteer } = await import("puppeteer");
     const browser = await puppeteer.launch({
       headless: true,
-      
     const page = await browser.newPage();
     await page.setContent(invoiceHtml, { waitUntil: 'networkidle0' });
     const pdfBuffer = await page.pdf({
