@@ -7,7 +7,7 @@ import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
-import { createOrder, verifyPayment } from '../controllers/paymentController.js';
+import { createOrder, verifyPayment, createManualBill } from '../controllers/paymentController.js';
 import { refundOrder }               from '../controllers/refundController.js';
 import { getPriceBreakdown }         from '../controllers/priceController.js';
 
@@ -33,6 +33,7 @@ router.post('/breakdown',     getPriceBreakdown);
 router.post('/createOrder',   createOrder);
 router.post('/verify-payment', verifyPayment);
 router.post('/refund',        refundOrder);
+router.post('/create-manual-bill', createManualBill);
 
 
 // ─── 2️⃣ PDF UPLOAD & PARSE ────────────────────────────────
