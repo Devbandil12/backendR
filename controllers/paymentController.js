@@ -297,6 +297,7 @@ for (const item of cartItems) {
 
 
 
+
 // New function to handle manual bill creation from front-end data
 export const createManualBill = async (req, res) => {
   const { user, deliveryPartner, paymentMode, utrNo, products } = req.body;
@@ -383,10 +384,11 @@ export const createManualBill = async (req, res) => {
       </html>
     `;
 
-    // Generate PDF using Puppeteer or Playwright
-    // Assuming you have Puppeteer installed.
     const puppeteer = (await import("puppeteer")).default;
-    const browser = await puppeteer.launch();
+    const browser = await puppeteer.launch({
+      headless: true,
+      executablePath: '/tmp/chrome/linux-127.0.6533.88/chrome-linux64/chrome'
+    });
     const page = await browser.newPage();
     await page.setContent(invoiceHtml, { waitUntil: 'networkidle0' });
     const pdfBuffer = await page.pdf({
