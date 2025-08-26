@@ -105,7 +105,7 @@ router.put("/:id", async (req, res) => {
       .set({
         ...rest,
         ...(profileImage !== undefined && { profileImage }),
-        ...(dob !== undefined && { dob }),
+        ...(dob !== undefined && { dob: new Date(dob)  }),
         ...(gender !== undefined && { gender }),
       })
       .where(eq(usersTable.id, id))
