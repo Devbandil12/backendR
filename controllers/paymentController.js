@@ -391,8 +391,7 @@ export const createManualBill = async (req, res) => {
     // const { default: puppeteer } = await import("puppeteer");
     const browser = await puppeteer.launch({
       headless: true,
-      executablePath: '/tmp/chrome/linux-127.0.6533.88/chrome-linux64/chrome'
-    });
+      
     const page = await browser.newPage();
     await page.setContent(invoiceHtml, { waitUntil: 'networkidle0' });
     const pdfBuffer = await page.pdf({
