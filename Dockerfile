@@ -1,20 +1,18 @@
-# Use a base image that has Puppeteer dependencies pre-installed
+# Puppeteer base image with Chromium already included
 FROM ghcr.io/puppeteer/puppeteer:latest
 
-# Set the working directory
+# Set working directory
 WORKDIR /usr/src/app
 
-# Copy package.json and package-lock.json
-COPY package.json ./
-
-# Install Node.js dependencies
+# Copy package files and install dependencies
+COPY package.json package-lock.json ./
 RUN npm install --omit=dev
 
-# Copy the rest of your application's source code
+# Copy source code
 COPY . .
 
-# Expose the port your Express app listens on
+# Expose port for Express
 EXPOSE 10000
 
-# Command to run your application
-CMD [ "node", "app.js" ]
+# Start the app
+CMD ["node", "app.js"]
