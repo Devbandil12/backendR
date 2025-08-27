@@ -7,8 +7,7 @@
   "scripts": {
     "start": "nodemon app.js",
     "drizzle:generate": "drizzle-kit generate",
-    "drizzle:push": "drizzle-kit push",
-    "postinstall": "PUPPETEER_CACHE_DIR=/tmp npx puppeteer browsers install"
+    "drizzle:push": "drizzle-kit push"
   },
   "keywords": [],
   "author": "",
