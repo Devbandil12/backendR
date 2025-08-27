@@ -342,6 +342,7 @@ const { invoiceNumber, publicUrl } = await generateInvoicePDF({
     name: user.name,
     phone: phone,
     address: billingAddress,
+  },
 });
 
 // ✅ Update order with invoice info
