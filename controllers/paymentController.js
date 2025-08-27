@@ -2,8 +2,7 @@
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
-import { ordersTable, couponsTable } from '../configs/schema.js';
-import { productsTable, orderItemsTable } from '../configs/schema.js';
+import { ordersTable, couponsTable, UserAddressTable,  productsTable, orderItemsTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
 import { generateInvoicePDF } from "../services/invoice.service.js";
