@@ -6,6 +6,7 @@ import { ordersTable, couponsTable } from '../configs/schema.js';
 import { productsTable, orderItemsTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
 
+import { generateInvoicePDF } from "../services/invoice.service.js";
 
 
 
@@ -135,12 +136,28 @@ export const createOrder = async (req, res) => {
       .where(eq(productsTable.id, item.id));
   }
 
+// ✅ Generate invoice
+const { invoiceNumber, publicUrl } = await generateInvoicePDF({
+  order: { id: orderId, paymentMode: "cod", totals: { productTotal, deliveryCharge, discountAmount, finalAmount } },
+  items: enrichedItems,
+  billing: {
+    name: user.name,
+    phone: phone,
+    address: `Address from userAddressId if available`, // you can fetch full address here
+  },
+});
+
+// ✅ Update order with invoice info
+await db.update(ordersTable)
+  .set({ invoiceNumber, invoicePdfUrl: publicUrl })
+  .where(eq(ordersTable.id, orderId));
 
 
       return res.json({
         success: true,
         orderId,
         message: "COD order placed successfully",
+        invoiceUrl: publicUrl,
       });
     }
 
@@ -291,7 +308,24 @@ for (const item of cartItems) {
     .where(eq(productsTable.id, item.id));
 }
 
-    return res.json({ success: true, message: "Payment verified & order placed." });
+// ✅ Generate invoice
+const { invoiceNumber, publicUrl } = await generateInvoicePDF({
+  order: { id: orderId, paymentMode: "online", totals: { productTotal, deliveryCharge, discountAmount, finalAmount } },
+  items: enrichedItems,
+  billing: {
+    name: user.name,
+    phone: phone,
+    address: `Address from userAddressId if available`,
+  },
+});
+
+// ✅ Update order with invoice info
+await db.update(ordersTable)
+  .set({ invoiceNumber, invoicePdfUrl: publicUrl })
+  .where(eq(ordersTable.id, orderId));
+
+
+    return res.json({ success: true, message: "Payment verified & order placed.", invoiceUrl: publicUrl, });
 
   } catch (error) {
     console.error("verify error:", error);
