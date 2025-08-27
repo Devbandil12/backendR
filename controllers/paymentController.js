@@ -5,6 +5,8 @@ import { db } from '../configs/index.js';
 import { ordersTable, couponsTable } from '../configs/schema.js';
 import { productsTable, orderItemsTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
+import fs from 'fs';
+import path from 'path';
 
 
 
@@ -307,43 +309,51 @@ for (const item of cartItems) {
 
 // New function to handle manual bill creation from front-end data
 export const createManualBill = async (req, res) => {
-  const { user, deliveryPartner, paymentMode, utrNo, products } = req.body;
+  const { user = {}, deliveryPartner = '', paymentMode = '', utrNo = '', products = [] } = req.body;
 
   try {
+    // 1) compute totals
     const productTotal = products.reduce((sum, p) => {
-      const discountedPrice = Number(p.price || 0) * (1 - Number(p.discount || 0) / 100);
-      return sum + discountedPrice * Number(p.qty || 0);
+      const price = Number(p.price || 0);
+      const discountPct = Number(p.discount || 0);
+      const qty = Number(p.qty || 0);
+      const discountedPrice = price * (1 - discountPct / 100);
+      return sum + discountedPrice * qty;
     }, 0);
 
     const invoiceNumber = `DA-${Date.now()}`;
-    const invoiceDate = new Date().toLocaleDateString("en-GB");
+    const invoiceDate = new Date().toLocaleDateString('en-GB');
 
-    // Build the HTML for the invoice
+    // 2) build products rows
     const productsHtml = products
-      .map(
-        (p) => `
+      .map((p) => {
+        const total = (Number(p.price || 0) * (1 - Number(p.discount || 0) / 100) * Number(p.qty || 0)).toFixed(2);
+        return `
         <tr style="border-bottom: 1px solid #e5e7eb;">
-          <td style="padding: 12px; font-weight: bold;">${p.name}</td>
-          <td style="padding: 12px;">${p.size}</td>
-          <td style="padding: 12px;">${p.qty}</td>
-          <td style="padding: 12px;">₹${p.price}</td>
-          <td style="padding: 12px;">${p.discount}%</td>
-          <td style="padding: 12px; text-align: right;">₹${(Number(p.price || 0) * (1 - Number(p.discount || 0) / 100) * Number(p.qty || 0)).toFixed(2)}</td>
+          <td style="padding: 12px; font-weight: bold;">${p.name || ''}</td>
+          <td style="padding: 12px;">${p.size || ''}</td>
+          <td style="padding: 12px;">${p.qty || ''}</td>
+          <td style="padding: 12px;">₹${p.price || ''}</td>
+          <td style="padding: 12px;">${p.discount || 0}%</td>
+          <td style="padding: 12px; text-align: right;">₹${total}</td>
         </tr>
-      `
-      )
-      .join("");
+      `;
+      })
+      .join('');
 
+    // 3) invoice HTML
     const invoiceHtml = `
       <!DOCTYPE html>
       <html>
       <head>
+        <meta charset="utf-8" />
         <title>Manual Invoice</title>
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
         <style>
           body { font-family: sans-serif; margin: 0; padding: 20px; color: #333; }
           .container { max-width: 800px; margin: auto; }
           .header { text-align: center; margin-bottom: 40px; }
-          .header h1 { color: #2563eb; }
+          .header h1 { color: #2563eb; margin: 0; }
           .details-box { border: 1px solid #e5e7eb; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
           .details-box h2 { margin-top: 0; color: #4b5563; }
           table { width: 100%; border-collapse: collapse; margin-top: 20px; }
@@ -362,11 +372,11 @@ export const createManualBill = async (req, res) => {
           </div>
           <div class="details-box">
             <h2>Customer Details</h2>
-            <p>Name: ${user.name}</p>
-            <p>Address: ${user.address}</p>
-            <p>Phone: ${user.phone}</p>
-            <p>Delivery Partner: ${deliveryPartner}</p>
-            ${paymentMode === 'UPI' ? `<p>UTR No: ${utrNo}</p>` : ''}
+            <p>Name: ${user.name || ''}</p>
+            <p>Address: ${user.address || ''}</p>
+            <p>Phone: ${user.phone || ''}</p>
+            <p>Delivery Partner: ${deliveryPartner || ''}</p>
+            ${paymentMode === 'UPI' ? `<p>UTR No: ${utrNo || ''}</p>` : ''}
           </div>
           <table>
             <thead>
@@ -376,7 +386,7 @@ export const createManualBill = async (req, res) => {
                 <th>Qty</th>
                 <th>Price</th>
                 <th>Discount</th>
-                <th>Total</th>
+                <th style="text-align:right">Total</th>
               </tr>
             </thead>
             <tbody>
@@ -390,26 +400,113 @@ export const createManualBill = async (req, res) => {
       </body>
       </html>
     `;
-    
-    // The Docker image ensures Puppeteer can find the executable
-    const browser = await puppeteer.launch({
-      headless: true
-    });
+
+    // ---------- Robust Chrome detection ----------
+    // helper: search dir for likely chrome binary (BFS up to maxDepth)
+    async function findChromeUnderDir(dir, maxDepth = 3) {
+      try {
+        const queue = [{ dir, depth: 0 }];
+        while (queue.length) {
+          const { dir: current, depth } = queue.shift();
+          if (depth > maxDepth) continue;
+          let names;
+          try { names = await fs.promises.readdir(current); } catch { continue; }
+          for (const name of names) {
+            const full = path.join(current, name);
+            let stat;
+            try { stat = await fs.promises.stat(full); } catch { continue; }
+            if (stat.isFile()) {
+              if (/chrome(-headless-shell)?$/i.test(name) || /chromium$/i.test(name) || /google-chrome$/i.test(name)) {
+                try { await fs.promises.access(full, fs.constants.X_OK); } catch { /* not executable */ }
+                return full;
+              }
+            } else if (stat.isDirectory()) {
+              queue.push({ dir: full, depth: depth + 1 });
+            }
+          }
+        }
+      } catch (e) { /* swallow errors */ }
+      return undefined;
+    }
+
+    let chromeExecutable;
+
+    // 1) Use CHROME_PATH env if present
+    if (process.env.CHROME_PATH) {
+      const envPath = process.env.CHROME_PATH;
+      try {
+        const stat = await fs.promises.stat(envPath);
+        if (stat.isDirectory()) {
+          const found = await findChromeUnderDir(envPath, 3);
+          if (found) chromeExecutable = found;
+        } else if (stat.isFile()) {
+          chromeExecutable = envPath;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    // 2) check explicit candidates if not found
+    if (!chromeExecutable) {
+      const candidates = [
+        process.env.PUPPETEER_EXECUTABLE_PATH,
+        '/usr/bin/chromium',
+        '/usr/bin/google-chrome',
+        '/usr/bin/chrome',
+        '/tmp/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        '/tmp/chrome-headless-shell/linux-127.0.6533.88/chrome-headless-shell-linux64/chrome-headless-shell'
+      ].filter(Boolean);
+
+      for (const c of candidates) {
+        try {
+          if (fs.existsSync(c)) { chromeExecutable = c; break; }
+        } catch (e) {}
+      }
+    }
+
+    // 3) last resort: scan /tmp shallowly
+    if (!chromeExecutable) {
+      const tmpFound = await findChromeUnderDir('/tmp', 2);
+      if (tmpFound) chromeExecutable = tmpFound;
+    }
+
+    // ---------- Launch Puppeteer ----------
+    const launchOptions = {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--single-process'
+      ],
+      ...(chromeExecutable ? { executablePath: chromeExecutable } : {})
+    };
+
+    console.log('Using Chrome at:', chromeExecutable || 'puppeteer default');
+
+    const browser = await puppeteer.launch(launchOptions);
     const page = await browser.newPage();
+
+    // render and create pdf
     await page.setContent(invoiceHtml, { waitUntil: 'networkidle0' });
+    // ensure backgrounds are printed
     const pdfBuffer = await page.pdf({
       format: 'A4',
       margin: { top: '20mm', right: '20mm', bottom: '20mm', left: '20mm' },
+      printBackground: true
     });
 
     await browser.close();
 
+    // respond with pdf
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="manual_invoice_${invoiceNumber}.pdf"`);
-    res.send(pdfBuffer);
+    return res.send(pdfBuffer);
   } catch (err) {
     console.error('❌ Manual bill creation error:', err);
     return res.status(500).json({ success: false, msg: 'Server error during manual bill creation.' });
   }
 };
+
 
