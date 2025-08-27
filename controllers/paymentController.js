@@ -136,6 +136,20 @@ export const createOrder = async (req, res) => {
       .where(eq(productsTable.id, item.id));
   }
 
+const [address] = await db
+  .select()
+  .from(UserAddressTable)
+  .where(eq(UserAddressTable.id, userAddressId));
+
+const billingAddress = address
+  ? `${address.name}, ${address.phone}
+     ${address.address}, ${address.city}, ${address.state}, ${address.postalCode}, ${address.country}
+     Landmark: ${address.landmark || ""}`
+  : "Address not available";
+
+
+
+
 // ✅ Generate invoice
 const { invoiceNumber, publicUrl } = await generateInvoicePDF({
   order: { id: orderId, paymentMode: "cod", totals: { productTotal, deliveryCharge, discountAmount, finalAmount } },
@@ -143,7 +157,7 @@ const { invoiceNumber, publicUrl } = await generateInvoicePDF({
   billing: {
     name: user.name,
     phone: phone,
-    address: `Address from userAddressId if available`, // you can fetch full address here
+    address: billingAddress,
   },
 });
 
@@ -308,6 +322,19 @@ for (const item of cartItems) {
     .where(eq(productsTable.id, item.id));
 }
 
+const [address] = await db
+  .select()
+  .from(UserAddressTable)
+  .where(eq(UserAddressTable.id, userAddressId));
+
+const billingAddress = address
+  ? `${address.name}, ${address.phone}
+     ${address.address}, ${address.city}, ${address.state}, ${address.postalCode}, ${address.country}
+     Landmark: ${address.landmark || ""}`
+  : "Address not available";
+
+
+
 // ✅ Generate invoice
 const { invoiceNumber, publicUrl } = await generateInvoicePDF({
   order: { id: orderId, paymentMode: "online", totals: { productTotal, deliveryCharge, discountAmount, finalAmount } },
@@ -315,8 +342,7 @@ const { invoiceNumber, publicUrl } = await generateInvoicePDF({
   billing: {
     name: user.name,
     phone: phone,
-    address: `Address from userAddressId if available`,
-  },
+    address: billingAddress,
 });
 
 // ✅ Update order with invoice info
