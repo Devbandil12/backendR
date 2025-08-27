@@ -307,9 +307,11 @@ for (const item of cartItems) {
 
 
 
-// New function to handle manual bill creation from front-end data
+import puppeteer from "puppeteer";
+
+// Manual bill creation endpoint
 export const createManualBill = async (req, res) => {
-  const { user = {}, deliveryPartner = '', paymentMode = '', utrNo = '', products = [] } = req.body;
+  const { user = {}, deliveryPartner = "", paymentMode = "", utrNo = "", products = [] } = req.body;
 
   try {
     // 1) compute totals
@@ -322,112 +324,116 @@ export const createManualBill = async (req, res) => {
     }, 0);
 
     const invoiceNumber = `DA-${Date.now()}`;
-    const invoiceDate = new Date().toLocaleDateString('en-GB');
+    const invoiceDate = new Date().toLocaleDateString("en-GB");
 
-    // 2) build products rows
-    const productsHtml = products.map((p) => {
-      const total = (Number(p.price || 0) * (1 - Number(p.discount || 0) / 100) * Number(p.qty || 0)).toFixed(2);
-      return `
-        <tr style="border-bottom: 1px solid #e5e7eb;">
-          <td style="padding: 12px; font-weight: bold;">${p.name || ''}</td>
-          <td style="padding: 12px;">${p.size || ''}</td>
-          <td style="padding: 12px;">${p.qty || ''}</td>
-          <td style="padding: 12px;">₹${p.price || ''}</td>
-          <td style="padding: 12px;">${p.discount || 0}%</td>
-          <td style="padding: 12px; text-align: right;">₹${total}</td>
-        </tr>
-      `;
-    }).join('');
+    // 2) build product rows
+    const productsHtml = products
+      .map((p) => {
+        const total = (
+          Number(p.price || 0) *
+          (1 - Number(p.discount || 0) / 100) *
+          Number(p.qty || 0)
+        ).toFixed(2);
+        return `
+          <tr>
+            <td style="padding: 12px; font-weight: bold;">${p.name || ""}</td>
+            <td style="padding: 12px;">${p.size || ""}</td>
+            <td style="padding: 12px;">${p.qty || ""}</td>
+            <td style="padding: 12px;">₹${p.price || ""}</td>
+            <td style="padding: 12px;">${p.discount || 0}%</td>
+            <td style="padding: 12px; text-align: right;">₹${total}</td>
+          </tr>
+        `;
+      })
+      .join("");
 
     // 3) invoice HTML
     const invoiceHtml = `
       <!DOCTYPE html>
       <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>Manual Invoice</title>
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <style>
-          body { font-family: sans-serif; margin: 0; padding: 20px; color: #333; }
-          .container { max-width: 800px; margin: auto; }
-          .header { text-align: center; margin-bottom: 40px; }
-          .header h1 { color: #2563eb; margin: 0; }
-          .details-box { border: 1px solid #e5e7eb; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
-          .details-box h2 { margin-top: 0; color: #4b5563; }
-          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-          th, td { text-align: left; padding: 12px; border-bottom: 1px solid #e5e7eb; }
-          th { background-color: #f3f4f6; }
-          .summary { margin-top: 40px; text-align: right; }
-          .summary-item { margin: 5px 0; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>DEVID AURA Invoice</h1>
-            <p>Invoice #: ${invoiceNumber}</p>
-            <p>Date: ${invoiceDate}</p>
+        <head>
+          <meta charset="utf-8" />
+          <title>Manual Invoice</title>
+          <style>
+            body { font-family: sans-serif; margin: 0; padding: 20px; color: #333; }
+            .container { max-width: 800px; margin: auto; }
+            .header { text-align: center; margin-bottom: 40px; }
+            .header h1 { color: #2563eb; margin: 0; }
+            .details-box { border: 1px solid #e5e7eb; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+            .details-box h2 { margin-top: 0; color: #4b5563; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { text-align: left; padding: 12px; border-bottom: 1px solid #e5e7eb; }
+            th { background-color: #f3f4f6; }
+            .summary { margin-top: 40px; text-align: right; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>DEVID AURA Invoice</h1>
+              <p>Invoice #: ${invoiceNumber}</p>
+              <p>Date: ${invoiceDate}</p>
+            </div>
+            <div class="details-box">
+              <h2>Customer Details</h2>
+              <p>Name: ${user.name || ""}</p>
+              <p>Address: ${user.address || ""}</p>
+              <p>Phone: ${user.phone || ""}</p>
+              <p>Delivery Partner: ${deliveryPartner || ""}</p>
+              ${paymentMode === "UPI" ? `<p>UTR No: ${utrNo || ""}</p>` : ""}
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>Size</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Discount</th>
+                  <th style="text-align:right">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${productsHtml}
+              </tbody>
+            </table>
+            <div class="summary">
+              <div><strong>Total Amount:</strong> ₹${productTotal.toFixed(2)}</div>
+            </div>
           </div>
-          <div class="details-box">
-            <h2>Customer Details</h2>
-            <p>Name: ${user.name || ''}</p>
-            <p>Address: ${user.address || ''}</p>
-            <p>Phone: ${user.phone || ''}</p>
-            <p>Delivery Partner: ${deliveryPartner || ''}</p>
-            ${paymentMode === 'UPI' ? `<p>UTR No: ${utrNo || ''}</p>` : ''}
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Product</th>
-                <th>Size</th>
-                <th>Qty</th>
-                <th>Price</th>
-                <th>Discount</th>
-                <th style="text-align:right">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${productsHtml}
-            </tbody>
-          </table>
-          <div class="summary">
-            <div class="summary-item"><strong>Total Amount:</strong> ₹${productTotal.toFixed(2)}</div>
-          </div>
-        </div>
-      </body>
+        </body>
       </html>
     `;
 
-    // ✅ Launch Puppeteer without overriding executablePath
+    // 4) Launch Puppeteer (no custom chrome path needed in Docker)
     const browser = await puppeteer.launch({
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--single-process'
-      ]
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
     const page = await browser.newPage();
-    await page.setContent(invoiceHtml, { waitUntil: 'networkidle0' });
+    await page.setContent(invoiceHtml, { waitUntil: "networkidle0" });
 
     const pdfBuffer = await page.pdf({
-      format: 'A4',
-      margin: { top: '20mm', right: '20mm', bottom: '20mm', left: '20mm' },
-      printBackground: true
+      format: "A4",
+      margin: { top: "20mm", right: "20mm", bottom: "20mm", left: "20mm" },
+      printBackground: true,
     });
 
     await browser.close();
 
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="manual_invoice_${invoiceNumber}.pdf"`);
+    // 5) Send PDF response
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="manual_invoice_${invoiceNumber}.pdf"`
+    );
     return res.send(pdfBuffer);
-
   } catch (err) {
-    console.error('❌ Manual bill creation error:', err);
-    return res.status(500).json({ success: false, msg: 'Server error during manual bill creation.' });
+    console.error("❌ Manual bill creation error:", err);
+    return res
+      .status(500)
+      .json({ success: false, msg: "Server error during manual bill creation." });
   }
 };
 
