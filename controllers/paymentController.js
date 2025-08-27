@@ -307,7 +307,7 @@ for (const item of cartItems) {
 
 
 
-import puppeteer from "puppeteer";
+
 
 // Manual bill creation endpoint
 export const createManualBill = async (req, res) => {
