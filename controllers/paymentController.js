@@ -5,7 +5,7 @@ import { db } from '../configs/index.js';
 import { ordersTable, couponsTable } from '../configs/schema.js';
 import { productsTable, orderItemsTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
-
+import puppeteer from 'puppeteer';
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
 const razorpay = new Razorpay({
@@ -298,6 +298,9 @@ for (const item of cartItems) {
 
 
 
+// Add this import statement to the top of your file
+
+
 // New function to handle manual bill creation from front-end data
 export const createManualBill = async (req, res) => {
   const { user, deliveryPartner, paymentMode, utrNo, products } = req.body;
@@ -384,10 +387,12 @@ export const createManualBill = async (req, res) => {
       </html>
     `;
     
-    // ✅ Fix: Properly await the dynamic import to get the puppeteer module
-    const { default: puppeteer } = await import("puppeteer");
+    // ✅ Note: This line has been removed and replaced with a static import at the top
+    // const { default: puppeteer } = await import("puppeteer");
     const browser = await puppeteer.launch({
       headless: true,
+      executablePath: '/tmp/chrome/linux-127.0.6533.88/chrome-linux64/chrome'
+    });
     const page = await browser.newPage();
     await page.setContent(invoiceHtml, { waitUntil: 'networkidle0' });
     const pdfBuffer = await page.pdf({
