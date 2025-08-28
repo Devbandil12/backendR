@@ -90,33 +90,55 @@ export const createReview = async (req, res) => {
 };
 
 // ✅ Get Reviews By Product — with optional star rating filter
+// ✅ Get Reviews By Product — with user's reviews on top
 export const getReviewsByProduct = async (req, res) => {
   const { productId } = req.params;
   const {
     rating,
     limit = 10,
     cursor,
+    userId, // 🟢 New: User ID to find their reviews
   } = req.query;
 
   const parsedLimit = Math.min(parseInt(limit, 10) || 10, 50);
   const parsedRating = rating ? parseInt(rating, 10) : null;
 
   try {
+    let userReviews = [];
+    if (userId) {
+      // 🟢 New: Fetch the user's reviews first
+      userReviews = await db
+        .select()
+        .from(reviewsTable)
+        .where(
+          and(
+            eq(reviewsTable.productId, productId),
+            eq(reviewsTable.userId, userId),
+            parsedRating ? eq(reviewsTable.rating, parsedRating) : undefined
+          )
+        );
+    }
+    
+    // 🟢 New: Get the IDs of the user's reviews to exclude them from the main query
+    const userReviewIds = userReviews.map(r => r.id);
+
     let baseWhere = eq(reviewsTable.productId, productId);
     if (parsedRating) {
       baseWhere = and(baseWhere, eq(reviewsTable.rating, parsedRating));
     }
+    
+    // 🟢 New: Exclude the user's reviews from the main list
+    let fullWhere = sql`${baseWhere} AND NOT ${reviewsTable.id} IN (${userReviewIds})`;
 
-    let fullWhere = baseWhere;
     if (cursor) {
       const cursorDate = new Date(decodeURIComponent(cursor));
       fullWhere = and(
-        baseWhere,
+        fullWhere,
         sql`${reviewsTable.createdAt} < ${cursorDate.toISOString()}`
       );
     }
 
-    const reviews = await db
+    const otherReviews = await db
       .select({
         id: reviewsTable.id,
         name: reviewsTable.name,
@@ -131,6 +153,11 @@ export const getReviewsByProduct = async (req, res) => {
       .where(fullWhere)
       .orderBy(desc(reviewsTable.createdAt))
       .limit(parsedLimit);
+      
+    // 🟢 New: Combine the user's reviews with the other reviews
+    // The user's reviews are placed at the beginning of the list.
+    const combinedReviews = [...userReviews, ...otherReviews];
+
 
     const [stats] = await db
       .select({
@@ -154,9 +181,9 @@ export const getReviewsByProduct = async (req, res) => {
     };
     const averageRating = Number(stats.average_rating || 0);
     const totalReviews = Number(stats.total_reviews || 0);
-    const lastReview = reviews[reviews.length - 1];
+    const lastReview = otherReviews[otherReviews.length - 1]; // Use the last of the "other" reviews for pagination
     const nextCursor = lastReview ? encodeURIComponent(lastReview.createdAt.toISOString()) : null;
-    const parsedReviews = reviews.map((r) => ({ ...r, photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [] }));
+    const parsedReviews = combinedReviews.map((r) => ({ ...r, photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [] }));
 
     return res.json({
       reviews: parsedReviews,
@@ -164,13 +191,14 @@ export const getReviewsByProduct = async (req, res) => {
       averageRating,
       ratingCounts,
       nextCursor,
-      hasMore: reviews.length === parsedLimit,
+      hasMore: otherReviews.length === parsedLimit,
     });
   } catch (err) {
     console.error("❌ Error in getReviewsByProduct:", err);
     return res.status(500).json({ error: "Server error" });
   }
 };
+
 
 // ✅ Get Review Stats
 export const getReviewStats = async (req, res) => {
