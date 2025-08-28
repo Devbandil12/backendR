@@ -279,24 +279,11 @@ export const updateReview = async (req, res) => {
 };
 
 
-// ✅ Get Reviews by User — with caching
+// ✅ Get Reviews by User — 
 export const getReviewsByUser = async (req, res) => {
     try {
         const { userId } = req.params;
-        const cacheKey = `user-reviews:${userId}`;
-
-        // 🟢 Check if the data is in cache
-        const cachedReviews = await cache.get(cacheKey);
-        if (cachedReviews) {
-            console.log("🟢 Serving user reviews from cache:", cacheKey);
-            return res.json(JSON.parse(cachedReviews));
-        }
-
         const reviews = await db.select().from(reviewsTable).where(eq(reviewsTable.userId, userId));
-
-        // 🟢 Store the data in cache before sending the response
-        await cache.set(cacheKey, JSON.stringify(reviews));
-
         res.json(reviews);
     } catch (error) {
         console.error("❌ Error fetching user reviews:", error);
