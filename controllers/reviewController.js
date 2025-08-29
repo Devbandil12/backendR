@@ -186,6 +186,7 @@ export const getReviewsByProduct = async (req, res) => {
 };
 
 // ✅ Get Review Stats
+// ✅ Get Review Stats
 export const getReviewStats = async (req, res) => {
   const { productId } = req.params;
 
@@ -194,6 +195,11 @@ export const getReviewStats = async (req, res) => {
       .select({
         averageRating: sql`ROUND(AVG(${reviewsTable.rating})::numeric, 1)`,
         reviewCount: sql`COUNT(*)`,
+        one_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 1)`.as("one_star"),
+        two_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 2)`.as("two_star"),
+        three_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 3)`.as("three_star"),
+        four_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 4)`.as("four_star"),
+        five_star: sql`COUNT(*) FILTER (WHERE ${reviewsTable.rating} = 5)`.as("five_star"),
       })
       .from(reviewsTable)
       .where(eq(reviewsTable.productId, productId));
@@ -201,12 +207,20 @@ export const getReviewStats = async (req, res) => {
     res.json({
       averageRating: parseFloat(stats?.averageRating || 0),
       reviewCount: parseInt(stats?.reviewCount || 0),
+      ratingCounts: {
+        1: Number(stats?.one_star || 0),
+        2: Number(stats?.two_star || 0),
+        3: Number(stats?.three_star || 0),
+        4: Number(stats?.four_star || 0),
+        5: Number(stats?.five_star || 0),
+      }
     });
   } catch (err) {
     console.error("❌ Failed to fetch review stats:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
+
 
 // ✅ Check Verified Buyer
 export const isVerifiedBuyer = async (req, res) => {
