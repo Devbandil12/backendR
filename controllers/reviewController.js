@@ -7,8 +7,8 @@ import {
 } from "../configs/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
-// 🟢 Import only the invalidation function
-import { invalidateCache } from "../cacheMiddleware.js";
+// 🟢 Import your cache invalidation function and cache middleware
+import { invalidateCache, cache } from "../cacheMiddleware.js";
 
 // 🔧 Helper: Map Clerk ID or UUID → internal UUID
 const resolveUserId = async (userId) => {
@@ -75,8 +75,8 @@ export const createReview = async (req, res) => {
       })
       .returning();
 
-    // 🟢 Invalidate the cache for this product's reviews and stats with prefix
-    await invalidateCache(`product-reviews:${productId}`, true);
+    // 🟢 Invalidate the cache for this product's reviews and stats
+    await invalidateCache(`product-reviews:${productId}`);
     await invalidateCache(`review-stats:${productId}`);
     // 🟢 Invalidate the cache for the user's reviews
     await invalidateCache(`user-reviews:${internalUserId}`);
@@ -223,8 +223,8 @@ export const deleteReview = async (req, res) => {
       .returning();
 
     if (reviewToDelete) {
-      // 🟢 Invalidate the cache for the product and the user using a prefix
-      await invalidateCache(`product-reviews:${reviewToDelete.productId}`, true);
+      // 🟢 Invalidate the cache for the product and the user
+      await invalidateCache(`product-reviews:${reviewToDelete.productId}`);
       await invalidateCache(`review-stats:${reviewToDelete.productId}`);
       await invalidateCache(`user-reviews:${reviewToDelete.userId}`);
     }
@@ -265,8 +265,8 @@ export const updateReview = async (req, res) => {
       .where(eq(reviewsTable.id, id))
       .returning();
     
-    // 🟢 Invalidate the cache for the updated product and user using a prefix
-    await invalidateCache(`product-reviews:${existing.productId}`, true);
+    // 🟢 Invalidate the cache for the updated product and user
+    await invalidateCache(`product-reviews:${existing.productId}`);
     await invalidateCache(`review-stats:${existing.productId}`);
     await invalidateCache(`user-reviews:${existing.userId}`);
 
@@ -279,7 +279,7 @@ export const updateReview = async (req, res) => {
 };
 
 
-// ✅ Get Reviews by User
+// ✅ Get Reviews by User — 
 export const getReviewsByUser = async (req, res) => {
     try {
         const { userId } = req.params;
