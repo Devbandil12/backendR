@@ -7,8 +7,8 @@ import {
 } from "../configs/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
-// 🟢 Import your cache invalidation function and cache middleware
-import { invalidateCache, cache } from "../cacheMiddleware.js";
+// 🟢 Import cache helpers
+import { invalidateCache } from "../cacheMiddleware.js";
 
 // 🔧 Helper: Map Clerk ID or UUID → internal UUID
 const resolveUserId = async (userId) => {
@@ -40,6 +40,24 @@ const hasPurchasedProduct = async (internalUserId, productId) => {
   return purchases.length > 0;
 };
 
+// 🔧 Helper: invalidate all review cache variants for a product + user
+const invalidateReviewCaches = async (productId, userId) => {
+  const keys = [
+    `product-reviews:${productId}:all`,
+    `product-reviews:${productId}:1`,
+    `product-reviews:${productId}:2`,
+    `product-reviews:${productId}:3`,
+    `product-reviews:${productId}:4`,
+    `product-reviews:${productId}:5`,
+    `review-stats:${productId}`,
+  ];
+  if (userId) keys.push(`user-reviews:${userId}`);
+
+  for (const key of keys) {
+    await invalidateCache(key);
+  }
+};
+
 // ✅ Create Review
 export const createReview = async (req, res) => {
   try {
@@ -50,7 +68,7 @@ export const createReview = async (req, res) => {
       photoUrls,
       productId,
       userId,
-      clerkId
+      clerkId,
     } = req.body;
 
     if (!rating || !comment || !productId) {
@@ -75,12 +93,8 @@ export const createReview = async (req, res) => {
       })
       .returning();
 
-    // 🟢 Invalidate the cache for this product's reviews and stats
-    await invalidateCache(`product-reviews:${productId}`);
-    await invalidateCache(`review-stats:${productId}`);
-    // 🟢 Invalidate the cache for the user's reviews
-    await invalidateCache(`user-reviews:${internalUserId}`);
-
+    // 🟢 Invalidate cache
+    await invalidateReviewCaches(productId, internalUserId);
 
     res.status(201).json(review);
   } catch (err) {
@@ -89,14 +103,10 @@ export const createReview = async (req, res) => {
   }
 };
 
-// ✅ Get Reviews By Product — with optional star rating filter
+// ✅ Get Reviews By Product
 export const getReviewsByProduct = async (req, res) => {
   const { productId } = req.params;
-  const {
-    rating,
-    limit = 10,
-    cursor,
-  } = req.query;
+  const { rating, limit = 10, cursor } = req.query;
 
   const parsedLimit = Math.min(parseInt(limit, 10) || 10, 50);
   const parsedRating = rating ? parseInt(rating, 10) : null;
@@ -156,7 +166,10 @@ export const getReviewsByProduct = async (req, res) => {
     const totalReviews = Number(stats.total_reviews || 0);
     const lastReview = reviews[reviews.length - 1];
     const nextCursor = lastReview ? encodeURIComponent(lastReview.createdAt.toISOString()) : null;
-    const parsedReviews = reviews.map((r) => ({ ...r, photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [] }));
+    const parsedReviews = reviews.map((r) => ({
+      ...r,
+      photoUrls: Array.isArray(r.photoUrls) ? r.photoUrls : [],
+    }));
 
     return res.json({
       reviews: parsedReviews,
@@ -214,8 +227,10 @@ export const deleteReview = async (req, res) => {
   const { id } = req.params;
 
   try {
-    // 🟢 Fetch the productId and userId before deletion to invalidate the cache
-    const [reviewToDelete] = await db.select({ productId: reviewsTable.productId, userId: reviewsTable.userId }).from(reviewsTable).where(eq(reviewsTable.id, id));
+    const [reviewToDelete] = await db
+      .select({ productId: reviewsTable.productId, userId: reviewsTable.userId })
+      .from(reviewsTable)
+      .where(eq(reviewsTable.id, id));
 
     const deleted = await db
       .delete(reviewsTable)
@@ -223,10 +238,7 @@ export const deleteReview = async (req, res) => {
       .returning();
 
     if (reviewToDelete) {
-      // 🟢 Invalidate the cache for the product and the user
-      await invalidateCache(`product-reviews:${reviewToDelete.productId}`);
-      await invalidateCache(`review-stats:${reviewToDelete.productId}`);
-      await invalidateCache(`user-reviews:${reviewToDelete.userId}`);
+      await invalidateReviewCaches(reviewToDelete.productId, reviewToDelete.userId);
     }
 
     res.json({ success: true, deleted });
@@ -236,7 +248,7 @@ export const deleteReview = async (req, res) => {
   }
 };
 
-// ✅ Update Review — includes rechecking isVerifiedBuyer
+// ✅ Update Review
 export const updateReview = async (req, res) => {
   const { id } = req.params;
   const { rating, comment, photoUrls } = req.body;
@@ -264,12 +276,8 @@ export const updateReview = async (req, res) => {
       })
       .where(eq(reviewsTable.id, id))
       .returning();
-    
-    // 🟢 Invalidate the cache for the updated product and user
-    await invalidateCache(`product-reviews:${existing.productId}`);
-    await invalidateCache(`review-stats:${existing.productId}`);
-    await invalidateCache(`user-reviews:${existing.userId}`);
 
+    await invalidateReviewCaches(existing.productId, existing.userId);
 
     res.json({ success: true, updated });
   } catch (err) {
@@ -278,15 +286,14 @@ export const updateReview = async (req, res) => {
   }
 };
 
-
-// ✅ Get Reviews by User — 
+// ✅ Get Reviews by User
 export const getReviewsByUser = async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const reviews = await db.select().from(reviewsTable).where(eq(reviewsTable.userId, userId));
-        res.json(reviews);
-    } catch (error) {
-        console.error("❌ Error fetching user reviews:", error);
-        res.status(500).json({ error: "Server error" });
-    }
+  try {
+    const { userId } = req.params;
+    const reviews = await db.select().from(reviewsTable).where(eq(reviewsTable.userId, userId));
+    res.json(reviews);
+  } catch (error) {
+    console.error("❌ Error fetching user reviews:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 };
