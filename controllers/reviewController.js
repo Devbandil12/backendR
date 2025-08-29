@@ -8,7 +8,7 @@ import {
 import { eq, desc, sql, and } from "drizzle-orm";
 
 // 🟢 Import your cache invalidation function and cache middleware
-import { invalidateCache } from "../cacheMiddleware.js";
+import { invalidateCache, cache } from "../cacheMiddleware.js";
 
 // 🔧 Helper: Map Clerk ID or UUID → internal UUID
 const resolveUserId = async (userId) => {
