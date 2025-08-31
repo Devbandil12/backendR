@@ -29,7 +29,8 @@
     "node-fetch": "^3.3.2",
     "source-map": "^0.7.4", 
     "ioredis": "^5.4.1",
-    "pdfkit": "^0.13.0"
+    "pdfkit": "^0.13.0",
+    "resend": "^2.1.0"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.4"
