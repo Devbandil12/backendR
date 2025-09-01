@@ -85,6 +85,70 @@ product.stockStatus = stockStatus;
   }
 );
 
+
+/**
+ * 🟢 GET all products grouped by name
+ * This is a new endpoint for products with variations.
+ */
+router.get("/grouped", cache("grouped-products", 3600), async (req, res) => {
+  try {
+    const products = await db.select().from(productsTable);
+
+    const groupedProducts = products.reduce((acc, product) => {
+      // Parse image URLs
+      let parsedUrls = product.imageurl;
+      if (typeof product.imageurl === "string") {
+        try {
+          parsedUrls = JSON.parse(product.imageurl);
+        } catch (err) {
+          console.error("❌ Error parsing imageurl:", err);
+        }
+      }
+
+      // Calculate stock status
+      let stockStatus = "In Stock";
+      if (product.stock === 0) {
+        stockStatus = "Out of Stock";
+      } else if (product.stock <= 10) {
+        stockStatus = `Only ${product.stock} left!`;
+      }
+
+      const productWithStatus = { ...product, imageurl: parsedUrls, stockStatus };
+
+      if (!acc[product.name]) {
+        // First time seeing this product name
+        acc[product.name] = {
+          ...productWithStatus,
+          variations: [productWithStatus],
+        };
+      } else {
+        // Add variation to an existing product group
+        acc[product.name].variations.push(productWithStatus);
+        // Find the lowest price to display on the main product card
+        if (product.oprice < acc[product.name].oprice) {
+          acc[product.name].oprice = product.oprice;
+          acc[product.name].id = product.id; // Update the ID to the one with the lowest price
+          acc[product.name].discount = product.discount;
+          acc[product.name].imageurl = parsedUrls;
+          acc[product.name].stock = product.stock;
+          acc[product.name].stockStatus = stockStatus;
+        }
+      }
+      return acc;
+    }, {});
+
+    const result = Object.values(groupedProducts);
+
+    res.json(result);
+  } catch (error) {
+    console.error("❌ Error fetching grouped products:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+
+
 /**
  * 🟢 POST add new product
  * Clears cache only AFTER DB success
