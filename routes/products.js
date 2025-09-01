@@ -1,82 +1,83 @@
 import express from "express";
 import { db } from "../configs/index.js";
-import { productsTable, productVariantsTable } from "../configs/schema.js";
-import { eq, and } from "drizzle-orm";
+import { productsTable } from "../configs/schema.js";
+import { eq } from "drizzle-orm";
 import { cache, invalidateCache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
-/* ============================
-   Helpers
-   ============================ */
-const getStockStatus = (stock) => {
-  if (stock === 0) return "Out of Stock";
-  if (stock <= 10) return `Only ${stock} left!`;
-  return "In Stock";
-};
-
-const addVariantMeta = (variant) => {
-  const finalPrice =
-    variant.discount > 0
-      ? Math.round(variant.oprice - (variant.oprice * variant.discount) / 100)
-      : variant.oprice;
-
-  return {
-    ...variant,
-    stockStatus: getStockStatus(variant.stock),
-    finalPrice,
-  };
-};
-
-/* ============================
-   GET all products (catalog)
-   ============================ */
+/**
+ * 🟢 GET all products
+ * Cache for 1 hour
+ */
 router.get("/", cache("all-products", 3600), async (req, res) => {
   try {
-    const products = await db.query.productsTable.findMany({
-      with: { variants: true },
-    });
+    const products = await db.select().from(productsTable);
 
-    // Only include products with at least one visible variant
-    const visibleProducts = products.filter((p) =>
-      p.variants.some((v) => v.showAsSingleProduct)
-    );
+    const transformedProducts = products.map((product) => {
+  // ✅ parse images
+  let parsedUrls = product.imageurl;
+  if (typeof product.imageurl === "string") {
+    try {
+      parsedUrls = JSON.parse(product.imageurl);
+    } catch (err) {
+      console.error("❌ Error parsing imageurl:", err);
+    }
+  }
 
-    const formatted = visibleProducts.map((p) => {
-      const defaultVariant = p.variants.find((v) => v.showAsSingleProduct);
-      return {
-        ...p,
-        defaultVariant: defaultVariant ? addVariantMeta(defaultVariant) : null,
-      };
-    });
+  // ✅ calculate stock status
+  let stockStatus = "In Stock";
+  if (product.stock === 0) {
+    stockStatus = "Out of Stock";
+  } else if (product.stock <= 10) {
+    stockStatus = `Only ${product.stock} left!`;
+  }
 
-    res.json(formatted);
+  return { ...product, imageurl: parsedUrls, stockStatus };
+});
+
+
+    res.json(transformedProducts);
   } catch (error) {
     console.error("❌ Error fetching products:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-/* ============================
-   GET single product with all variants
-   ============================ */
+/**
+ * 🟢 GET single product by ID
+ * Cache for 30 min
+ */
 router.get(
   "/:id",
   cache((req) => `product-${req.params.id}`, 1800),
   async (req, res) => {
     try {
       const { id } = req.params;
-
-      const product = await db.query.productsTable.findFirst({
-        where: eq(productsTable.id, id),
-        with: { variants: true },
-      });
+      const [product] = await db
+        .select()
+        .from(productsTable)
+        .where(eq(productsTable.id, id));
 
       if (!product) return res.status(404).json({ error: "Product not found" });
 
-      const variantsWithMeta = product.variants.map(addVariantMeta);
+      if (typeof product.imageurl === "string") {
+  try {
+    product.imageurl = JSON.parse(product.imageurl);
+  } catch {}
+}
 
-      res.json({ ...product, variants: variantsWithMeta });
+// ✅ add stock status
+let stockStatus = "In Stock";
+if (product.stock === 0) {
+  stockStatus = "Out of Stock";
+} else if (product.stock <= 10) {
+  stockStatus = `Only ${product.stock} left!`;
+}
+product.stockStatus = stockStatus;
+
+
+      res.json(product);
     } catch (error) {
       console.error("❌ Error fetching product:", error);
       res.status(500).json({ error: "Server error" });
@@ -84,61 +85,47 @@ router.get(
   }
 );
 
-/* ============================
-   POST add new product + variants
-   ============================ */
+/**
+ * 🟢 POST add new product
+ * Clears cache only AFTER DB success
+ */
 router.post("/", async (req, res) => {
   try {
-    const { name, description, composition, fragrance, fragranceNotes, imageurl, variants } = req.body;
+    const productData = req.body;
 
     const [newProduct] = await db
       .insert(productsTable)
       .values({
-        name,
-        description,
-        composition,
-        fragrance,
-        fragranceNotes,
-        imageurl, // JSONB column
+        ...productData,
+        imageurl: JSON.stringify(productData.imageurl),
+        stock: productData.stock ?? 0,
       })
       .returning();
 
-    let insertedVariants = [];
-    if (variants?.length > 0) {
-      for (const v of variants) {
-        const [newVariant] = await db
-          .insert(productVariantsTable)
-          .values({
-            productId: newProduct.id,
-            size: v.size,
-            oprice: v.oprice,
-            discount: v.discount,
-            stock: v.stock,
-            showAsSingleProduct: v.showAsSingleProduct ?? false,
-          })
-          .returning();
-
-        insertedVariants.push(addVariantMeta(newVariant));
-      }
-    }
-
+    // ✅ Invalidate caches
     await invalidateCache("all-products", true);
+    await invalidateCache(`product-${newProduct.id}`);
 
-    res.status(201).json({ ...newProduct, variants: insertedVariants });
+    res.status(201).json(newProduct);
   } catch (error) {
     console.error("❌ Error adding product:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-/* ============================
-   PUT update product common fields
-   ============================ */
+/**
+ * 🟢 PUT update product
+ * Clears cache only AFTER DB success
+ */
 router.put("/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updatedData = req.body;
+  const { id } = req.params;
+  let updatedData = req.body;
 
+  if (updatedData.imageurl && Array.isArray(updatedData.imageurl)) {
+    updatedData.imageurl = JSON.stringify(updatedData.imageurl);
+  }
+
+  try {
     const [updatedProduct] = await db
       .update(productsTable)
       .set(updatedData)
@@ -149,6 +136,7 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
+    // ✅ Invalidate caches
     await invalidateCache("all-products", true);
     await invalidateCache(`product-${id}`);
 
@@ -159,13 +147,13 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-/* ============================
-   DELETE product (cascade deletes variants)
-   ============================ */
+/**
+ * 🟢 DELETE product
+ * Clears cache only AFTER DB success
+ */
 router.delete("/:id", async (req, res) => {
+  const { id } = req.params;
   try {
-    const { id } = req.params;
-
     const [deletedProduct] = await db
       .delete(productsTable)
       .where(eq(productsTable.id, id))
@@ -175,100 +163,13 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
+    // ✅ Invalidate caches
     await invalidateCache("all-products", true);
     await invalidateCache(`product-${id}`);
 
     res.json({ success: true, deletedProduct });
   } catch (error) {
     console.error("❌ Error deleting product:", error);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/* ============================
-   VARIANT ROUTES
-   ============================ */
-
-/**
- * 🟢 POST add variant
- */
-router.post("/:id/variants", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { size, oprice, discount, stock, showAsSingleProduct } = req.body;
-
-    const [newVariant] = await db
-      .insert(productVariantsTable)
-      .values({
-        productId: id,
-        size,
-        oprice,
-        discount,
-        stock,
-        showAsSingleProduct: showAsSingleProduct ?? false,
-      })
-      .returning();
-
-    await invalidateCache("all-products", true);
-    await invalidateCache(`product-${id}`);
-
-    res.status(201).json(addVariantMeta(newVariant));
-  } catch (error) {
-    console.error("❌ Error adding variant:", error);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * 🟢 PUT update variant
- */
-router.put("/:id/variants/:variantId", async (req, res) => {
-  try {
-    const { id, variantId } = req.params;
-    const { size, oprice, discount, stock, showAsSingleProduct } = req.body;
-
-    const [updatedVariant] = await db
-      .update(productVariantsTable)
-      .set({ size, oprice, discount, stock, showAsSingleProduct })
-      .where(and(eq(productVariantsTable.id, variantId), eq(productVariantsTable.productId, id)))
-      .returning();
-
-    if (!updatedVariant) {
-      return res.status(404).json({ error: "Variant not found." });
-    }
-
-    await invalidateCache("all-products", true);
-    await invalidateCache(`product-${id}`);
-
-    res.json(addVariantMeta(updatedVariant));
-  } catch (error) {
-    console.error("❌ Error updating variant:", error);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * 🟢 DELETE variant
- */
-router.delete("/:id/variants/:variantId", async (req, res) => {
-  try {
-    const { id, variantId } = req.params;
-
-    const [deletedVariant] = await db
-      .delete(productVariantsTable)
-      .where(and(eq(productVariantsTable.id, variantId), eq(productVariantsTable.productId, id)))
-      .returning();
-
-    if (!deletedVariant) {
-      return res.status(404).json({ error: "Variant not found." });
-    }
-
-    await invalidateCache("all-products", true);
-    await invalidateCache(`product-${id}`);
-
-    res.json({ success: true, deletedVariant: addVariantMeta(deletedVariant) });
-  } catch (error) {
-    console.error("❌ Error deleting variant:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
