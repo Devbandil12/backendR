@@ -69,10 +69,7 @@ export const productVariantsRelations = relations(productVariantsTable, ({ one }
   }),
 }));
 
-export const productsRelations = relations(productsTable, ({ many }) => ({
-  reviews: many(reviewsTable),
-  orderItems: many(orderItemsTable),
-}));
+
 
 
 export const addToCartTable = pgTable('add_to_cart', {
