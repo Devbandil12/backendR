@@ -42,34 +42,17 @@ export const productsTable = pgTable('products', {
   description: varchar('description', { length: 255 }).notNull(),
   fragrance: varchar('fragrance', { length: 255 }).notNull(),
   fragranceNotes: varchar('fragranceNotes', { length: 255 }).notNull(),
-  imageurl: jsonb("imageurl").notNull().default(sql`'{}'::jsonb`), // 👈 keep images JSONB
-});
-
-// 👇 New table for variants
-export const productVariantsTable = pgTable("product_variants", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  productId: uuid("product_id").notNull().references(() => productsTable.id, { onDelete: "cascade" }),
-  size: integer("size").notNull(),
-  oprice: integer("oprice").notNull(),
-  discount: integer("discount").default(0),
-  stock: integer("stock").default(0),
-  showAsSingleProduct: boolean("show_as_single_product").default(false),
+  discount: integer('discount').notNull(),
+  oprice: integer('oprice').notNull(),
+  size: integer('size').notNull(),
+  stock: integer("stock").notNull().default(0),
+  imageurl: jsonb("imageurl").notNull().default(sql`'[]'::jsonb`),
 });
 
 export const productsRelations = relations(productsTable, ({ many }) => ({
-  variants: many(productVariantsTable),
   reviews: many(reviewsTable),
   orderItems: many(orderItemsTable),
 }));
-
-export const productVariantsRelations = relations(productVariantsTable, ({ one }) => ({
-  product: one(productsTable, {
-    fields: [productVariantsTable.productId],
-    references: [productsTable.id],
-  }),
-}));
-
-
 
 
 export const addToCartTable = pgTable('add_to_cart', {
