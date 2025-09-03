@@ -2,13 +2,9 @@
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
-import { ordersTable, couponsTable, UserAddressTable,  productsTable, orderItemsTable } from '../configs/schema.js';
+import { ordersTable, couponsTable } from '../configs/schema.js';
+import { productsTable, orderItemsTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
-
-import { generateInvoicePDF } from "../services/invoice.service.js";
-
-
-
 
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
@@ -135,42 +131,12 @@ export const createOrder = async (req, res) => {
       .where(eq(productsTable.id, item.id));
   }
 
-const [address] = await db
-  .select()
-  .from(UserAddressTable)
-  .where(eq(UserAddressTable.id, userAddressId));
-
-const billingAddress = address
-  ? `${address.name}, ${address.phone}
-     ${address.address}, ${address.city}, ${address.state}, ${address.postalCode}, ${address.country}
-     Landmark: ${address.landmark || ""}`
-  : "Address not available";
-
-
-
-
-// ✅ Generate invoice
-const { invoiceNumber, publicUrl } = await generateInvoicePDF({
-  order: { id: orderId, paymentMode: "cod", totals: { productTotal, deliveryCharge, discountAmount, finalAmount } },
-  items: enrichedItems,
-  billing: {
-    name: user.name,
-    phone: phone,
-    address: billingAddress,
-  },
-});
-
-// ✅ Update order with invoice info
-await db.update(ordersTable)
-  .set({ invoiceNumber, invoicePdfUrl: publicUrl })
-  .where(eq(ordersTable.id, orderId));
 
 
       return res.json({
         success: true,
         orderId,
         message: "COD order placed successfully",
-        invoiceUrl: publicUrl,
       });
     }
 
@@ -321,48 +287,13 @@ for (const item of cartItems) {
     .where(eq(productsTable.id, item.id));
 }
 
-const [address] = await db
-  .select()
-  .from(UserAddressTable)
-  .where(eq(UserAddressTable.id, userAddressId));
-
-const billingAddress = address
-  ? `${address.name}, ${address.phone}
-     ${address.address}, ${address.city}, ${address.state}, ${address.postalCode}, ${address.country}
-     Landmark: ${address.landmark || ""}`
-  : "Address not available";
-
-
-
-// ✅ Generate invoice
-const { invoiceNumber, publicUrl } = await generateInvoicePDF({
-  order: { id: orderId, paymentMode: "online", totals: { productTotal, deliveryCharge, discountAmount, finalAmount } },
-  items: enrichedItems,
-  billing: {
-    name: user.name,
-    phone: phone,
-    address: billingAddress,
-  },
-});
-
-// ✅ Update order with invoice info
-await db.update(ordersTable)
-  .set({ invoiceNumber, invoicePdfUrl: publicUrl })
-  .where(eq(ordersTable.id, orderId));
-
-
-    return res.json({ success: true, message: "Payment verified & order placed.", invoiceUrl: publicUrl, });
+    return res.json({ success: true, message: "Payment verified & order placed." });
 
   } catch (error) {
     console.error("verify error:", error);
     return res.status(500).json({ success: false, error: "Server error during verification." });
   }
 };
-
-
-
-
-
 
 
 
