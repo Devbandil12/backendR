@@ -17,6 +17,7 @@ export const usersTable = pgTable('users', {
   profileImage: text('profile_image').default(null),
   dob: timestamp('dob', { withTimezone: true }).default(null),
   gender: text('gender').default(null),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
 export const usersRelations = relations(usersTable, ({ many }) => ({
