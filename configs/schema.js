@@ -130,17 +130,7 @@ export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
   orderItems: many(orderItemsTable),
 }));
 
-export const addressTable = pgTable('address', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').notNull().references(() => usersTable.id),
-  street: text('street').notNull(),
-  city: text('city').notNull(),
-  state: text('state').notNull(),
-  postalCode: text('postal_code').notNull(),
-  country: text('country').notNull(),
-  createdAt: text('created_at').default('now()'),
-  updatedAt: text('updated_at').default('now()'),
-});
+
 
 export const UserAddressTable = pgTable('user_address', {
   id: uuid('id').defaultRandom().primaryKey(),
