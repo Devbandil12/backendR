@@ -47,7 +47,7 @@ export const productsTable = pgTable('products', {
   oprice: integer('oprice').notNull(),
   size: integer('size').notNull(),
   stock: integer("stock").notNull().default(0),
-  imageurl: jsonb("imageurl").notNull().default(sql`'[]'::jsonb`),
+  imageurl: jsonb("imageurl").notNull().default(sql`'{}'::jsonb`),
 });
 
 export const productsRelations = relations(productsTable, ({ many }) => ({

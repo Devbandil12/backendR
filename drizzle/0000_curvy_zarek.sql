@@ -93,7 +93,7 @@ CREATE TABLE "products" (
 	"oprice" integer NOT NULL,
 	"size" integer NOT NULL,
 	"stock" integer DEFAULT 0 NOT NULL,
-	"imageurl" jsonb DEFAULT '[]'::jsonb NOT NULL
+	"imageurl" jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "query" (
