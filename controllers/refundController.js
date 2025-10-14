@@ -2,7 +2,7 @@
 import Razorpay from 'razorpay';
 import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
 
 export const refundOrder = async (req, res) => {
@@ -90,6 +90,7 @@ const refund = await razorpay.refunds.fetch(refundInit.id);
     await db
       .update(ordersTable)
       .set({
+        status: "Order Cancelled",
         paymentStatus: 'refunded',
         refund_id: refund.id,
         refund_amount: refund.amount,

@@ -7,7 +7,7 @@ import {
   productsTable,
   usersTable,
 } from "../configs/schema.js";
-import { eq, inArray, and, asc } from "drizzle-orm";
+import { eq, inArray, and, asc, sql } from "drizzle-orm";
 // 🟢 Import your cache and invalidateCache middleware
 import { cache, invalidateCache } from "../cacheMiddleware.js";
 
@@ -182,8 +182,8 @@ router.put("/:id/cancel", async (req, res) => {
     // Update order status
     const [canceledOrder] = await db
       .update(ordersTable)
-      .set({ status: "Canceled" })
-      .where(and(eq(ordersTable.id, id), eq(ordersTable.status, "Pending")))
+      .set({ status: "Order Cancelled" })
+      .where(and(eq(ordersTable.id, id), eq(ordersTable.status, "order placed")))
       .returning();
 
     if (!canceledOrder) {

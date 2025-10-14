@@ -5,7 +5,7 @@ import { db } from '../configs/index.js';
 import { ordersTable, couponsTable } from '../configs/schema.js';
 import { productsTable, orderItemsTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
-
+import { invalidateCache } from '../cacheMiddleware.js';
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
 const razorpay = new Razorpay({
@@ -15,7 +15,7 @@ const razorpay = new Razorpay({
 
 export const createOrder = async (req, res) => {
   try {
-    const { user, phone, couponCode = null, paymentMode = 'online', cartItems,userAddressId } = req.body;
+    const { user, phone, couponCode = null, paymentMode = 'online', cartItems, userAddressId } = req.body;
 
     if (!user) {
       return res.status(401).json({ success: false, msg: 'Please log in first' });
@@ -115,23 +115,25 @@ export const createOrder = async (req, res) => {
       await db.insert(orderItemsTable).values(enrichedItems);
 
       // 🔴 Reduce stock for each product
-  for (const item of cartItems) {
-    const [product] = await db
-      .select()
-      .from(productsTable)
-      .where(eq(productsTable.id, item.id));
+      for (const item of cartItems) {
+        const [product] = await db
+          .select()
+          .from(productsTable)
+          .where(eq(productsTable.id, item.id));
 
-    if (!product || product.stock < item.quantity) {
-      return res.status(400).json({ success: false, msg: `Not enough stock for ${product?.name || 'product'}` });
-    }
+        if (!product || product.stock < item.quantity) {
+          return res.status(400).json({ success: false, msg: `Not enough stock for ${product?.name || 'product'}` });
+        }
 
-    await db
-      .update(productsTable)
-      .set({ stock: product.stock - item.quantity })
-      .where(eq(productsTable.id, item.id));
-  }
+        await db
+          .update(productsTable)
+          .set({ stock: product.stock - item.quantity })
+          .where(eq(productsTable.id, item.id));
+      }
 
 
+      await invalidateCache("all-orders"); // For the Admin Panel
+      await invalidateCache("user-orders"); // For the user's "My Orders" page
 
       return res.json({
         success: true,
@@ -177,7 +179,7 @@ export const verifyPayment = async (req, res) => {
     } = req.body;
 
 
-     // Add userAddressId to the validation check
+    // Add userAddressId to the validation check
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !userAddressId) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
@@ -270,22 +272,25 @@ export const verifyPayment = async (req, res) => {
 
     await db.insert(orderItemsTable).values(enrichedItems);
 
-   // 🔴 Reduce stock for each product
-for (const item of cartItems) {
-  const [product] = await db
-    .select()
-    .from(productsTable)
-    .where(eq(productsTable.id, item.id));
+    // 🔴 Reduce stock for each product
+    for (const item of cartItems) {
+      const [product] = await db
+        .select()
+        .from(productsTable)
+        .where(eq(productsTable.id, item.id));
 
-  if (!product || product.stock < item.quantity) {
-    return res.status(400).json({ success: false, msg: `Not enough stock for ${product?.name || 'product'}` });
-  }
+      if (!product || product.stock < item.quantity) {
+        return res.status(400).json({ success: false, msg: `Not enough stock for ${product?.name || 'product'}` });
+      }
 
-  await db
-    .update(productsTable)
-    .set({ stock: product.stock - item.quantity })
-    .where(eq(productsTable.id, item.id));
-}
+      await db
+        .update(productsTable)
+        .set({ stock: product.stock - item.quantity })
+        .where(eq(productsTable.id, item.id));
+    }
+
+    await invalidateCache("all-orders"); // For the Admin Panel
+    await invalidateCache("user-orders"); // For the user's "My Orders" page
 
     return res.json({ success: true, message: "Payment verified & order placed." });
 
