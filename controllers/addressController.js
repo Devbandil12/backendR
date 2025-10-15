@@ -1,7 +1,7 @@
 // src/controllers/addressController.js
 import { db } from '../configs/index.js';
-import { UserAddressTable } from '../configs/schema.js';
-import { eq, and, desc } from "drizzle-orm";
+import { UserAddressTable, pincodeServiceabilityTable } from '../configs/schema.js';
+import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import fetch from "node-fetch";
 
 // Reverse Geocode helper to fill missing address details from lat/lng
@@ -268,3 +268,147 @@ export async function setDefaultAddress(req, res) {
     return res.status(500).json({ success: false, msg: "Server error" });
   }
 }
+
+// POST /api/address/pincodes/batch
+export async function createPincodesBatch(req, res) {
+  try {
+    const { pincodes } = req.body;
+    if (!Array.isArray(pincodes) || pincodes.length === 0) {
+      return res.status(400).json({ success: false, msg: "Pincode data is missing or invalid." });
+    }
+
+    // This command will INSERT new pincodes and UPDATE existing ones if they already exist.
+    await db.insert(pincodeServiceabilityTable)
+      .values(pincodes)
+      .onConflictDoUpdate({
+        target: pincodeServiceabilityTable.pincode,
+        set: {
+          city: sql`excluded.city`,
+          state: sql`excluded.state`,
+          isServiceable: sql`excluded.is_serviceable`,
+          codAvailable: sql`excluded.cod_available`,
+          deliveryCharge: sql`excluded.delivery_charge`,
+        }
+      });
+
+    return res.status(201).json({ success: true, msg: `${pincodes.length} pincodes processed successfully.` });
+  } catch (err) {
+    console.error("createPincodesBatch error:", err);
+    return res.status(500).json({ success: false, msg: "Server error during batch operation" });
+  }
+}
+
+// GET /api/address/pincodes
+export async function listPincodes(req, res) {
+  try {
+    const allPincodes = await db.select().from(pincodeServiceabilityTable).orderBy(pincodeServiceabilityTable.state, pincodeServiceabilityTable.city, pincodeServiceabilityTable.pincode);
+
+    // Group the flat array into a nested object structure for the frontend
+    const grouped = allPincodes.reduce((acc, pincode) => {
+      const { state, city } = pincode;
+      if (!acc[state]) {
+        acc[state] = {};
+      }
+      if (!acc[state][city]) {
+        acc[state][city] = [];
+      }
+      acc[state][city].push(pincode);
+      return acc;
+    }, {});
+
+    return res.json({ success: true, data: grouped });
+  } catch (err) {
+    console.error("listPincodes error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+
+// POST /api/address/pincodes
+export async function createPincode(req, res) {
+  try {
+    const { pincode, isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge } = req.body;
+    if (!pincode || !/^\d{6}$/.test(pincode)) {
+      return res.status(400).json({ success: false, msg: "Invalid pincode" });
+    }
+
+    const inserted = await db
+      .insert(pincodeServiceabilityTable)
+      .values({ pincode, isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge })
+      .returning();
+
+    return res.status(201).json({ success: true, data: inserted[0] });
+  } catch (err) {
+    console.error("createPincode error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+
+// PUT /api/address/pincodes/:pincode
+export async function updatePincode(req, res) {
+  try {
+    const { pincode } = req.params;
+    const { isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge } = req.body;
+
+    const updated = await db
+      .update(pincodeServiceabilityTable)
+      .set({ isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge })
+      .where(eq(pincodeServiceabilityTable.pincode, pincode))
+      .returning();
+
+    if (updated.length === 0) {
+      return res.status(404).json({ success: false, msg: "Pincode not found" });
+    }
+
+    return res.json({ success: true, data: updated[0] });
+  } catch (err) {
+    console.error("updatePincode error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+
+// DELETE /api/address/pincodes/:pincode
+export async function deletePincode(req, res) {
+  try {
+    const { pincode } = req.params;
+    await db.delete(pincodeServiceabilityTable).where(eq(pincodeServiceabilityTable.pincode, pincode));
+    return res.json({ success: true, msg: "Pincode rule deleted" });
+  } catch (err) {
+    console.error("deletePincode error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+
+// GET /api/address/pincode/:pincode
+export async function checkPincodeServiceability(req, res) {
+  try {
+    const { pincode } = req.params;
+    if (!pincode || !/^\d{6}$/.test(pincode)) {
+      return res.status(400).json({ success: false, msg: "Invalid pincode" });
+    }
+
+    const serviceability = await db
+      .select()
+      .from(pincodeServiceabilityTable)
+      .where(eq(pincodeServiceabilityTable.pincode, pincode));
+
+    if (serviceability.length > 0) {
+      return res.json({ success: true, data: serviceability[0] });
+    } else {
+      // Default response for pincodes not in the database
+      return res.json({
+        success: true,
+        data: {
+          pincode,
+          isServiceable: false,
+          codAvailable: false,
+          onlinePaymentAvailable: true,
+          deliveryCharge: 100, // Higher default charge for non-serviceable areas
+        },
+      });
+    }
+  } catch (err) {
+    console.error("checkPincodeServiceability error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+

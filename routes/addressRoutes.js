@@ -6,7 +6,13 @@ import {
   updateAddress,
   listAddresses,
   softDeleteAddress,
-  setDefaultAddress
+  setDefaultAddress,
+  checkPincodeServiceability,
+  listPincodes,
+  createPincode,
+  updatePincode,
+  deletePincode,
+  createPincodesBatch
 } from "../controllers/addressController.js";
 import { cache, invalidateCache } from "../cacheMiddleware.js";
 
@@ -43,5 +49,16 @@ router.put("/:id/default", async (req, res, next) => {
   await setDefaultAddress(req, res, next);
   await invalidateCache("user-addresses");
 });
+
+// --- Admin Pincode Management ---
+router.get("/pincodes", listPincodes);
+router.post("/pincodes", createPincode);
+router.put("/pincodes/:pincode", updatePincode);
+router.delete("/pincodes/:pincode", deletePincode);
+router.post("/pincodes/batch", createPincodesBatch); // ADD THIS NEW ROUTE
+
+// --- Customer Facing Pincode Check ---
+router.get("/pincode/:pincode", checkPincodeServiceability);
+
 
 export default router;

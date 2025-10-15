@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable, couponsTable } from '../configs/schema.js';
 import { productsTable, orderItemsTable } from '../configs/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { invalidateCache } from '../cacheMiddleware.js';
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
@@ -53,7 +53,7 @@ export const createOrder = async (req, res) => {
         productId: item.id,
         quantity: item.quantity,
         productName: product.name,
-        img: product.imageurl,
+        img: product.imageurl[0],
         size: product.size,
         price: unitPrice,
         totalPrice: unitPrice * item.quantity,
@@ -117,7 +117,7 @@ export const createOrder = async (req, res) => {
       // 🔴 Reduce stock for each product
       for (const item of cartItems) {
         const [product] = await db
-          .select()
+          .select({ stock: productsTable.stock, name: productsTable.name }) // Select only what you need
           .from(productsTable)
           .where(eq(productsTable.id, item.id));
 
@@ -125,9 +125,10 @@ export const createOrder = async (req, res) => {
           return res.status(400).json({ success: false, msg: `Not enough stock for ${product?.name || 'product'}` });
         }
 
+        // ✅ CORRECTED: Use sql operator for atomic update
         await db
           .update(productsTable)
-          .set({ stock: product.stock - item.quantity })
+          .set({ stock: sql`${productsTable.stock} - ${item.quantity}` })
           .where(eq(productsTable.id, item.id));
       }
 
@@ -217,7 +218,7 @@ export const verifyPayment = async (req, res) => {
         productId: item.id,
         quantity: item.quantity,
         productName: product.name,
-        img: product.imageurl,
+        img: product.imageurl[0],
         size: product.size,
         price: unitPrice,
         totalPrice: unitPrice * item.quantity,
@@ -275,7 +276,7 @@ export const verifyPayment = async (req, res) => {
     // 🔴 Reduce stock for each product
     for (const item of cartItems) {
       const [product] = await db
-        .select()
+        .select({ stock: productsTable.stock, name: productsTable.name }) // Select only what you need
         .from(productsTable)
         .where(eq(productsTable.id, item.id));
 
@@ -283,9 +284,10 @@ export const verifyPayment = async (req, res) => {
         return res.status(400).json({ success: false, msg: `Not enough stock for ${product?.name || 'product'}` });
       }
 
+      // ✅ CORRECTED: Use sql operator for atomic update
       await db
         .update(productsTable)
-        .set({ stock: product.stock - item.quantity })
+        .set({ stock: sql`${productsTable.stock} - ${item.quantity}` })
         .where(eq(productsTable.id, item.id));
     }
 

@@ -1,7 +1,7 @@
 // server/controllers/refundController.js
 import Razorpay from 'razorpay';
 import { db } from '../configs/index.js';
-import { ordersTable } from '../configs/schema.js';
+import { ordersTable, orderItemsTable, productsTable } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
 
 
@@ -75,15 +75,15 @@ export const refundOrder = async (req, res) => {
     }
 
     // Step 5: Call refund
-const refundInit = await razorpay.payments.refund(order.paymentId, {
-  amount: refundInPaise,
-  speed: 'normal',
-});
+    const refundInit = await razorpay.payments.refund(order.paymentId, {
+      amount: refundInPaise,
+      speed: 'normal',
+    });
 
 
 
-// Step 6: Fetch accurate refund status
-const refund = await razorpay.refunds.fetch(refundInit.id);
+    // Step 6: Fetch accurate refund status
+    const refund = await razorpay.refunds.fetch(refundInit.id);
 
 
     // Step 7: Persist refund data in DB
@@ -97,27 +97,27 @@ const refund = await razorpay.refunds.fetch(refundInit.id);
         refund_status: refund.status,
         refund_speed: refund.speed_processed,
         refund_initiated_at: new Date(refund.created_at * 1000),
-refund_completed_at: refund.status === 'processed'
-  ? new Date(refund.processed_at * 1000)
-  : null,
+        refund_completed_at: refund.status === 'processed'
+          ? new Date(refund.processed_at * 1000)
+          : null,
 
         updatedAt: new Date().toISOString(),
       })
       .where(eq(ordersTable.id, orderId));
 
-      
-     // Step 8: Restore stock for each product in the refunded order
-const orderItems = await db
-  .select()
-  .from(orderItemsTable)
-  .where(eq(orderItemsTable.orderId, orderId));
 
-for (const item of orderItems) {
-  await db
-    .update(productsTable)
-    .set({ stock: sql`${productsTable.stock} + ${item.quantity}` })
-    .where(eq(productsTable.id, item.productId));
-}
+    // Step 8: Restore stock for each product in the refunded order
+    const orderItems = await db
+      .select()
+      .from(orderItemsTable)
+      .where(eq(orderItemsTable.orderId, orderId));
+
+    for (const item of orderItems) {
+      await db
+        .update(productsTable)
+        .set({ stock: sql`${productsTable.stock} + ${item.quantity}` })
+        .where(eq(productsTable.id, item.productId));
+    }
 
 
 

@@ -164,6 +164,19 @@ export const userAddressRelations = relations(UserAddressTable, ({ one }) => ({
   }),
 }));
 
+
+export const pincodeServiceabilityTable = pgTable('pincode_serviceability', {
+  pincode: varchar('pincode', { length: 6 }).primaryKey(),
+  city: varchar('city', { length: 100 }).notNull(),  
+  state: varchar('state', { length: 100 }).notNull(),   
+  isServiceable: boolean('is_serviceable').default(false),
+  codAvailable: boolean('cod_available').default(false),
+  onlinePaymentAvailable: boolean('online_payment_available').default(true),
+  deliveryCharge: integer('delivery_charge').default(50),
+});
+
+
+
 export const orderItemsTable = pgTable('order_items', {
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   orderId: text('order_id').notNull().references(() => ordersTable.id),
