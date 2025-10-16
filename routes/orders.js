@@ -1,20 +1,17 @@
 import express from "express";
 import { db } from "../configs/index.js";
 import {
-  UserAddressTable,
   orderItemsTable,
   ordersTable,
   productsTable,
   usersTable,
 } from "../configs/schema.js";
-import { eq, inArray, and, asc, sql } from "drizzle-orm";
-// 🟢 Import your cache and invalidateCache middleware
+import { eq, and, asc, sql } from "drizzle-orm";
 import { cache, invalidateCache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
-// New GET endpoint to fetch all orders for admin panel
-// 🟢 Cache this GET route with a generous TTL
+// GET all orders for admin panel
 router.get("/", cache("all-orders", 600), async (req, res) => {
   try {
     const allOrders = await db
@@ -37,20 +34,15 @@ router.get("/", cache("all-orders", 600), async (req, res) => {
   }
 });
 
+// GET single order details
 router.get("/:id", cache("order-details", 3600), async (req, res) => {
   try {
     const orderId = req.params.id;
-
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.id, orderId),
       with: {
-        user: {
-          columns: {
-            name: true,
-            phone: true
-          }
-        },
-        address: {
+        user: { columns: { name: true, phone: true } },
+        address: { // Restored the explicit columns for optimization
           columns: {
             address: true,
             landmark: true, 
@@ -61,11 +53,7 @@ router.get("/:id", cache("order-details", 3600), async (req, res) => {
             phone: true,
           }
         },
-        orderItems: {
-          with: {
-            product: true,
-          },
-        },
+        orderItems: { with: { product: true } },
       },
     });
 
@@ -84,9 +72,7 @@ router.get("/:id", cache("order-details", 3600), async (req, res) => {
         quantity: item.quantity,
         price: item.price,
       })),
-      user: undefined,
-      address: undefined,
-      orderItems: undefined,
+      user: undefined, address: undefined, orderItems: undefined,
     };
 
     res.json(formattedOrder);
@@ -96,23 +82,15 @@ router.get("/:id", cache("order-details", 3600), async (req, res) => {
   }
 });
 
-// 🟢 Cache this POST route as it's a read operation
+// POST to get a user's orders
 router.post("/get-my-orders", cache("user-orders", 300), async (req, res) => {
   try {
     const { userId } = req.body;
-    if (!userId) {
-      return res.status(400).json({ error: "User ID is required" });
-    }
+    if (!userId) return res.status(400).json({ error: "User ID is required" });
 
     const myOrders = await db.query.ordersTable.findMany({
       where: eq(ordersTable.userId, userId),
-      with: {
-        orderItems: {
-          with: {
-            product: true,
-          },
-        },
-      },
+      with: { orderItems: { with: { product: true } } },
       orderBy: [asc(ordersTable.createdAt)],
     });
 
@@ -123,44 +101,41 @@ router.post("/get-my-orders", cache("user-orders", 300), async (req, res) => {
   }
 });
 
+// PUT to update order status
 router.put("/:id/status", async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
 
-    if (!id || !status) {
-      return res.status(400).json({ error: "Order ID and status are required" });
+    if (!id || !status) return res.status(400).json({ error: "Order ID and status are required" });
+
+    // --- LOGIC TO UPDATE 'SOLD' COUNT ---
+    const [currentOrder] = await db.select().from(ordersTable).where(eq(ordersTable.id, id));
+    
+    if (currentOrder && currentOrder.status === 'order placed' && (status === 'Processing' || status === 'Shipped')) {
+      const orderItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, id));
+
+      for (const item of orderItems) {
+        await db.update(productsTable)
+          .set({ sold: sql`${productsTable.sold} + ${item.quantity}` })
+          .where(eq(productsTable.id, item.productId));
+      }
     }
+    // --- END OF 'SOLD' COUNT LOGIC ---
 
     let newProgressStep = 1;
-    switch (status) {
-      case "Processing":
-        newProgressStep = 2;
-        break;
-      case "Shipped":
-        newProgressStep = 3;
-        break;
-      case "Delivered":
-        newProgressStep = 4;
-        break;
-      default:
-        newProgressStep = 1;
-    }
-
+    if (status === "Processing") newProgressStep = 2;
+    if (status === "Shipped") newProgressStep = 3;
+    if (status === "Delivered") newProgressStep = 4;
 
     const [updatedOrder] = await db
       .update(ordersTable)
-      .set({ 
-        status: status,
-        progressStep: newProgressStep.toString() 
-      })
+      .set({ status: status, progressStep: newProgressStep.toString() })
       .where(eq(ordersTable.id, id))
       .returning();
 
-    if (!updatedOrder) {
-      return res.status(404).json({ error: "Order not found" });
-    }
-    // 🟢 Invalidate the cache for all orders and the specific order
+    if (!updatedOrder) return res.status(404).json({ error: "Order not found" });
+    
     await invalidateCache("all-orders");
     await invalidateCache("order-details");
     await invalidateCache("user-orders");
@@ -172,30 +147,21 @@ router.put("/:id/status", async (req, res) => {
   }
 });
 
+// PUT to cancel an order
 router.put("/:id/cancel", async (req, res) => {
   try {
     const { id } = req.params;
-    if (!id) {
-      return res.status(400).json({ error: "Order ID is required" });
-    }
+    if (!id) return res.status(400).json({ error: "Order ID is required" });
 
-    // Update order status
     const [canceledOrder] = await db
       .update(ordersTable)
       .set({ status: "Order Cancelled" })
       .where(and(eq(ordersTable.id, id), eq(ordersTable.status, "order placed")))
       .returning();
 
-    if (!canceledOrder) {
-      return res.status(404).json({ error: "Order not found or cannot be canceled" });
-    }
+    if (!canceledOrder) return res.status(404).json({ error: "Order not found or cannot be canceled" });
 
-    // Restore stock for all items in this order
-    const orderItems = await db
-      .select()
-      .from(orderItemsTable)
-      .where(eq(orderItemsTable.orderId, id));
-
+    const orderItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, id));
     for (const item of orderItems) {
       await db
         .update(productsTable)
@@ -203,7 +169,6 @@ router.put("/:id/cancel", async (req, res) => {
         .where(eq(productsTable.id, item.productId));
     }
 
-    // Invalidate caches
     await invalidateCache("all-orders");
     await invalidateCache("order-details");
     await invalidateCache("user-orders");
@@ -214,5 +179,37 @@ router.put("/:id/cancel", async (req, res) => {
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
+// ADD THIS NEW ROUTE AT THE END OF THE FILE
+router.get("/details/for-reports", async (req, res) => {
+  try {
+    const detailedOrders = await db.query.ordersTable.findMany({
+      with: {
+        orderItems: {
+          with: {
+            product: true, // This will include the full product details
+          },
+        },
+      },
+    });
+
+    // We need to reshape the data slightly for the frontend
+    const reportData = detailedOrders.map(order => ({
+      ...order,
+      products: order.orderItems.map(item => ({
+        ...item.product, // Spread all product fields like costPrice, category
+        price: item.price,
+        quantity: item.quantity,
+      })),
+      orderItems: undefined, // Clean up the original structure
+    }));
+
+    res.json(reportData);
+  } catch (error) {
+    console.error("❌ Error fetching detailed orders for reports:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 export default router;

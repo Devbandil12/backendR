@@ -15,27 +15,24 @@ router.get("/", cache("all-products", 3600), async (req, res) => {
     const products = await db.select().from(productsTable);
 
     const transformedProducts = products.map((product) => {
-  // ✅ parse images
-  let parsedUrls = product.imageurl;
-  if (typeof product.imageurl === "string") {
-    try {
-      parsedUrls = JSON.parse(product.imageurl);
-    } catch (err) {
-      console.error("❌ Error parsing imageurl:", err);
-    }
-  }
+      let parsedUrls = product.imageurl;
+      if (typeof product.imageurl === "string") {
+        try {
+          parsedUrls = JSON.parse(product.imageurl);
+        } catch (err) {
+          console.error("❌ Error parsing imageurl:", err);
+        }
+      }
 
-  // ✅ calculate stock status
-  let stockStatus = "In Stock";
-  if (product.stock === 0) {
-    stockStatus = "Out of Stock";
-  } else if (product.stock <= 10) {
-    stockStatus = `Only ${product.stock} left!`;
-  }
+      let stockStatus = "In Stock";
+      if (product.stock === 0) {
+        stockStatus = "Out of Stock";
+      } else if (product.stock <= 10) {
+        stockStatus = `Only ${product.stock} left!`;
+      }
 
-  return { ...product, imageurl: parsedUrls, stockStatus };
-});
-
+      return { ...product, imageurl: parsedUrls, stockStatus };
+    });
 
     res.json(transformedProducts);
   } catch (error) {
@@ -62,20 +59,18 @@ router.get(
       if (!product) return res.status(404).json({ error: "Product not found" });
 
       if (typeof product.imageurl === "string") {
-  try {
-    product.imageurl = JSON.parse(product.imageurl);
-  } catch {}
-}
+        try {
+          product.imageurl = JSON.parse(product.imageurl);
+        } catch {}
+      }
 
-// ✅ add stock status
-let stockStatus = "In Stock";
-if (product.stock === 0) {
-  stockStatus = "Out of Stock";
-} else if (product.stock <= 10) {
-  stockStatus = `Only ${product.stock} left!`;
-}
-product.stockStatus = stockStatus;
-
+      let stockStatus = "In Stock";
+      if (product.stock === 0) {
+        stockStatus = "Out of Stock";
+      } else if (product.stock <= 10) {
+        stockStatus = `Only ${product.stock} left!`;
+      }
+      product.stockStatus = stockStatus;
 
       res.json(product);
     } catch (error) {
@@ -99,10 +94,12 @@ router.post("/", async (req, res) => {
         ...productData,
         imageurl: JSON.stringify(productData.imageurl),
         stock: productData.stock ?? 0,
+        // Ensure new fields have defaults if not provided
+        costPrice: productData.costPrice ?? 0,
+        category: productData.category ?? 'Uncategorized',
       })
       .returning();
 
-    // ✅ Invalidate caches
     await invalidateCache("all-products", true);
     await invalidateCache(`product-${newProduct.id}`);
 
@@ -136,7 +133,6 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    // ✅ Invalidate caches
     await invalidateCache("all-products", true);
     await invalidateCache(`product-${id}`);
 
@@ -163,7 +159,6 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    // ✅ Invalidate caches
     await invalidateCache("all-products", true);
     await invalidateCache(`product-${id}`);
 
