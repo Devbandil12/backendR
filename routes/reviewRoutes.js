@@ -8,28 +8,22 @@ import {
   isVerifiedBuyer,
   getReviewsByUser,
 } from "../controllers/reviewController.js";
-import { cache } from "../cacheMiddleware.js"; // only need cache here
+import { cache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
 // POST /api/reviews
-// 🟢 Creates a new review. Controller handles cache invalidation.
+// Creates a new review. The controller handles cache invalidation.
 router.post("/", createReview);
 
 // GET /api/reviews/:productId
-// 🟢 Fetch reviews for a product (optionally filtered by rating).
-// Cache key depends only on productId + rating (NOT limit/cursor).
-router.get(
-  "/:productId",
-  cache(
-    (req) => `product-reviews:${req.params.productId}:${req.query.rating || "all"}`,
-    3600
-  ),
-  getReviewsByProduct
-);
+// ✅ FIXED: The cache middleware has been REMOVED from this route.
+// This is the crucial change that solves the duplication issue by ensuring
+// the pagination cursor is processed by the controller on every request.
+router.get("/:productId", getReviewsByProduct);
 
 // GET /api/reviews/stats/:productId
-// 🟢 Fetch review stats (average, counts). Cached longer.
+// 🟢 Caching is kept here as this route is not paginated and benefits from it.
 router.get(
   "/stats/:productId",
   cache((req) => `review-stats:${req.params.productId}`, 43200),
@@ -37,27 +31,29 @@ router.get(
 );
 
 // GET /api/reviews/verify
-// 🟢 Check verified buyer. Cache briefly.
+// 🟢 Caching is kept here.
 router.get(
   "/verify",
   cache(
     (req) =>
-      `verified-buyer:${req.query.userId || req.query.clerkId}:${req.query.productId}`,
+      `verified-buyer:${req.query.userId || req.query.clerkId}:${
+        req.query.productId
+      }`,
     60
   ),
   isVerifiedBuyer
 );
 
 // DELETE /api/reviews/:id
-// 🟢 Deletes a review. Controller handles invalidation.
+// Deletes a review. The controller handles cache invalidation.
 router.delete("/:id", deleteReview);
 
 // PUT /api/reviews/:id
-// 🟢 Updates a review. Controller handles invalidation.
+// Updates a review. The controller handles cache invalidation.
 router.put("/:id", updateReview);
 
 // GET /api/reviews/user/:userId
-// 🟢 Fetch user’s reviews. Cache by userId.
+// 🟢 Caching is kept here.
 router.get(
   "/user/:userId",
   cache((req) => `user-reviews:${req.params.userId}`, 3600),
