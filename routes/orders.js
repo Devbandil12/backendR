@@ -22,11 +22,12 @@ router.get("/", cache("all-orders", 600), async (req, res) => {
         totalAmount: ordersTable.totalAmount,
         createdAt: ordersTable.createdAt,
         userEmail: usersTable.email,
+        paymentMode: ordersTable.paymentMode,
       })
       .from(ordersTable)
       .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
       .orderBy(asc(ordersTable.createdAt));
-      
+
     res.json(allOrders);
   } catch (error) {
     console.error("❌ Error fetching all orders:", error);
@@ -45,7 +46,7 @@ router.get("/:id", cache("order-details", 3600), async (req, res) => {
         address: { // Restored the explicit columns for optimization
           columns: {
             address: true,
-            landmark: true, 
+            landmark: true,
             city: true,
             state: true,
             postalCode: true,
@@ -68,7 +69,7 @@ router.get("/:id", cache("order-details", 3600), async (req, res) => {
       shippingAddress: order.address,
       products: order.orderItems?.map(item => ({
         ...item.product,
-        productName: item.product.name, 
+        productName: item.product.name,
         quantity: item.quantity,
         price: item.price,
       })),
@@ -111,7 +112,7 @@ router.put("/:id/status", async (req, res) => {
 
     // --- LOGIC TO UPDATE 'SOLD' COUNT ---
     const [currentOrder] = await db.select().from(ordersTable).where(eq(ordersTable.id, id));
-    
+
     if (currentOrder && currentOrder.status === 'order placed' && (status === 'Processing' || status === 'Shipped')) {
       const orderItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, id));
 
@@ -135,7 +136,7 @@ router.put("/:id/status", async (req, res) => {
       .returning();
 
     if (!updatedOrder) return res.status(404).json({ error: "Order not found" });
-    
+
     await invalidateCache("all-orders");
     await invalidateCache("order-details");
     await invalidateCache("user-orders");
@@ -156,8 +157,7 @@ router.put("/:id/cancel", async (req, res) => {
     const [canceledOrder] = await db
       .update(ordersTable)
       .set({ status: "Order Cancelled" })
-      .where(and(eq(ordersTable.id, id), eq(ordersTable.status, "order placed")))
-      .returning();
+      .where(and(eq(ordersTable.id, id), eq(ordersTable.status, "Order Placed"))).returning();
 
     if (!canceledOrder) return res.status(404).json({ error: "Order not found or cannot be canceled" });
 

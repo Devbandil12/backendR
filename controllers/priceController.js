@@ -2,24 +2,27 @@
 import { db } from '../configs/index.js';
 import { productsTable, couponsTable } from '../configs/schema.js';
 import { eq } from 'drizzle-orm';
+// 👈 1. Import the new helper function
+import { getPincodeDetails} from './addressController.js';
 
 export const getPriceBreakdown = async (req, res) => {
   try {
-    const { cartItems, couponCode = null } = req.body;
+    // 👇 2. Accept 'pincode' from the request body
+    const { cartItems, couponCode = null, pincode = null } = req.body;
     if (!Array.isArray(cartItems) || cartItems.length === 0) {
       return res.status(400).json({ success: false, msg: 'Cart is empty' });
     }
 
+    const pincodeDetails = await getPincodeDetails(pincode);
+    const deliveryCharge = pincodeDetails.deliveryCharge;
+    const codAvailable = pincodeDetails.codAvailable;
+
     let originalTotal = 0;
     let productTotal  = 0;
     let discountAmount = 0;
-    const deliveryCharge = 0;
 
     for (const { id, quantity } of cartItems) {
-      const [p] = await db
-        .select()
-        .from(productsTable)
-        .where(eq(productsTable.id, id));
+      const [p] = await db.select().from(productsTable).where(eq(productsTable.id, id));
       if (!p) {
         return res.status(400).json({ success: false, msg: `Invalid product: ${id}` });
       }
@@ -30,36 +33,34 @@ export const getPriceBreakdown = async (req, res) => {
     }
 
     if (couponCode) {
-      const [c] = await db
-        .select({
-          discountType:  couponsTable.discountType,
-          discountValue: couponsTable.discountValue,
-          minOrderValue: couponsTable.minOrderValue,
-          validFrom:     couponsTable.validFrom,
-          validUntil:    couponsTable.validUntil,
-        })
-        .from(couponsTable)
-        .where(eq(couponsTable.code, couponCode));
-      if (!c) {
-        return res.status(400).json({ success: false, msg: 'Invalid coupon code' });
-      }
-      const now = new Date();
-      if (
-        (c.validFrom && now < c.validFrom) ||
-        (c.validUntil && now > c.validUntil) ||
-        productTotal < c.minOrderValue
-      ) {
-        return res.status(400).json({ success: false, msg: 'Coupon not applicable' });
-      }
-      discountAmount = c.discountType === 'percent'
-        ? Math.floor((c.discountValue / 100) * productTotal)
-        : c.discountValue;
+        const [c] = await db.select({
+            discountType: couponsTable.discountType,
+            discountValue: couponsTable.discountValue,
+            minOrderValue: couponsTable.minOrderValue,
+            validFrom: couponsTable.validFrom,
+            validUntil: couponsTable.validUntil,
+        }).from(couponsTable).where(eq(couponsTable.code, couponCode));
+
+        if (c) {
+            const now = new Date();
+            if (
+                !(c.validFrom && now < c.validFrom) &&
+                !(c.validUntil && now > c.validUntil) &&
+                productTotal >= c.minOrderValue
+            ) {
+                discountAmount = c.discountType === 'percent'
+                    ? Math.floor((c.discountValue / 100) * productTotal)
+                    : c.discountValue;
+            }
+        }
     }
 
+    // 👇 4. The total now correctly includes the dynamic delivery charge
     const total = Math.max(productTotal + deliveryCharge - discountAmount, 0);
+
     return res.json({
       success: true,
-      breakdown: { originalTotal, productTotal, deliveryCharge, discountAmount, total },
+      breakdown: { originalTotal, productTotal, deliveryCharge, discountAmount, total, codAvailable },
     });
   } catch (err) {
     console.error('getPriceBreakdown error:', err);

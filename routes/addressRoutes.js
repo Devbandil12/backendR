@@ -12,7 +12,8 @@ import {
   createPincode,
   updatePincode,
   deletePincode,
-  createPincodesBatch
+  createPincodesBatch,
+  reverseGeocodeController
 } from "../controllers/addressController.js";
 import { cache, invalidateCache } from "../cacheMiddleware.js";
 
@@ -59,6 +60,7 @@ router.post("/pincodes/batch", createPincodesBatch); // ADD THIS NEW ROUTE
 
 // --- Customer Facing Pincode Check ---
 router.get("/pincode/:pincode", checkPincodeServiceability);
+router.get("/reverse-geocode", reverseGeocodeController);
 
 
 export default router;

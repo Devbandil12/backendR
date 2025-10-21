@@ -11,6 +11,8 @@ async function reverseGeocode(lat, lng) {
     `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${process.env.GOOGLE_API_KEY}`
   );
   const data = await res.json();
+  // ✅ ADD THIS LINE TO DEBUG
+  console.log("Google Maps API Response:", data);
   if (data.results?.[0]) {
     const updated = {};
     data.results[0].address_components.forEach(c => {
@@ -24,7 +26,25 @@ async function reverseGeocode(lat, lng) {
   }
   return {};
 }
+export async function reverseGeocodeController(req, res) {
+  const { lat, lon } = req.query;
 
+  if (!lat || !lon) {
+    return res.status(400).json({ success: false, msg: "Latitude and longitude are required." });
+  }
+
+  try {
+    const geoData = await reverseGeocode(lat, lon);
+    
+    // The reverseGeocode helper returns an empty object on failure, which is fine.
+    // We just forward the result to the frontend.
+    return res.json(geoData);
+
+  } catch (error) {
+    console.error("Reverse geocode controller error:", error);
+    return res.status(500).json({ success: false, msg: "Server error during reverse geocoding." });
+  }
+}
 // POST /api/address/save
 export async function saveAddress(req, res) {
   try {
@@ -412,3 +432,23 @@ export async function checkPincodeServiceability(req, res) {
   }
 }
 
+export async function getPincodeDetails(pincode) {
+  // Return a default object for invalid or non-serviceable pincodes
+  const defaults = {
+    isServiceable: false,
+    codAvailable: false,
+    deliveryCharge: 100, // A default/higher charge
+  };
+
+  if (!pincode || !/^\d{6}$/.test(pincode)) {
+    return defaults;
+  }
+
+  const [details] = await db
+    .select()
+    .from(pincodeServiceabilityTable)
+    .where(eq(pincodeServiceabilityTable.pincode, pincode));
+
+  // If found, return the details from DB; otherwise, return the defaults
+  return details ? details : defaults;
+}

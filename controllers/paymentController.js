@@ -3,9 +3,10 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable, couponsTable } from '../configs/schema.js';
-import { productsTable, orderItemsTable } from '../configs/schema.js';
+import { productsTable, orderItemsTable, UserAddressTable } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
 import { invalidateCache } from '../cacheMiddleware.js';
+import { getPincodeDetails } from './addressController.js'; // 👈 Import the new helper
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
 const razorpay = new Razorpay({
@@ -28,9 +29,15 @@ export const createOrder = async (req, res) => {
       return res.status(400).json({ success: false, msg: 'User address ID is required for COD orders' });
     }
 
+    const [address] = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, userAddressId));
+    if (!address) {
+      return res.status(404).json({ success: false, msg: "Address not found." });
+    }
+
     let productTotal = 0;
     let discountAmount = 0;
-    const deliveryCharge = 0;
+    const pincodeDetails = await getPincodeDetails(address.postalCode);
+    const deliveryCharge = pincodeDetails.deliveryCharge;
     const orderId = `DA${Date.now()}`;
     const enrichedItems = [];
 
@@ -93,6 +100,10 @@ export const createOrder = async (req, res) => {
 
     const finalAmount = Math.max(productTotal + deliveryCharge - discountAmount, 0);
 
+    if (paymentMode === 'cod' && !pincodeDetails.codAvailable) {
+      return res.status(400).json({ success: false, msg: "Cash on Delivery is not available for this address." });
+    }
+
     // ✅ If paymentMode is 'cod', insert order now
     if (paymentMode === 'cod') {
       await db.insert(ordersTable).values({
@@ -101,7 +112,7 @@ export const createOrder = async (req, res) => {
         userAddressId,
         razorpay_order_id: null,
         totalAmount: finalAmount,
-        status: 'order placed',
+        status: 'Order Placed',
         paymentMode: 'cod',
         transactionId: null,
         paymentStatus: 'pending',
@@ -110,6 +121,7 @@ export const createOrder = async (req, res) => {
         updatedAt: new Date().toISOString(),
         couponCode,
         discountAmount,
+        progressStep: '1',
       });
 
       await db.insert(orderItemsTable).values(enrichedItems);
@@ -194,9 +206,15 @@ export const verifyPayment = async (req, res) => {
       return res.status(400).json({ success: false, error: "Verification failed" });
     }
 
+    const [address] = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, userAddressId));
+    if (!address) {
+      return res.status(404).json({ success: false, msg: "Address not found for verification." });
+    }
+
     let productTotal = 0;
     let discountAmount = 0;
-    const deliveryCharge = 0;
+    const pincodeDetails = await getPincodeDetails(address.postalCode);
+    const deliveryCharge = pincodeDetails.deliveryCharge;
     const enrichedItems = [];
 
     for (const item of cartItems) {
@@ -260,7 +278,7 @@ export const verifyPayment = async (req, res) => {
       userAddressId,
       razorpay_order_id,
       totalAmount: finalAmount,
-      status: 'order placed',
+      status: 'Order Placed',
       paymentMode: 'online',
       transactionId: razorpay_payment_id,
       paymentStatus: 'paid',
@@ -269,6 +287,7 @@ export const verifyPayment = async (req, res) => {
       updatedAt: new Date().toISOString(),
       couponCode,
       discountAmount,
+      progressStep: '1',
     });
 
     await db.insert(orderItemsTable).values(enrichedItems);

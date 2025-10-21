@@ -97,7 +97,7 @@ export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
 export const ordersTable = pgTable('orders', {
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
-userAddressId: uuid('user_address_id').notNull().references(() => UserAddressTable.id),
+  userAddressId: uuid('user_address_id').notNull().references(() => UserAddressTable.id),
   razorpay_order_id: text('razorpay_order_id'),
   totalAmount: integer('total_amount').notNull(),
   status: text('status').default('order placed'),
@@ -169,8 +169,8 @@ export const userAddressRelations = relations(UserAddressTable, ({ one }) => ({
 
 export const pincodeServiceabilityTable = pgTable('pincode_serviceability', {
   pincode: varchar('pincode', { length: 6 }).primaryKey(),
-  city: varchar('city', { length: 100 }).notNull(),  
-  state: varchar('state', { length: 100 }).notNull(),   
+  city: varchar('city', { length: 100 }).notNull(),
+  state: varchar('state', { length: 100 }).notNull(),
   isServiceable: boolean('is_serviceable').default(false),
   codAvailable: boolean('cod_available').default(false),
   onlinePaymentAvailable: boolean('online_payment_available').default(true),
