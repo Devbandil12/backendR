@@ -6,7 +6,7 @@ import { cache, invalidateCache } from "../cacheMiddleware.js";
 
 const router = express.Router();
 
-// 1. Caching the admin panel route (This is fine with a static key)
+// GET /api/users - Fetches all users with their orders and addresses (for admin).
 router.get("/", cache("all-users", 3600), async (req, res) => {
   try {
     const allUsers = await db.query.usersTable.findMany({
@@ -26,7 +26,7 @@ router.get("/", cache("all-users", 3600), async (req, res) => {
   }
 });
 
-// 2. Caching the find-by-clerk-id route with a DYNAMIC key.
+// GET /api/users/find-by-clerk-id - Finds a single user by their unique Clerk ID.
 router.get("/find-by-clerk-id", cache(300), async (req, res) => {
   try {
     const { clerkId } = req.query;
@@ -38,7 +38,9 @@ router.get("/find-by-clerk-id", cache(300), async (req, res) => {
       where: eq(usersTable.clerkId, clerkId),
     });
 
-    if (!user) return res.json(null);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
     const userData = {
       ...user,
@@ -54,12 +56,11 @@ router.get("/find-by-clerk-id", cache(300), async (req, res) => {
   }
 });
 
-// 3. Post endpoint for creating a user (Prevents duplicates)
+// POST /api/users - Creates a new user or returns an existing one to prevent duplicates.
 router.post("/", async (req, res) => {
   try {
     const { name, email, clerkId } = req.body;
 
-    // CRITICAL FIX: Check for an existing user by clerkId OR email to prevent duplicates.
     const existingUser = await db.query.usersTable.findFirst({
       where: or(
         eq(usersTable.clerkId, clerkId),
@@ -67,18 +68,15 @@ router.post("/", async (req, res) => {
       ),
     });
 
-    // If a user with that clerkId or email already exists, return that user.
     if (existingUser) {
       return res.status(200).json(existingUser);
     }
 
-    // If no user was found, create a new one.
     const [newUser] = await db
       .insert(usersTable)
       .values({ name, email, clerkId })
       .returning();
 
-    // Invalidate the 'all-users' list cache
     await invalidateCache("all-users");
 
     res.status(201).json(newUser);
@@ -88,11 +86,10 @@ router.post("/", async (req, res) => {
   }
 });
 
-// 4. PUT endpoint for updating user details with proper cache invalidation
+// PUT /api/users/:id - Updates a specific user's details by their database ID.
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
   try {
-    // First, get the user's clerkId to invalidate the correct dynamic cache
     const userToUpdate = await db.query.usersTable.findFirst({
       columns: { clerkId: true },
       where: eq(usersTable.id, id),
@@ -115,7 +112,6 @@ router.put("/:id", async (req, res) => {
       .where(eq(usersTable.id, id))
       .returning();
 
-    // Proper cache invalidation
     await invalidateCache("all-users");
     await invalidateCache(`/api/users/find-by-clerk-id?clerkId=${userToUpdate.clerkId}`);
 
@@ -126,11 +122,10 @@ router.put("/:id", async (req, res) => {
   }
 });
 
-// 5. DELETE endpoint for a user with proper cache invalidation
+// DELETE /api/users/:id - Deletes a specific user by their database ID.
 router.delete("/:id", async (req, res) => {
   const { id } = req.params;
   try {
-    // First, get the user's clerkId to invalidate the correct cache before deleting
     const userToDelete = await db.query.usersTable.findFirst({
       columns: { clerkId: true },
       where: eq(usersTable.id, id),
@@ -152,7 +147,7 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-// 6. Caching addresses route with a DYNAMIC key
+// GET /api/users/:id/addresses - Fetches all addresses for a specific user.
 router.get("/:id/addresses", cache(300), async (req, res) => {
   try {
     const userId = req.params.id;
@@ -167,7 +162,7 @@ router.get("/:id/addresses", cache(300), async (req, res) => {
   }
 });
 
-// 7. Caching orders route with a DYNAMIC and specific key
+// GET /api/users/:userId/orders - Fetches all orders and their items for a specific user.
 router.get("/:userId/orders", cache(300), async (req, res) => {
   try {
     const { userId } = req.params;
@@ -241,8 +236,8 @@ router.get("/:userId/orders", cache(300), async (req, res) => {
             o.refundCompletedAt
               ? Math.floor(new Date(o.refundCompletedAt).getTime() / 1000)
               : o.refundStatus === "processed"
-              ? Math.floor(Date.now() / 1000)
-              : null,
+                ? Math.floor(Date.now() / 1000)
+                : null,
         },
         items: [],
       });

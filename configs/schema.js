@@ -61,8 +61,7 @@ export const productsRelations = relations(productsTable, ({ many }) => ({
 export const addToCartTable = pgTable('add_to_cart', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
-  productId: uuid('product_id').notNull(),
-  quantity: integer('quantity').notNull().default(1),
+  productId: uuid('product_id').notNull().references(() => productsTable.id), quantity: integer('quantity').notNull().default(1),
   addedAt: text('added_at').default('now()'),
 });
 
@@ -80,7 +79,7 @@ export const addToCartRelations = relations(addToCartTable, ({ one }) => ({
 export const wishlistTable = pgTable("wishlist_table", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  productId: uuid("product_id").notNull(),
+  productId: uuid("product_id").notNull().references(() => productsTable.id, { onDelete: "cascade" }),
 });
 
 export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
