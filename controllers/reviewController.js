@@ -1,3 +1,5 @@
+// file controllers/reviewController.js
+
 import { db } from "../configs/index.js";
 import {
   reviewsTable,
@@ -7,8 +9,13 @@ import {
 } from "../configs/schema.js";
 import { eq, desc, sql, and } from "drizzle-orm";
 
-// 🟢 Import cache helpers
-import { invalidateCache } from "../cacheMiddleware.js";
+// Import new helpers
+import { invalidateMultiple } from "../invalidateHelpers.js";
+import {
+  makeProductReviewsPrefix,
+  makeProductReviewStatsKey,
+  makeUserReviewsKey,
+} from "../cacheKeys.js";
 
 // 🔧 Helper: Map Clerk ID or UUID → internal UUID
 const resolveUserId = async (userId) => {
@@ -41,21 +48,21 @@ const hasPurchasedProduct = async (internalUserId, productId) => {
 };
 
 // 🔧 Helper: invalidate all review cache variants for a product + user
+// REFACTORED: Use new key builders and invalidateMultiple
 const invalidateReviewCaches = async (productId, userId) => {
-  const keys = [
-    `product-reviews:${productId}:all`,
-    `product-reviews:${productId}:1`,
-    `product-reviews:${productId}:2`,
-    `product-reviews:${productId}:3`,
-    `product-reviews:${productId}:4`,
-    `product-reviews:${productId}:5`,
-    `review-stats:${productId}`,
+  const items = [
+    // Use prefix invalidation for all paginated/filtered review lists
+    { key: makeProductReviewsPrefix(productId), prefix: true },
+    // Invalidate the specific stats key
+    { key: makeProductReviewStatsKey(productId) },
   ];
-  if (userId) keys.push(`user-reviews:${userId}`);
 
-  for (const key of keys) {
-    await invalidateCache(key);
+  if (userId) {
+    // Invalidate this user's specific review list
+    items.push({ key: makeUserReviewsKey(userId) });
   }
+
+  await invalidateMultiple(items);
 };
 
 // ✅ Create Review
@@ -93,7 +100,7 @@ export const createReview = async (req, res) => {
       })
       .returning();
 
-    // 🟢 Invalidate cache
+    // Invalidate cache
     await invalidateReviewCaches(productId, internalUserId);
 
     res.status(201).json(review);
@@ -185,7 +192,6 @@ export const getReviewsByProduct = async (req, res) => {
   }
 };
 
-// ✅ Get Review Stats
 // ✅ Get Review Stats
 export const getReviewStats = async (req, res) => {
   const { productId } = req.params;

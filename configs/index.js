@@ -1,3 +1,5 @@
+// file configs/index.js
+
 import 'dotenv/config';
 import pkg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';

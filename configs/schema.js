@@ -1,3 +1,5 @@
+// file configs/schema.js
+
 import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, index, jsonb, } from 'drizzle-orm/pg-core';
 import { sql, relations } from 'drizzle-orm';
 
@@ -11,7 +13,7 @@ export const usersTable = pgTable('users', {
   clerkId: text("clerk_id").notNull().unique(),
   name: text('name').notNull(),
   phone: text('phone').default(null),
-  email: text('email').notNull(),
+  email: text('email').notNull().unique(),
   role: text('role').default('user'),
   profileImage: text('profile_image').default(null),
   dob: timestamp('dob', { withTimezone: true }).default(null),
@@ -32,7 +34,7 @@ export const querytable = pgTable("query", {
   email: text("email").notNull(),
   phone: text("phone").notNull(),
   message: text("message").notNull(),
-  createdAt: text('created_at').notNull()
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
 });
 
 export const productsTable = pgTable('products', {
@@ -60,9 +62,10 @@ export const productsRelations = relations(productsTable, ({ many }) => ({
 
 export const addToCartTable = pgTable('add_to_cart', {
   id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').notNull().references(() => usersTable.id),
-  productId: uuid('product_id').notNull().references(() => productsTable.id), quantity: integer('quantity').notNull().default(1),
-  addedAt: text('added_at').default('now()'),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: "cascade" }),
+  quantity: integer('quantity').notNull().default(1),
+  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
 });
 
 export const addToCartRelations = relations(addToCartTable, ({ one }) => ({
@@ -80,6 +83,7 @@ export const wishlistTable = pgTable("wishlist_table", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   productId: uuid("product_id").notNull().references(() => productsTable.id, { onDelete: "cascade" }),
+  addedAt: timestamp("added_at", { withTimezone: true }).defaultNow(),
 });
 
 export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
@@ -100,13 +104,13 @@ export const ordersTable = pgTable('orders', {
   razorpay_order_id: text('razorpay_order_id'),
   totalAmount: integer('total_amount').notNull(),
   status: text('status').default('order placed'),
-  progressStep: integer('progressStep').default('0'),
+  progressStep: integer('progressStep').default(0),
   paymentMode: text('payment_mode').notNull(),
   transactionId: text('transaction_id').default("null"),
   paymentStatus: text("payment_status").default("pending"),
   phone: text("phone").notNull(),
-  createdAt: text('created_at').notNull(),
-  updatedAt: text('updated_at').default('now()'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
   refund_id: text('refund_id'),
   refund_amount: integer('refund_amount'),
   refund_status: text('refund_status'),
@@ -117,13 +121,11 @@ export const ordersTable = pgTable('orders', {
   discountAmount: integer('discount_amount'),
 });
 
-// Update the ordersRelations to include the new one-to-one relationship
 export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
   user: one(usersTable, {
     fields: [ordersTable.userId],
     references: [usersTable.id],
   }),
-  // New relationship to get the address
   address: one(UserAddressTable, {
     fields: [ordersTable.userAddressId],
     references: [UserAddressTable.id],
@@ -132,10 +134,9 @@ export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
 }));
 
 
-
 export const UserAddressTable = pgTable('user_address', {
   id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').notNull().references(() => usersTable.id),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
   name: text('name').notNull(),
   phone: text('phone').notNull(),
   altPhone: text('alt_phone').default(null),
@@ -154,8 +155,8 @@ export const UserAddressTable = pgTable('user_address', {
   isDefault: boolean('is_default').default(false),
   isVerified: boolean('is_verified').default(false),
   isDeleted: boolean('is_deleted').default(false),
-  createdAt: text('created_at').default('now()'),
-  updatedAt: text('updated_at').default('now()'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
 
 export const userAddressRelations = relations(UserAddressTable, ({ one }) => ({
@@ -177,10 +178,9 @@ export const pincodeServiceabilityTable = pgTable('pincode_serviceability', {
 });
 
 
-
 export const orderItemsTable = pgTable('order_items', {
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
-  orderId: text('order_id').notNull().references(() => ordersTable.id),
+  orderId: text('order_id').notNull().references(() => ordersTable.id, { onDelete: "cascade" }),
   productName: varchar('product_name', { length: 255 }).notNull(),
   img: varchar('img', { length: 500 }).notNull(),
   productId: uuid('product_id').notNull(),
@@ -228,7 +228,7 @@ export const testimonials = pgTable("testimonials", {
 export const reviewsTable = pgTable('product_reviews', {
   id: uuid('id').defaultRandom().primaryKey(),
   productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: 'cascade' }),
-  userId: uuid('user_id').notNull().references(() => usersTable.id),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   rating: integer('rating').notNull(),
   comment: text('comment').notNull(),

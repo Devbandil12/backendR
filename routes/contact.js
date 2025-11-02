@@ -1,4 +1,5 @@
 // routes/contact.js
+
 import express from "express";
 import { db } from "../configs/index.js";
 import { querytable } from "../configs/schema.js";
@@ -25,7 +26,6 @@ router.post("/", async (req, res) => {
       .insert(querytable)
       .values({
         ...queryData,
-        createdAt: new Date().toISOString(),
       })
       .returning();
     res.status(201).json(newQuery);

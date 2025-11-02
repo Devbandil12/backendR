@@ -15,52 +15,44 @@ import {
   createPincodesBatch,
   reverseGeocodeController
 } from "../controllers/addressController.js";
-import { cache, invalidateCache } from "../cacheMiddleware.js";
+// 🟢 Import new cache key builder
+import { cache } from "../cacheMiddleware.js";
+import { makeUserAddressesKey } from "../cacheKeys.js";
 
 const router = express.Router();
 
-// 🟢 Caching the GET route for user addresses.
-// A TTL of 5 minutes (300 seconds) is a good starting point.
-router.get("/user/:userId", cache("user-addresses", 300), listAddresses);
+// 🟢 Caching the GET route for user addresses dynamically.
+router.get(
+  "/user/:userId",
+  cache((req) => makeUserAddressesKey(req.params.userId), 300),
+  listAddresses
+);
 
 // 🟢 Post route to create a new address.
-// After the address is saved, invalidate the cache.
-router.post("/", async (req, res, next) => {
-  await saveAddress(req, res, next);
-  await invalidateCache("user-addresses");
-});
+// Invalidation is handled inside the 'saveAddress' controller.
+router.post("/", saveAddress);
 
 // 🟢 Put route to update an existing address.
-// Invalidate the cache after a successful update.
-router.put("/:id", async (req, res, next) => {
-  await updateAddress(req, res, next);
-  await invalidateCache("user-addresses");
-});
+// Invalidation is handled inside the 'updateAddress' controller.
+router.put("/:id", updateAddress);
 
 // 🟢 Delete route to soft delete an address.
-// Invalidate the cache after the deletion.
-router.delete("/:id", async (req, res, next) => {
-  await softDeleteAddress(req, res, next);
-  await invalidateCache("user-addresses");
-});
+// Invalidation is handled inside the 'softDeleteAddress' controller.
+router.delete("/:id", softDeleteAddress);
 
 // 🟢 Put route to set a default address.
-// This is also a data modification, so invalidate the cache.
-router.put("/:id/default", async (req, res, next) => {
-  await setDefaultAddress(req, res, next);
-  await invalidateCache("user-addresses");
-});
+// Invalidation is handled inside the 'setDefaultAddress' controller.
+router.put("/:id/default", setDefaultAddress);
 
 // --- Admin Pincode Management ---
 router.get("/pincodes", listPincodes);
 router.post("/pincodes", createPincode);
 router.put("/pincodes/:pincode", updatePincode);
 router.delete("/pincodes/:pincode", deletePincode);
-router.post("/pincodes/batch", createPincodesBatch); // ADD THIS NEW ROUTE
+router.post("/pincodes/batch", createPincodesBatch);
 
 // --- Customer Facing Pincode Check ---
 router.get("/pincode/:pincode", checkPincodeServiceability);
 router.get("/reverse-geocode", reverseGeocodeController);
-
 
 export default router;

@@ -1,15 +1,21 @@
+// file routes/testimonials.js
+
 import express from 'express';
 import { db } from '../configs/index.js';
 import { testimonials } from '../configs/schema.js';
 import { desc } from 'drizzle-orm';
-import { cache, invalidateCache } from "../cacheMiddleware.js";
+// 🟢 Import new cache helpers
+import { cache } from "../cacheMiddleware.js";
+import { invalidateMultiple } from "../invalidateHelpers.js";
+import { makeAllTestimonialsKey } from "../cacheKeys.js";
 
 const router = express.Router();
 
 // ========================
 // GET testimonials
 // ========================
-router.get('/', cache("all-testimonials", 3600), async (req, res) => {
+// 🟢 Use new cache key builder
+router.get('/', cache(makeAllTestimonialsKey(), 3600), async (req, res) => {
   try {
     const result = await db
       .select()
@@ -44,8 +50,8 @@ router.post('/', async (req, res) => {
       avatar, // store Cloudinary URL directly
     });
 
-    // Invalidate cache after adding new testimonial
-    await invalidateCache("all-testimonials");
+    // 🟢 Use new invalidation helper
+    await invalidateMultiple([{ key: makeAllTestimonialsKey() }]);
 
     res.status(201).json({ success: true });
   } catch (err) {

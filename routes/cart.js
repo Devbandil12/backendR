@@ -1,45 +1,60 @@
+// routes/cart.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { addToCartTable, productsTable, wishlistTable } from "../configs/schema.js";
+import {
+  addToCartTable,
+  productsTable,
+  wishlistTable,
+} from "../configs/schema.js";
 import { and, eq, inArray } from "drizzle-orm";
+
+import { cache } from "../cacheMiddleware.js";
+import { invalidateMultiple } from "../invalidateHelpers.js";
+import * as keys from "../cacheKeys.js";
 
 const router = express.Router();
 
-// =========================
-// Cart routes
-// =========================
+/* =========================================================
+   🛒 CART ROUTES
+========================================================= */
 
-// GET /api/cart/:userId - Fetches all cart items for a specific user.
-router.get("/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const cartItems = await db
-      .select({
-        product: productsTable,
-        userId: addToCartTable.userId,
-        cartId: addToCartTable.id,
-        quantity: addToCartTable.quantity,
-      })
-      .from(addToCartTable)
-      .innerJoin(productsTable, eq(addToCartTable.productId, productsTable.id))
-      .where(eq(addToCartTable.userId, userId));
+// 🟢 GET /api/cart/:userId — Get all cart items for a user
+router.get(
+  "/:userId",
+  cache((req) => keys.makeCartKey(req.params.userId), 300),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const cartItems = await db
+        .select({
+          product: productsTable,
+          userId: addToCartTable.userId,
+          cartId: addToCartTable.id,
+          quantity: addToCartTable.quantity,
+        })
+        .from(addToCartTable)
+        .innerJoin(productsTable, eq(addToCartTable.productId, productsTable.id))
+        .where(eq(addToCartTable.userId, userId));
 
-    res.json(cartItems);
-  } catch (error) {
-    console.error("❌ Error fetching cart:", error);
-    res.status(500).json({ error: "Server error" });
+      res.json(cartItems);
+    } catch (error) {
+      console.error("❌ Error fetching cart:", error);
+      res.status(500).json({ error: "Server error" });
+    }
   }
-});
+);
 
-// POST /api/cart - Adds a single new product to a user's cart.
+// 🟢 POST /api/cart — Add product to cart
 router.post("/", async (req, res) => {
   try {
     const { userId, productId, quantity } = req.body;
-    console.log("Backend Received ->", { userId, productId, quantity }); // ✅ ADD THIS
+
     const [newItem] = await db
       .insert(addToCartTable)
       .values({ userId, productId, quantity })
       .returning();
+
+    await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
 
     res.json(newItem);
   } catch (error) {
@@ -48,7 +63,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// PUT /api/cart/:userId/:productId - Updates the quantity of an existing item in the cart.
+// 🟢 PUT /api/cart/:userId/:productId — Update quantity
 router.put("/:userId/:productId", async (req, res) => {
   try {
     const { userId, productId } = req.params;
@@ -57,7 +72,14 @@ router.put("/:userId/:productId", async (req, res) => {
     await db
       .update(addToCartTable)
       .set({ quantity })
-      .where(and(eq(addToCartTable.userId, userId), eq(addToCartTable.productId, productId)));
+      .where(
+        and(
+          eq(addToCartTable.userId, userId),
+          eq(addToCartTable.productId, productId)
+        )
+      );
+
+    await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
 
     res.json({ success: true });
   } catch (error) {
@@ -66,13 +88,21 @@ router.put("/:userId/:productId", async (req, res) => {
   }
 });
 
-// DELETE /api/cart/:userId/:productId - Removes a single specific item from the cart.
+// 🟢 DELETE /api/cart/:userId/:productId — Remove one product
 router.delete("/:userId/:productId", async (req, res) => {
   try {
     const { userId, productId } = req.params;
+
     await db
       .delete(addToCartTable)
-      .where(and(eq(addToCartTable.userId, userId), eq(addToCartTable.productId, productId)));
+      .where(
+        and(
+          eq(addToCartTable.userId, userId),
+          eq(addToCartTable.productId, productId)
+        )
+      );
+
+    await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
 
     res.json({ success: true });
   } catch (error) {
@@ -81,11 +111,15 @@ router.delete("/:userId/:productId", async (req, res) => {
   }
 });
 
-// DELETE /api/cart/:userId - Clears all items from a user's cart.
+// 🟢 DELETE /api/cart/:userId — Clear all items
 router.delete("/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+
     await db.delete(addToCartTable).where(eq(addToCartTable.userId, userId));
+
+    await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
+
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error clearing cart:", error);
@@ -93,44 +127,61 @@ router.delete("/:userId", async (req, res) => {
   }
 });
 
-// POST /api/cart/merge - Merges a guest's local cart with their account upon login.
+// 🟢 POST /api/cart/merge — Merge guest cart with user
 router.post("/merge", async (req, res) => {
   const { userId, guestCart } = req.body;
 
   if (!userId || !Array.isArray(guestCart) || guestCart.length === 0) {
-    return res.status(400).json({ error: "Invalid request body for cart merge" });
+    return res
+      .status(400)
+      .json({ error: "Invalid request body for cart merge" });
   }
 
   try {
     await db.transaction(async (tx) => {
-      const guestProductIds = guestCart.map(item => item.productId);
-
-      const existingCartItems = await tx.select()
+      const guestProductIds = guestCart.map((item) => item.productId);
+      const existingCartItems = await tx
+        .select()
         .from(addToCartTable)
-        .where(and(
-          eq(addToCartTable.userId, userId),
-          inArray(addToCartTable.productId, guestProductIds)
-        ));
+        .where(
+          and(
+            eq(addToCartTable.userId, userId),
+            inArray(addToCartTable.productId, guestProductIds)
+          )
+        );
 
-      const existingProductIds = new Set(existingCartItems.map(item => item.productId));
+      const existingProductIds = new Set(
+        existingCartItems.map((item) => item.productId)
+      );
 
-      const promises = guestCart.map(guestItem => {
+      const promises = guestCart.map((guestItem) => {
         if (existingProductIds.has(guestItem.productId)) {
-          const existingItem = existingCartItems.find(item => item.productId === guestItem.productId);
+          const existingItem = existingCartItems.find(
+            (item) => item.productId === guestItem.productId
+          );
           const newQuantity = existingItem.quantity + guestItem.quantity;
-          return tx.update(addToCartTable)
+          return tx
+            .update(addToCartTable)
             .set({ quantity: newQuantity })
-            .where(and(eq(addToCartTable.userId, userId), eq(addToCartTable.productId, guestItem.productId)));
+            .where(
+              and(
+                eq(addToCartTable.userId, userId),
+                eq(addToCartTable.productId, guestItem.productId)
+              )
+            );
         } else {
           return tx.insert(addToCartTable).values({
             userId,
             productId: guestItem.productId,
-            quantity: guestItem.quantity
+            quantity: guestItem.quantity,
           });
         }
       });
       await Promise.all(promises);
     });
+
+    await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
+
     res.json({ success: true, message: "Guest cart merged successfully." });
   } catch (error) {
     console.error("❌ Error merging carts:", error);
@@ -138,33 +189,40 @@ router.post("/merge", async (req, res) => {
   }
 });
 
-// =========================
-// Wishlist routes
-// =========================
+/* =========================================================
+   💖 WISHLIST ROUTES
+========================================================= */
 
-// GET /api/cart/wishlist/:userId - Fetches all wishlist items for a specific user.
-router.get("/wishlist/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const wishlistItems = await db
-      .select({
-        product: productsTable,
-        wishlistId: wishlistTable.id,
-        userId: wishlistTable.userId,
-        productId: wishlistTable.productId,
-      })
-      .from(wishlistTable)
-      .innerJoin(productsTable, eq(wishlistTable.productId, productsTable.id))
-      .where(eq(wishlistTable.userId, userId));
+// 🟢 GET /api/cart/wishlist/:userId — Get wishlist items
+router.get(
+  "/wishlist/:userId",
+  cache((req) => keys.makeWishlistKey(req.params.userId), 300),
+  async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const wishlistItems = await db
+        .select({
+          product: productsTable,
+          wishlistId: wishlistTable.id,
+          userId: wishlistTable.userId,
+          productId: wishlistTable.productId,
+        })
+        .from(wishlistTable)
+        .innerJoin(
+          productsTable,
+          eq(wishlistTable.productId, productsTable.id)
+        )
+        .where(eq(wishlistTable.userId, userId));
 
-    res.json(wishlistItems);
-  } catch (error) {
-    console.error("❌ Error fetching wishlist:", error);
-    res.status(500).json({ error: "Server error" });
+      res.json(wishlistItems);
+    } catch (error) {
+      console.error("❌ Error fetching wishlist:", error);
+      res.status(500).json({ error: "Server error" });
+    }
   }
-});
+);
 
-// POST /api/cart/wishlist - Adds a single product to a user's wishlist.
+// 🟢 POST /api/cart/wishlist — Add product to wishlist
 router.post("/wishlist", async (req, res) => {
   try {
     const { userId, productId } = req.body;
@@ -173,6 +231,8 @@ router.post("/wishlist", async (req, res) => {
       .values({ userId, productId })
       .returning();
 
+    await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
+
     res.json(newItem);
   } catch (error) {
     console.error("❌ Error adding to wishlist:", error);
@@ -180,58 +240,84 @@ router.post("/wishlist", async (req, res) => {
   }
 });
 
-// DELETE /api/cart/wishlist/:userId/:productId - Removes a single specific item from the wishlist.
+// 🟢 DELETE /api/cart/wishlist/:userId/:productId — Remove item
 router.delete("/wishlist/:userId/:productId", async (req, res) => {
   try {
     const { userId, productId } = req.params;
+
     await db
       .delete(wishlistTable)
-      .where(and(eq(wishlistTable.userId, userId), eq(wishlistTable.productId, productId)));
+      .where(
+        and(
+          eq(wishlistTable.userId, userId),
+          eq(wishlistTable.productId, productId)
+        )
+      );
+
+    await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
+
     res.json({ success: true });
   } catch (error) {
-    console.error("❌ Error removing from wishlist:", error);
+    console.error("❌ Error removing wishlist item:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
 
-// POST /api/cart/wishlist/merge - Merges a guest's local wishlist with their account upon login.
+// 🟢 POST /api/cart/wishlist/merge — Merge guest wishlist
 router.post("/wishlist/merge", async (req, res) => {
   const { userId, guestWishlist } = req.body;
 
   if (!userId || !Array.isArray(guestWishlist) || guestWishlist.length === 0) {
-    return res.status(400).json({ error: "Invalid request body for wishlist merge" });
+    return res
+      .status(400)
+      .json({ error: "Invalid request body for wishlist merge" });
   }
 
   try {
     await db.transaction(async (tx) => {
-      const existingItems = await tx.select({ productId: wishlistTable.productId })
+      const existingItems = await tx
+        .select({ productId: wishlistTable.productId })
         .from(wishlistTable)
-        .where(and(
-          eq(wishlistTable.userId, userId),
-          inArray(wishlistTable.productId, guestWishlist)
-        ));
+        .where(
+          and(
+            eq(wishlistTable.userId, userId),
+            inArray(wishlistTable.productId, guestWishlist)
+          )
+        );
 
-      const existingProductIds = new Set(existingItems.map(item => item.productId));
+      const existingIds = new Set(existingItems.map((i) => i.productId));
+      const newIds = guestWishlist.filter((id) => !existingIds.has(id));
 
-      const newProductIds = guestWishlist.filter(id => !existingProductIds.has(id));
-
-      if (newProductIds.length > 0) {
-        const newItemsToInsert = newProductIds.map(productId => ({ userId, productId }));
-        await tx.insert(wishlistTable).values(newItemsToInsert);
+      if (newIds.length > 0) {
+        await tx.insert(wishlistTable).values(
+          newIds.map((productId) => ({
+            userId,
+            productId,
+          }))
+        );
       }
     });
+
+    await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
+
     res.json({ success: true, message: "Guest wishlist merged successfully." });
   } catch (error) {
-    console.error("❌ Error merging wishlists:", error);
-    res.status(500).json({ error: "Server error while merging wishlist." });
+    console.error("❌ Error merging wishlist:", error);
+    res
+      .status(500)
+      .json({ error: "Server error while merging wishlist." });
   }
 });
 
-// DELETE /api/cart/wishlist/:userId - Clears all items from a user's wishlist.
+// 🟢 DELETE /api/cart/wishlist/:userId — Clear wishlist
 router.delete("/wishlist/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
+
     await db.delete(wishlistTable).where(eq(wishlistTable.userId, userId));
+
+    await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
+
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error clearing wishlist:", error);

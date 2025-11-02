@@ -1,3 +1,5 @@
+// file routes/reviewRoutes.js
+
 import express from "express";
 import {
   createReview,
@@ -9,6 +11,12 @@ import {
   getReviewsByUser,
 } from "../controllers/reviewController.js";
 import { cache } from "../cacheMiddleware.js";
+// 🟢 Import new cache key builders
+import {
+  makeProductReviewStatsKey,
+  makeVerifiedBuyerKey,
+  makeUserReviewsKey,
+} from "../cacheKeys.js";
 
 const router = express.Router();
 
@@ -17,28 +25,27 @@ const router = express.Router();
 router.post("/", createReview);
 
 // GET /api/reviews/:productId
-// ✅ FIXED: The cache middleware has been REMOVED from this route.
-// This is the crucial change that solves the duplication issue by ensuring
-// the pagination cursor is processed by the controller on every request.
+// Caching is handled inside the controller if needed (but removed for pagination)
 router.get("/:productId", getReviewsByProduct);
 
 // GET /api/reviews/stats/:productId
-// 🟢 Caching is kept here as this route is not paginated and benefits from it.
+// 🟢 Use new cache key builder
 router.get(
   "/stats/:productId",
-  cache((req) => `review-stats:${req.params.productId}`, 43200),
+  cache((req) => makeProductReviewStatsKey(req.params.productId), 43200),
   getReviewStats
 );
 
 // GET /api/reviews/verify
-// 🟢 Caching is kept here.
+// 🟢 Use new cache key builder
 router.get(
   "/verify",
   cache(
     (req) =>
-      `verified-buyer:${req.query.userId || req.query.clerkId}:${
+      makeVerifiedBuyerKey(
+        req.query.userId || req.query.clerkId,
         req.query.productId
-      }`,
+      ),
     60
   ),
   isVerifiedBuyer
@@ -53,10 +60,10 @@ router.delete("/:id", deleteReview);
 router.put("/:id", updateReview);
 
 // GET /api/reviews/user/:userId
-// 🟢 Caching is kept here.
+// 🟢 Use new cache key builder
 router.get(
   "/user/:userId",
-  cache((req) => `user-reviews:${req.params.userId}`, 3600),
+  cache((req) => makeUserReviewsKey(req.params.userId), 3600),
   getReviewsByUser
 );
 

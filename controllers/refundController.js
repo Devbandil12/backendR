@@ -3,6 +3,15 @@ import Razorpay from 'razorpay';
 import { db } from '../configs/index.js';
 import { ordersTable, orderItemsTable, productsTable } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
+// Import new helpers
+import { invalidateMultiple } from '../invalidateHelpers.js';
+import {
+  makeAllProductsKey,
+  makeProductKey,
+  makeAllOrdersKey,
+  makeUserOrdersKey,
+  makeOrderKey,
+} from '../cacheKeys.js';
 
 
 export const refundOrder = async (req, res) => {
@@ -10,8 +19,6 @@ export const refundOrder = async (req, res) => {
     key_id: process.env.RAZORPAY_ID_KEY,
     key_secret: process.env.RAZORPAY_SECRET_KEY,
   });
-
-
 
   try {
     const { orderId, amount } = req.body;
@@ -25,6 +32,7 @@ export const refundOrder = async (req, res) => {
         paymentId: ordersTable.transactionId,
         status: ordersTable.status,
         refundId: ordersTable.refund_id,
+        userId: ordersTable.userId, // Need userId for cache
       })
       .from(ordersTable)
       .where(eq(ordersTable.id, orderId));
@@ -80,11 +88,8 @@ export const refundOrder = async (req, res) => {
       speed: 'normal',
     });
 
-
-
     // Step 6: Fetch accurate refund status
     const refund = await razorpay.refunds.fetch(refundInit.id);
-
 
     // Step 7: Persist refund data in DB
     await db
@@ -108,18 +113,33 @@ export const refundOrder = async (req, res) => {
 
     // Step 8: Restore stock for each product in the refunded order
     const orderItems = await db
-      .select()
+      .select({
+        productId: orderItemsTable.productId,
+        quantity: orderItemsTable.quantity,
+      })
       .from(orderItemsTable)
       .where(eq(orderItemsTable.orderId, orderId));
+
+    // Build list of items to invalidate
+    const itemsToInvalidate = [
+      { key: makeAllProductsKey() }, // All products list
+      { key: makeAllOrdersKey() }, // All orders list
+      { key: makeOrderKey(orderId) }, // This specific order
+      { key: makeUserOrdersKey(order.userId) }, // This user's order list
+    ];
 
     for (const item of orderItems) {
       await db
         .update(productsTable)
         .set({ stock: sql`${productsTable.stock} + ${item.quantity}` })
         .where(eq(productsTable.id, item.productId));
+
+      // Add product-specific keys
+      itemsToInvalidate.push({ key: makeProductKey(item.productId) });
     }
 
-
+    // Step 9: Invalidate caches
+    await invalidateMultiple(itemsToInvalidate);
 
     return res.json({ success: true, refund });
 
@@ -131,4 +151,3 @@ export const refundOrder = async (req, res) => {
     return res.status(500).json({ success: false, error: "Internal Server Error" });
   }
 };
-

@@ -5,8 +5,17 @@ import { db } from '../configs/index.js';
 import { ordersTable, couponsTable } from '../configs/schema.js';
 import { productsTable, orderItemsTable, UserAddressTable } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
-import { invalidateCache } from '../cacheMiddleware.js';
-import { getPincodeDetails } from './addressController.js'; // 👈 Import the new helper
+// Import new helpers
+import { invalidateMultiple } from '../invalidateHelpers.js';
+import {
+  makeAllOrdersKey,
+  makeUserOrdersKey,
+  makeAllProductsKey,
+  makeProductKey,
+  makeCartKey, // Added cart keys
+  makeCartCountKey,
+} from '../cacheKeys.js';
+import { getPincodeDetails } from './addressController.js';
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
 const razorpay = new Razorpay({
@@ -126,6 +135,15 @@ export const createOrder = async (req, res) => {
 
       await db.insert(orderItemsTable).values(enrichedItems);
 
+      // Collect items for cache invalidation
+      const itemsToInvalidate = [
+        { key: makeAllOrdersKey() },
+        { key: makeUserOrdersKey(user.id) },
+        { key: makeAllProductsKey() },
+        { key: makeCartKey(user.id) }, // Invalidate cart
+        { key: makeCartCountKey(user.id) }, // Invalidate cart count
+      ];
+
       // 🔴 Reduce stock for each product
       for (const item of cartItems) {
         const [product] = await db
@@ -142,11 +160,13 @@ export const createOrder = async (req, res) => {
           .update(productsTable)
           .set({ stock: sql`${productsTable.stock} - ${item.quantity}` })
           .where(eq(productsTable.id, item.id));
+        
+        // Add product-specific key
+        itemsToInvalidate.push({ key: makeProductKey(item.id) });
       }
 
-
-      await invalidateCache("all-orders"); // For the Admin Panel
-      await invalidateCache("user-orders"); // For the user's "My Orders" page
+      // Invalidate all at once
+      await invalidateMultiple(itemsToInvalidate);
 
       return res.json({
         success: true,
@@ -208,7 +228,7 @@ export const verifyPayment = async (req, res) => {
 
     const [address] = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, userAddressId));
     if (!address) {
-      return res.status(404).json({ success: false, msg: "Address not found for verification." });
+      return res.status(4404).json({ success: false, msg: "Address not found for verification." });
     }
 
     let productTotal = 0;
@@ -292,6 +312,15 @@ export const verifyPayment = async (req, res) => {
 
     await db.insert(orderItemsTable).values(enrichedItems);
 
+    // Collect items for cache invalidation
+    const itemsToInvalidate = [
+      { key: makeAllOrdersKey() },
+      { key: makeUserOrdersKey(user.id) },
+      { key: makeAllProductsKey() },
+      { key: makeCartKey(user.id) }, // Invalidate cart
+      { key: makeCartCountKey(user.id) }, // Invalidate cart count
+    ];
+
     // 🔴 Reduce stock for each product
     for (const item of cartItems) {
       const [product] = await db
@@ -308,10 +337,13 @@ export const verifyPayment = async (req, res) => {
         .update(productsTable)
         .set({ stock: sql`${productsTable.stock} - ${item.quantity}` })
         .where(eq(productsTable.id, item.id));
+      
+      // Add product-specific key
+      itemsToInvalidate.push({ key: makeProductKey(item.id) });
     }
 
-    await invalidateCache("all-orders"); // For the Admin Panel
-    await invalidateCache("user-orders"); // For the user's "My Orders" page
+    // Invalidate all at once
+    await invalidateMultiple(itemsToInvalidate);
 
     return res.json({ success: true, message: "Payment verified & order placed." });
 
@@ -320,6 +352,3 @@ export const verifyPayment = async (req, res) => {
     return res.status(500).json({ success: false, error: "Server error during verification." });
   }
 };
-
-
-

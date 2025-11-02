@@ -3,6 +3,9 @@ import { db } from '../configs/index.js';
 import { UserAddressTable, pincodeServiceabilityTable } from '../configs/schema.js';
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import fetch from "node-fetch";
+// Import new helpers
+import { invalidateMultiple } from "../invalidateHelpers.js";
+import { makeUserAddressesKey } from "../cacheKeys.js";
 
 // Reverse Geocode helper to fill missing address details from lat/lng
 async function reverseGeocode(lat, lng) {
@@ -109,6 +112,9 @@ export async function saveAddress(req, res) {
         updatedAt: new Date().toISOString(),
       })
       .returning();
+    
+    // Invalidate user's address list cache
+    await invalidateMultiple([{ key: makeUserAddressesKey(userId) }]);
 
     return res.json({ success: true, msg: "Address saved successfully", data: inserted[0] });
   } catch (err) {
@@ -182,6 +188,9 @@ export async function updateAddress(req, res) {
       .where(eq(UserAddressTable.id, id))
       .returning();
 
+    // Invalidate user's address list cache
+    await invalidateMultiple([{ key: makeUserAddressesKey(existing[0].userId) }]);
+
     return res.json({ success: true, msg: "Address updated successfully", data: updated[0] });
   } catch (err) {
     console.error("updateAddress error:", err);
@@ -253,6 +262,9 @@ export async function softDeleteAddress(req, res) {
           .where(eq(UserAddressTable.id, latest[0].id));
       }
     }
+    
+    // Invalidate user's address list cache
+    await invalidateMultiple([{ key: makeUserAddressesKey(userId) }]);
 
     return res.json({ success: true, msg: "Address deleted successfully" });
   } catch (err) {
@@ -281,6 +293,9 @@ export async function setDefaultAddress(req, res) {
       .update(UserAddressTable)
       .set({ isDefault: true, updatedAt: new Date().toISOString() })
       .where(eq(UserAddressTable.id, id));
+
+    // Invalidate user's address list cache
+    await invalidateMultiple([{ key: makeUserAddressesKey(existing[0].userId) }]);
 
     return res.json({ success: true, msg: "Default address updated" });
   } catch (err) {

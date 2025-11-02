@@ -1,8 +1,12 @@
+// file routes/products.js
 import express from "express";
 import { db } from "../configs/index.js";
 import { productsTable } from "../configs/schema.js";
 import { eq } from "drizzle-orm";
-import { cache, invalidateCache } from "../cacheMiddleware.js";
+// 🟢 Import new cache helpers
+import { cache } from "../cacheMiddleware.js";
+import { invalidateMultiple } from "../invalidateHelpers.js";
+import { makeAllProductsKey, makeProductKey } from "../cacheKeys.js";
 
 const router = express.Router();
 
@@ -10,7 +14,7 @@ const router = express.Router();
  * 🟢 GET all products
  * Cache for 1 hour
  */
-router.get("/", cache("all-products", 3600), async (req, res) => {
+router.get("/", cache(makeAllProductsKey(), 3600), async (req, res) => {
   try {
     const products = await db.select().from(productsTable);
 
@@ -47,7 +51,7 @@ router.get("/", cache("all-products", 3600), async (req, res) => {
  */
 router.get(
   "/:id",
-  cache((req) => `product-${req.params.id}`, 1800),
+  cache((req) => makeProductKey(req.params.id), 1800),
   async (req, res) => {
     try {
       const { id } = req.params;
@@ -100,8 +104,11 @@ router.post("/", async (req, res) => {
       })
       .returning();
 
-    await invalidateCache("all-products", true);
-    await invalidateCache(`product-${newProduct.id}`);
+    // 🟢 Use new invalidation helper
+    await invalidateMultiple([
+      { key: makeAllProductsKey() },
+      { key: makeProductKey(newProduct.id) },
+    ]);
 
     res.status(201).json(newProduct);
   } catch (error) {
@@ -133,8 +140,11 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    await invalidateCache("all-products", true);
-    await invalidateCache(`product-${id}`);
+    // 🟢 Use new invalidation helper
+    await invalidateMultiple([
+      { key: makeAllProductsKey() },
+      { key: makeProductKey(id) },
+    ]);
 
     res.json(updatedProduct);
   } catch (error) {
@@ -159,8 +169,11 @@ router.delete("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    await invalidateCache("all-products", true);
-    await invalidateCache(`product-${id}`);
+    // 🟢 Use new invalidation helper
+    await invalidateMultiple([
+      { key: makeAllProductsKey() },
+      { key: makeProductKey(id) },
+    ]);
 
     res.json({ success: true, deletedProduct });
   } catch (error) {
