@@ -108,8 +108,7 @@ export async function saveAddress(req, res) {
         isDefault,
         isVerified,
         isDeleted,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        // 🟢 REMOVED: createdAt and updatedAt. The database will set them.
       })
       .returning();
     
@@ -183,7 +182,7 @@ export async function updateAddress(req, res) {
         isDefault,
         isVerified,
         isDeleted,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date() // 🟢 FIXED: Pass a Date object, not a string
       })
       .where(eq(UserAddressTable.id, id))
       .returning();
@@ -243,7 +242,7 @@ export async function softDeleteAddress(req, res) {
 
     await db
       .update(UserAddressTable)
-      .set({ isDeleted: true, updatedAt: new Date().toISOString() })
+      .set({ isDeleted: true, updatedAt: new Date() }) // 🟢 FIXED
       .where(eq(UserAddressTable.id, id));
 
     // If deleted was default → set latest as default
@@ -258,7 +257,7 @@ export async function softDeleteAddress(req, res) {
       if (latest.length > 0) {
         await db
           .update(UserAddressTable)
-          .set({ isDefault: true, updatedAt: new Date().toISOString() })
+          .set({ isDefault: true, updatedAt: new Date() }) // 🟢 FIXED
           .where(eq(UserAddressTable.id, latest[0].id));
       }
     }
@@ -291,7 +290,7 @@ export async function setDefaultAddress(req, res) {
     // Set selected as default
     await db
       .update(UserAddressTable)
-      .set({ isDefault: true, updatedAt: new Date().toISOString() })
+      .set({ isDefault: true, updatedAt: new Date() }) // 🟢 FIXED
       .where(eq(UserAddressTable.id, id));
 
     // Invalidate user's address list cache

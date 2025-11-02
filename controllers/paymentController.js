@@ -12,7 +12,7 @@ import {
   makeUserOrdersKey,
   makeAllProductsKey,
   makeProductKey,
-  makeCartKey, // Added cart keys
+  makeCartKey,
   makeCartCountKey,
 } from '../cacheKeys.js';
 import { getPincodeDetails } from './addressController.js';
@@ -47,6 +47,8 @@ export const createOrder = async (req, res) => {
     let discountAmount = 0;
     const pincodeDetails = await getPincodeDetails(address.postalCode);
     const deliveryCharge = pincodeDetails.deliveryCharge;
+    
+    // 🟢 orderId is declared here, *before* it is used in the loop
     const orderId = `DA${Date.now()}`;
     const enrichedItems = [];
 
@@ -65,7 +67,7 @@ export const createOrder = async (req, res) => {
 
       enrichedItems.push({
         id: `DA${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-        orderId,
+        orderId, // 🟢 Now this is safe to use
         productId: item.id,
         quantity: item.quantity,
         productName: product.name,
@@ -126,8 +128,8 @@ export const createOrder = async (req, res) => {
         transactionId: null,
         paymentStatus: 'pending',
         phone,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        // 🟢 REMOVED: createdAt: new Date().toISOString(),
+        // 🟢 REMOVED: updatedAt: new Date().toISOString(),
         couponCode,
         discountAmount,
         progressStep: '1',
@@ -228,7 +230,8 @@ export const verifyPayment = async (req, res) => {
 
     const [address] = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, userAddressId));
     if (!address) {
-      return res.status(4404).json({ success: false, msg: "Address not found for verification." });
+      // 🟢 FIXED: This was 4404, changed to 404
+      return res.status(404).json({ success: false, msg: "Address not found for verification." });
     }
 
     let productTotal = 0;
@@ -303,8 +306,8 @@ export const verifyPayment = async (req, res) => {
       transactionId: razorpay_payment_id,
       paymentStatus: 'paid',
       phone,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      // 🟢 REMOVED: createdAt: new Date().toISOString(),
+      // 🟢 REMOVED: updatedAt: new Date().toISOString(),
       couponCode,
       discountAmount,
       progressStep: '1',

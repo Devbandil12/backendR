@@ -5,8 +5,9 @@ import {
   addToCartTable,
   productsTable,
   wishlistTable,
+  usersTable,
 } from "../configs/schema.js";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
@@ -321,6 +322,73 @@ router.delete("/wishlist/:userId", async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error clearing wishlist:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+router.get("/admin/abandoned", async (req, res) => {
+  try {
+    // Define "abandoned" time range
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const abandonedItems = await db
+      .select({
+        cartItem: addToCartTable,
+        user: {
+          id: usersTable.id,
+          name: usersTable.name,
+          email: usersTable.email,
+        },
+        product: productsTable,
+      })
+      .from(addToCartTable)
+      .innerJoin(usersTable, eq(addToCartTable.userId, usersTable.id))
+      .innerJoin(productsTable, eq(addToCartTable.productId, productsTable.id))
+      .where(
+        and(
+          lt(addToCartTable.addedAt, twoHoursAgo),
+          gt(addToCartTable.addedAt, thirtyDaysAgo)
+        )
+      )
+      .orderBy(desc(addToCartTable.addedAt));
+
+    // 🟢 We will group these on the frontend
+    res.json(abandonedItems);
+
+  } catch (error) {
+    console.error("❌ Error fetching abandoned carts:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * 🟢 GET /api/cart/admin/wishlist-stats
+ * Fetches the most popular wishlist items
+ */
+router.get("/admin/wishlist-stats", async (req, res) => {
+  try {
+    const stats = await db
+      .select({
+        productId: wishlistTable.productId,
+        productName: productsTable.name,
+        productImage: sql`(${productsTable.imageurl}) ->> 0`.as("productImage"), // Get first image
+        count: count(wishlistTable.productId),
+      })
+      .from(wishlistTable)
+      .innerJoin(productsTable, eq(wishlistTable.productId, productsTable.id))
+      .groupBy(
+        wishlistTable.productId,
+        productsTable.name,
+        sql`(${productsTable.imageurl}) ->> 0`
+      )
+      .orderBy(desc(count(wishlistTable.productId)))
+      .limit(20); // Get top 20
+
+    res.json(stats);
+  } catch (error) {
+    console.error("❌ Error fetching wishlist stats:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
