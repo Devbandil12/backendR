@@ -128,7 +128,10 @@ app.use("/api/contact", contactRoutes);
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));
-app.get('/wake-up', (req, res) => res.send('✅ DevidAura backend awake'));
+app.get('/wake-up', (req, res) => {
+  console.log('✅ Ping received! Keeping the service awake.'); 
+  res.send('✅ DevidAura backend awake');
+});
 
 // ───── Start Server ─────
 const PORT = process.env.PORT || 3000;
