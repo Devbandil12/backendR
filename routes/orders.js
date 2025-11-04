@@ -6,6 +6,7 @@ import {
   orderItemsTable,
   ordersTable,
   productsTable,
+  productVariantsTable, // 🟢 ADDED
   usersTable,
 } from "../configs/schema.js";
 import { eq, and, asc, sql } from "drizzle-orm";
@@ -19,6 +20,8 @@ import {
   makeAllProductsKey,
   makeProductKey,
   makeAdminOrdersReportKey,
+  // 🟢 You'll need to create this in cacheKeys.js
+  // makeVariantKey, 
 } from "../cacheKeys.js";
 
 const router = express.Router();
@@ -54,6 +57,7 @@ router.get(
   async (req, res) => {
     try {
       const orderId = req.params.id;
+      // 🟢 MODIFIED: Updated relational query
       const order = await db.query.ordersTable.findFirst({
         where: eq(ordersTable.id, orderId),
         with: {
@@ -69,7 +73,12 @@ router.get(
               phone: true,
             },
           },
-          orderItems: { with: { product: true } },
+          orderItems: {
+            with: {
+              product: true, // Gets the parent product (name, images)
+              variant: true, // Gets the specific variant (size, price)
+            },
+          },
         },
       });
 
@@ -77,16 +86,19 @@ router.get(
         return res.status(404).json({ error: "Order not found" });
       }
 
+      // 🟢 MODIFIED: Format order with variant data
       const formattedOrder = {
         ...order,
         userName: order.user?.name,
         phone: order.user?.phone,
         shippingAddress: order.address,
         products: order.orderItems?.map((item) => ({
-          ...item.product,
-          productName: item.product.name,
+          ...item.product,  // Spread main product (name, desc, images)
+          ...item.variant, // Spread variant (price, size, sku) - overrides any conflicts
+          productName: item.product.name, // Ensure main product name is used
+          variantName: item.variant.name, // e.g., "20ml"
           quantity: item.quantity,
-          price: item.price,
+          price: item.price, // Price at time of purchase
         })),
         user: undefined,
         address: undefined,
@@ -110,13 +122,33 @@ router.post(
       const { userId } = req.body;
       if (!userId) return res.status(400).json({ error: "User ID is required" });
 
+      // 🟢 MODIFIED: Updated relational query
       const myOrders = await db.query.ordersTable.findMany({
         where: eq(ordersTable.userId, userId),
-        with: { orderItems: { with: { product: true } } },
+        with: {
+          orderItems: {
+            with: {
+              product: true,
+              variant: true,
+            },
+          },
+        },
         orderBy: [asc(ordersTable.createdAt)],
       });
+      
+      // Reshape data for frontend
+      const formattedOrders = myOrders.map(order => ({
+        ...order,
+        orderItems: order.orderItems.map(item => ({
+          ...item,
+          productName: item.product?.name || 'N/A',
+          img: item.product?.imageurl?.[0] || '',
+          size: item.variant?.size || 'N/A',
+          // Keep item.price (price at purchase)
+        }))
+      }));
 
-      res.json(myOrders);
+      res.json(formattedOrders);
     } catch (error) {
       console.error("❌ Error fetching user's orders:", error);
       res.status(500).json({ error: "Internal Server Error" });
@@ -139,7 +171,7 @@ router.put("/:id/status", async (req, res) => {
       .where(eq(ordersTable.id, id));
     
     const itemsToInvalidate = [];
-    let orderItems = []; // To hold product IDs
+    let orderItems = [];
 
     // --- LOGIC TO UPDATE 'SOLD' COUNT ---
     if (
@@ -148,18 +180,25 @@ router.put("/:id/status", async (req, res) => {
       (status === "Processing" || status === "Shipped")
     ) {
       orderItems = await db
-        .select()
+        .select({
+            quantity: orderItemsTable.quantity,
+            variantId: orderItemsTable.variantId, // 🟢 Get variantId
+            productId: orderItemsTable.productId, // 🟢 Get productId
+        })
         .from(orderItemsTable)
         .where(eq(orderItemsTable.orderId, id));
 
       itemsToInvalidate.push({ key: makeAllProductsKey() });
       for (const item of orderItems) {
+        // 🟢 MODIFIED: Update sold count on productVariantsTable
         await db
-          .update(productsTable)
-          .set({ sold: sql`${productsTable.sold} + ${item.quantity}` })
-          .where(eq(productsTable.id, item.productId));
-        // Add product key to invalidation list
+          .update(productVariantsTable)
+          .set({ sold: sql`${productVariantsTable.sold} + ${item.quantity}` })
+          .where(eq(productVariantsTable.id, item.variantId));
+        
+        // Invalidate parent product and specific variant
         itemsToInvalidate.push({ key: makeProductKey(item.productId) });
+        // itemsToInvalidate.push({ key: makeVariantKey(item.variantId) });
       }
     }
     // --- END OF 'SOLD' COUNT LOGIC ---
@@ -171,7 +210,7 @@ router.put("/:id/status", async (req, res) => {
 
     const [updatedOrder] = await db
       .update(ordersTable)
-      .set({ status: status, progressStep: newProgressStep.toString() })
+      .set({ status: status, progressStep: newProgressStep }) // Schema uses integer
       .where(eq(ordersTable.id, id))
       .returning();
 
@@ -223,17 +262,24 @@ router.put("/:id/cancel", async (req, res) => {
     ];
 
     const orderItems = await db
-      .select()
+      .select({
+          quantity: orderItemsTable.quantity,
+          variantId: orderItemsTable.variantId, // 🟢 Get variantId
+          productId: orderItemsTable.productId, // 🟢 Get productId
+      })
       .from(orderItemsTable)
       .where(eq(orderItemsTable.orderId, id));
     
     for (const item of orderItems) {
+      // 🟢 MODIFIED: Update stock on productVariantsTable
       await db
-        .update(productsTable)
-        .set({ stock: sql`${productsTable.stock} + ${item.quantity}` })
-        .where(eq(productsTable.id, item.productId));
+        .update(productVariantsTable)
+        .set({ stock: sql`${productVariantsTable.stock} + ${item.quantity}` })
+        .where(eq(productVariantsTable.id, item.variantId));
+      
       // 🟢 Add product-specific key
       itemsToInvalidate.push({ key: makeProductKey(item.productId) });
+      // itemsToInvalidate.push({ key: makeVariantKey(item.variantId) });
     }
 
     // 🟢 Invalidate all caches at once
@@ -248,31 +294,34 @@ router.put("/:id/cancel", async (req, res) => {
   }
 });
 
-// 🟢 ADD THIS NEW ROUTE AT THE END OF THE FILE
+// 🟢 GET /details/for-reports
 router.get(
   "/details/for-reports",
   cache(makeAdminOrdersReportKey(), 3600),
   async (req, res) => {
     try {
+      // 🟢 MODIFIED: Updated relational query
       const detailedOrders = await db.query.ordersTable.findMany({
         with: {
           orderItems: {
             with: {
-              product: true, // This will include the full product details
+              product: true, // Gets the parent product
+              variant: true, // Gets the variant
             },
           },
         },
       });
 
-      // We need to reshape the data slightly for the frontend
+      // 🟢 MODIFIED: Reshape data for frontend
       const reportData = detailedOrders.map((order) => ({
         ...order,
         products: order.orderItems.map((item) => ({
-          ...item.product, // Spread all product fields like costPrice, category
-          price: item.price,
+          ...item.product, // Spread parent product (name, desc, category)
+          ...item.variant, // Spread variant (costPrice, size, oprice)
+          price: item.price, // Use the price from the order item (price at purchase)
           quantity: item.quantity,
         })),
-        orderItems: undefined, // Clean up the original structure
+        orderItems: undefined, // Clean up
       }));
 
       res.json(reportData);

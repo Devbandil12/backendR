@@ -37,6 +37,7 @@ export const querytable = pgTable("query", {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
 });
 
+// 🟢 MODIFIED: This table now stores shared info
 export const productsTable = pgTable('products', {
   id: uuid('id').defaultRandom().primaryKey(),
   name: varchar('name', { length: 255 }).notNull(),
@@ -44,26 +45,92 @@ export const productsTable = pgTable('products', {
   description: varchar('description', { length: 255 }).notNull(),
   fragrance: varchar('fragrance', { length: 255 }).notNull(),
   fragranceNotes: varchar('fragranceNotes', { length: 255 }).notNull(),
-  discount: integer('discount').notNull(),
-  oprice: integer('oprice').notNull(),
-  size: integer('size').notNull(),
-  stock: integer("stock").notNull().default(0),
   imageurl: jsonb("imageurl").notNull().default(sql`'{}'::jsonb`),
-  costPrice: integer('cost_price').default(0),
   category: varchar('category', { length: 100 }).default('Uncategorized'),
-  sold: integer('sold').default(0),
+  isArchived: boolean('is_archived').default(false).notNull(),
+  // 🔴 REMOVED: discount, oprice, size, stock, costPrice, sold
+  // These fields have moved to productVariantsTable.
 });
 
+// 🟢 NEW: This table stores purchasable items (SKUs)
+export const productVariantsTable = pgTable('product_variants', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: 'cascade' }),
+  
+  // Variant-specific details
+  name: text('name').notNull(), // e.g., "20ml" or "Signature Combo"
+  size: integer('size').notNull(),
+  oprice: integer('oprice').notNull(),
+  discount: integer('discount').notNull().default(0),
+  costPrice: integer('cost_price').default(0),
+  stock: integer("stock").notNull().default(0),
+  sold: integer('sold').default(0),
+  isArchived: boolean('is_archived').default(false).notNull(),
+  sku: varchar('sku', { length: 100 }).unique(), // Optional, but good practice
+});
+
+// 🟢 NEW: This table links a "combo" variant to its "content" variants
+export const productBundlesTable = pgTable('product_bundles', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  
+  // The "Combo" product variant
+  bundleVariantId: uuid('bundle_variant_id').notNull().references(() => productVariantsTable.id, { onDelete: 'cascade' }),
+  
+  // The "content" product variant (e.g., one 20ml bottle)
+  contentVariantId: uuid('content_variant_id').notNull().references(() => productVariantsTable.id, { onDelete: 'cascade' }),
+
+  // How many of this content item are in the bundle
+  quantity: integer('quantity').notNull().default(1),
+});
+
+// 🟢 MODIFIED: productsRelations
 export const productsRelations = relations(productsTable, ({ many }) => ({
-  reviews: many(reviewsTable),
+  reviews: many(reviewsTable), // Reviews are still for the main product
   orderItems: many(orderItemsTable),
+  variants: many(productVariantsTable), // A product has many variants
 }));
 
+// 🟢 NEW: productVariantsRelations
+export const productVariantsRelations = relations(productVariantsTable, ({ one, many }) => ({
+  product: one(productsTable, { // A variant belongs to one product
+    fields: [productVariantsTable.productId],
+    references: [productsTable.id],
+  }),
+  // For bundles:
+  // "I am a bundle made of these entries"
+  bundleEntries: many(productBundlesTable, { 
+    relationName: 'bundleEntries',
+    fields: [productVariantsTable.id],
+    references: [productBundlesTable.bundleVariantId],
+  }),
+  // "I am a content item inside these bundles"
+  bundleContents: many(productBundlesTable, { 
+    relationName: 'bundleContents',
+    fields: [productVariantsTable.id],
+    references: [productBundlesTable.contentVariantId],
+  }),
+}));
 
+// 🟢 NEW: productBundlesRelations
+export const productBundlesRelations = relations(productBundlesTable, ({ one }) => ({
+  bundle: one(productVariantsTable, {
+    fields: [productBundlesTable.bundleVariantId],
+    references: [productVariantsTable.id],
+    relationName: 'bundleEntries',
+  }),
+  content: one(productVariantsTable, {
+    fields: [productBundlesTable.contentVariantId],
+    references: [productVariantsTable.id],
+    relationName: 'bundleContents',
+  }),
+}));
+
+// 🟢 MODIFIED: addToCartTable
 export const addToCartTable = pgTable('add_to_cart', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: "cascade" }),
+  // 🔴 CHANGED: from productId to variantId
+  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }), 
   quantity: integer('quantity').notNull().default(1),
   addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
 });
@@ -73,16 +140,19 @@ export const addToCartRelations = relations(addToCartTable, ({ one }) => ({
     fields: [addToCartTable.userId],
     references: [usersTable.id],
   }),
-  product: one(productsTable, {
-    fields: [addToCartTable.productId],
-    references: [productsTable.id],
+  // 🟢 MODIFIED: points to productVariantsTable
+  variant: one(productVariantsTable, { 
+    fields: [addToCartTable.variantId],
+    references: [productVariantsTable.id],
   })
 }));
 
+// 🟢 MODIFIED: wishlistTable
 export const wishlistTable = pgTable("wishlist_table", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  productId: uuid("product_id").notNull().references(() => productsTable.id, { onDelete: "cascade" }),
+  // 🔴 CHANGED: from productId to variantId
+  variantId: uuid("variant_id").notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
   addedAt: timestamp("added_at", { withTimezone: true }).defaultNow(),
 });
 
@@ -91,13 +161,15 @@ export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
     fields: [wishlistTable.userId],
     references: [usersTable.id],
   }),
-  product: one(productsTable, {
-    fields: [wishlistTable.productId],
-    references: [productsTable.id],
+  // 🟢 MODIFIED: points to productVariantsTable
+  variant: one(productVariantsTable, {
+    fields: [wishlistTable.variantId],
+    references: [productVariantsTable.id],
   }),
 }));
 
 export const ordersTable = pgTable('orders', {
+  // ... (all fields like id, userId, userAddressId, totalAmount, etc. are unchanged)
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
   userAddressId: uuid('user_address_id').notNull().references(() => UserAddressTable.id),
@@ -133,10 +205,10 @@ export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
   orderItems: many(orderItemsTable),
 }));
 
-
 export const UserAddressTable = pgTable('user_address', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  // ... (all other address fields are unchanged)
   name: text('name').notNull(),
   phone: text('phone').notNull(),
   altPhone: text('alt_phone').default(null),
@@ -166,8 +238,8 @@ export const userAddressRelations = relations(UserAddressTable, ({ one }) => ({
   }),
 }));
 
-
 export const pincodeServiceabilityTable = pgTable('pincode_serviceability', {
+  // ... (this table is unchanged)
   pincode: varchar('pincode', { length: 6 }).primaryKey(),
   city: varchar('city', { length: 100 }).notNull(),
   state: varchar('state', { length: 100 }).notNull(),
@@ -177,15 +249,17 @@ export const pincodeServiceabilityTable = pgTable('pincode_serviceability', {
   deliveryCharge: integer('delivery_charge').default(50),
 });
 
-
+// 🟢 MODIFIED: orderItemsTable
 export const orderItemsTable = pgTable('order_items', {
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   orderId: text('order_id').notNull().references(() => ordersTable.id, { onDelete: "cascade" }),
   productName: varchar('product_name', { length: 255 }).notNull(),
   img: varchar('img', { length: 500 }).notNull(),
-  productId: uuid('product_id').notNull(),
+  // 🔴 CHANGED: from productId to variantId
+  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id), // No cascade, protect history
+  productId: uuid('product_id').notNull().references(() => productsTable.id), // Keep this to link to the main product page
   quantity: integer('quantity').notNull().default(1),
-  price: integer('price').notNull(),
+  price: integer('price').notNull(), // This is the price *at the time of purchase*
   totalPrice: integer('total_price').notNull(),
   size: integer('size').notNull().default(0),
 });
@@ -195,6 +269,12 @@ export const orderItemsRelations = relations(orderItemsTable, ({ one }) => ({
     fields: [orderItemsTable.orderId],
     references: [ordersTable.id],
   }),
+  // 🟢 MODIFIED: points to productVariantsTable
+  variant: one(productVariantsTable, {
+    fields: [orderItemsTable.variantId],
+    references: [productVariantsTable.id],
+  }),
+  // 🟢 MODIFIED: points to main productsTable
   product: one(productsTable, {
     fields: [orderItemsTable.productId],
     references: [productsTable.id],
@@ -202,6 +282,7 @@ export const orderItemsRelations = relations(orderItemsTable, ({ one }) => ({
 }));
 
 export const couponsTable = pgTable('coupons', {
+  // ... (this table is unchanged)
   id: serial('id').primaryKey(),
   code: varchar('code', { length: 50 }).notNull().unique(),
   discountType: varchar('discount_type', { length: 10 }).notNull(),
@@ -216,6 +297,7 @@ export const couponsTable = pgTable('coupons', {
 });
 
 export const testimonials = pgTable("testimonials", {
+  // ... (this table is unchanged)
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   title: text("title"),
@@ -225,10 +307,13 @@ export const testimonials = pgTable("testimonials", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// 🟢 MODIFIED: reviewsTable
 export const reviewsTable = pgTable('product_reviews', {
   id: uuid('id').defaultRandom().primaryKey(),
+  // Reviews still point to the main product, not the variant
   productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: 'cascade' }),
   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
+  // ... (all other review fields are unchanged)
   name: text('name').notNull(),
   rating: integer('rating').notNull(),
   comment: text('comment').notNull(),

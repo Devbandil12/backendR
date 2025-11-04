@@ -1,9 +1,8 @@
-// file routes/products.js
+// routes/products.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { productsTable } from "../configs/schema.js";
-import { eq } from "drizzle-orm";
-// 🟢 Import new cache helpers
+import { productsTable, productVariantsTable } from "../configs/schema.js";
+import { eq, and } from "drizzle-orm"; // Import 'and'
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeAllProductsKey, makeProductKey } from "../cacheKeys.js";
@@ -11,34 +10,20 @@ import { makeAllProductsKey, makeProductKey } from "../cacheKeys.js";
 const router = express.Router();
 
 /**
- * 🟢 GET all products
- * Cache for 1 hour
+ * GET all products (for customers)
+ * Filters out all archived products and variants
  */
 router.get("/", cache(makeAllProductsKey(), 3600), async (req, res) => {
   try {
-    const products = await db.select().from(productsTable);
-
-    const transformedProducts = products.map((product) => {
-      let parsedUrls = product.imageurl;
-      if (typeof product.imageurl === "string") {
-        try {
-          parsedUrls = JSON.parse(product.imageurl);
-        } catch (err) {
-          console.error("❌ Error parsing imageurl:", err);
-        }
-      }
-
-      let stockStatus = "In Stock";
-      if (product.stock === 0) {
-        stockStatus = "Out of Stock";
-      } else if (product.stock <= 10) {
-        stockStatus = `Only ${product.stock} left!`;
-      }
-
-      return { ...product, imageurl: parsedUrls, stockStatus };
+    const products = await db.query.productsTable.findMany({
+      where: eq(productsTable.isArchived, false),
+      with: {
+        variants: {
+          where: eq(productVariantsTable.isArchived, false),
+        },
+      },
     });
-
-    res.json(transformedProducts);
+    res.json(products);
   } catch (error) {
     console.error("❌ Error fetching products:", error);
     res.status(500).json({ error: "Server error" });
@@ -46,8 +31,28 @@ router.get("/", cache(makeAllProductsKey(), 3600), async (req, res) => {
 });
 
 /**
- * 🟢 GET single product by ID
- * Cache for 30 min
+ * 🟢 NEW: GET all archived products (for admin)
+ * This route must come *before* the '/:id' route.
+ */
+router.get("/archived", async (req, res) => {
+  // ⛔️ You should add admin-auth middleware here
+  try {
+    const archivedProducts = await db.query.productsTable.findMany({
+      where: eq(productsTable.isArchived, true),
+      with: {
+        variants: true, // Show all variants, even archived ones
+      },
+    });
+    res.json(archivedProducts);
+  } catch (error) {
+    console.error("❌ Error fetching archived products:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * GET single product by ID (for customers)
+ * MODIFIED: Will not find archived products or variants
  */
 router.get(
   "/:id",
@@ -55,27 +60,28 @@ router.get(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const [product] = await db
-        .select()
-        .from(productsTable)
-        .where(eq(productsTable.id, id));
+      const product = await db.query.productsTable.findFirst({
+        where: and(
+          eq(productsTable.id, id),
+          eq(productsTable.isArchived, false)
+        ),
+        with: {
+          variants: {
+            where: eq(productVariantsTable.isArchived, false),
+          },
+          reviews: true,
+        },
+      });
 
-      if (!product) return res.status(404).json({ error: "Product not found" });
+      if (!product) {
+        return res.status(404).json({ error: "Product not found" });
+      }
 
       if (typeof product.imageurl === "string") {
         try {
           product.imageurl = JSON.parse(product.imageurl);
         } catch {}
       }
-
-      let stockStatus = "In Stock";
-      if (product.stock === 0) {
-        stockStatus = "Out of Stock";
-      } else if (product.stock <= 10) {
-        stockStatus = `Only ${product.stock} left!`;
-      }
-      product.stockStatus = stockStatus;
-
       res.json(product);
     } catch (error) {
       console.error("❌ Error fetching product:", error);
@@ -85,29 +91,51 @@ router.get(
 );
 
 /**
- * 🟢 POST add new product
- * Clears cache only AFTER DB success
+ * POST add new product (with variants)
+ * (Unchanged)
  */
 router.post("/", async (req, res) => {
+  const { variants, ...productData } = req.body;
+
+  if (!Array.isArray(variants) || variants.length === 0) {
+    return res
+      .status(400)
+      .json({ error: "Product must have at least one variant." });
+  }
+
   try {
-    const productData = req.body;
+    const newProduct = await db.transaction(async (tx) => {
+      const [product] = await tx
+        .insert(productsTable)
+        .values({
+          name: productData.name,
+          description: productData.description,
+          composition: productData.composition,
+          fragrance: productData.fragrance,
+          fragranceNotes: productData.fragranceNotes,
+          category: productData.category,
+          imageurl: productData.imageurl,
+          // 'isArchived' will use the database default (false)
+        })
+        .returning();
 
-    const [newProduct] = await db
-      .insert(productsTable)
-      .values({
-        ...productData,
-        imageurl: JSON.stringify(productData.imageurl),
-        stock: productData.stock ?? 0,
-        // Ensure new fields have defaults if not provided
-        costPrice: productData.costPrice ?? 0,
-        category: productData.category ?? 'Uncategorized',
-      })
-      .returning();
+      const variantsToInsert = variants.map((variant) => ({
+        ...variant,
+        productId: product.id,
+        // 'isArchived' will use the database default (false)
+      }));
 
-    // 🟢 Use new invalidation helper
+      const insertedVariants = await tx
+        .insert(productVariantsTable)
+        .values(variantsToInsert)
+        .returning();
+
+      return { ...product, variants: insertedVariants };
+    });
+
     await invalidateMultiple([
-      { key: makeAllProductsKey() },
-      { key: makeProductKey(newProduct.id) },
+      { key: makeAllProductsKey(), prefix: true },
+      { key: makeProductKey(newProduct.id), prefix: true },
     ]);
 
     res.status(201).json(newProduct);
@@ -118,21 +146,21 @@ router.post("/", async (req, res) => {
 });
 
 /**
- * 🟢 PUT update product
- * Clears cache only AFTER DB success
+ * PUT update product (Main Info Only)
+ * (Unchanged)
  */
 router.put("/:id", async (req, res) => {
   const { id } = req.params;
-  let updatedData = req.body;
-
-  if (updatedData.imageurl && Array.isArray(updatedData.imageurl)) {
-    updatedData.imageurl = JSON.stringify(updatedData.imageurl);
-  }
+  const {
+    variants, oprice, discount, size, stock,
+    costPrice, sold, sku, isArchived, 
+    ...productData 
+  } = req.body;
 
   try {
     const [updatedProduct] = await db
       .update(productsTable)
-      .set(updatedData)
+      .set(productData) 
       .where(eq(productsTable.id, id))
       .returning();
 
@@ -140,10 +168,9 @@ router.put("/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    // 🟢 Use new invalidation helper
     await invalidateMultiple([
-      { key: makeAllProductsKey() },
-      { key: makeProductKey(id) },
+      { key: makeAllProductsKey(), prefix: true },
+      { key: makeProductKey(id), prefix: true },
     ]);
 
     res.json(updatedProduct);
@@ -154,30 +181,57 @@ router.put("/:id", async (req, res) => {
 });
 
 /**
- * 🟢 DELETE product
- * Clears cache only AFTER DB success
+ * 🟢 NEW: PUT to archive a product
  */
-router.delete("/:id", async (req, res) => {
+router.put("/:id/archive", async (req, res) => {
   const { id } = req.params;
   try {
-    const [deletedProduct] = await db
-      .delete(productsTable)
+    const [archivedProduct] = await db
+      .update(productsTable)
+      .set({ isArchived: true }) 
       .where(eq(productsTable.id, id))
       .returning();
 
-    if (!deletedProduct) {
+    if (!archivedProduct) {
       return res.status(404).json({ error: "Product not found." });
     }
 
-    // 🟢 Use new invalidation helper
     await invalidateMultiple([
-      { key: makeAllProductsKey() },
-      { key: makeProductKey(id) },
+      { key: makeAllProductsKey(), prefix: true },
+      { key: makeProductKey(id), prefix: true },
     ]);
 
-    res.json({ success: true, deletedProduct });
+    res.json({ success: true, archivedProduct });
   } catch (error) {
-    console.error("❌ Error deleting product:", error);
+    console.error("❌ Error archiving product:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * 🟢 NEW: PUT to unarchive a product
+ */
+router.put("/:id/unarchive", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [unarchivedProduct] = await db
+      .update(productsTable)
+      .set({ isArchived: false }) 
+      .where(eq(productsTable.id, id))
+      .returning();
+
+    if (!unarchivedProduct) {
+      return res.status(404).json({ error: "Product not found." });
+    }
+
+    await invalidateMultiple([
+      { key: makeAllProductsKey(), prefix: true },
+      { key: makeProductKey(id), prefix: true },
+    ]);
+
+    res.json({ success: true, unarchivedProduct });
+  } catch (error) {
+    console.error("❌ Error unarchiving product:", error);
     res.status(500).json({ error: "Server error" });
   }
 });

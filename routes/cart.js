@@ -4,6 +4,7 @@ import { db } from "../configs/index.js";
 import {
   addToCartTable,
   productsTable,
+  productVariantsTable, // 🟢 ADDED
   wishlistTable,
   usersTable,
 } from "../configs/schema.js";
@@ -11,7 +12,7 @@ import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
-import * as keys from "../cacheKeys.js";
+import * as keys from "../cacheKeys.js"; // 🟢 Use 'keys' to avoid name conflicts
 
 const router = express.Router();
 
@@ -26,15 +27,18 @@ router.get(
   async (req, res) => {
     try {
       const { userId } = req.params;
+      // 🟢 MODIFIED: Join all three tables to build the correct item structure
       const cartItems = await db
         .select({
-          product: productsTable,
-          userId: addToCartTable.userId,
-          cartId: addToCartTable.id,
           quantity: addToCartTable.quantity,
+          cartId: addToCartTable.id,
+          userId: addToCartTable.userId,
+          variant: productVariantsTable, // Get the full variant object
+          product: productsTable,        // Get the full parent product object
         })
         .from(addToCartTable)
-        .innerJoin(productsTable, eq(addToCartTable.productId, productsTable.id))
+        .innerJoin(productVariantsTable, eq(addToCartTable.variantId, productVariantsTable.id))
+        .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
         .where(eq(addToCartTable.userId, userId));
 
       res.json(cartItems);
@@ -48,11 +52,16 @@ router.get(
 // 🟢 POST /api/cart — Add product to cart
 router.post("/", async (req, res) => {
   try {
-    const { userId, productId, quantity } = req.body;
+    // 🟢 MODIFIED: Receives variantId and productId
+    const { userId, productId, variantId, quantity } = req.body;
+
+    if (!userId || !productId || !variantId || !quantity) {
+      return res.status(400).json({ error: "Missing required fields: userId, productId, variantId, quantity" });
+    }
 
     const [newItem] = await db
       .insert(addToCartTable)
-      .values({ userId, productId, quantity })
+      .values({ userId, productId, variantId, quantity })
       .returning();
 
     await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
@@ -64,10 +73,11 @@ router.post("/", async (req, res) => {
   }
 });
 
-// 🟢 PUT /api/cart/:userId/:productId — Update quantity
-router.put("/:userId/:productId", async (req, res) => {
+// 🟢 PUT /api/cart/:userId/:variantId — Update quantity
+router.put("/:userId/:variantId", async (req, res) => {
   try {
-    const { userId, productId } = req.params;
+    // 🟢 MODIFIED: Uses variantId
+    const { userId, variantId } = req.params;
     const { quantity } = req.body;
 
     await db
@@ -76,7 +86,7 @@ router.put("/:userId/:productId", async (req, res) => {
       .where(
         and(
           eq(addToCartTable.userId, userId),
-          eq(addToCartTable.productId, productId)
+          eq(addToCartTable.variantId, variantId) // 🟢 MODIFIED
         )
       );
 
@@ -89,17 +99,18 @@ router.put("/:userId/:productId", async (req, res) => {
   }
 });
 
-// 🟢 DELETE /api/cart/:userId/:productId — Remove one product
-router.delete("/:userId/:productId", async (req, res) => {
+// 🟢 DELETE /api/cart/:userId/:variantId — Remove one product
+router.delete("/:userId/:variantId", async (req, res) => {
   try {
-    const { userId, productId } = req.params;
+    // 🟢 MODIFIED: Uses variantId
+    const { userId, variantId } = req.params;
 
     await db
       .delete(addToCartTable)
       .where(
         and(
           eq(addToCartTable.userId, userId),
-          eq(addToCartTable.productId, productId)
+          eq(addToCartTable.variantId, variantId) // 🟢 MODIFIED
         )
       );
 
@@ -116,11 +127,8 @@ router.delete("/:userId/:productId", async (req, res) => {
 router.delete("/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-
     await db.delete(addToCartTable).where(eq(addToCartTable.userId, userId));
-
     await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
-
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error clearing cart:", error);
@@ -130,7 +138,7 @@ router.delete("/:userId", async (req, res) => {
 
 // 🟢 POST /api/cart/merge — Merge guest cart with user
 router.post("/merge", async (req, res) => {
-  const { userId, guestCart } = req.body;
+  const { userId, guestCart } = req.body; // 🟢 guestCart: [{ variantId, quantity, productId }]
 
   if (!userId || !Array.isArray(guestCart) || guestCart.length === 0) {
     return res
@@ -140,25 +148,27 @@ router.post("/merge", async (req, res) => {
 
   try {
     await db.transaction(async (tx) => {
-      const guestProductIds = guestCart.map((item) => item.productId);
+      // 🟢 MODIFIED: Use variantId
+      const guestVariantIds = guestCart.map((item) => item.variantId);
       const existingCartItems = await tx
         .select()
         .from(addToCartTable)
         .where(
           and(
             eq(addToCartTable.userId, userId),
-            inArray(addToCartTable.productId, guestProductIds)
+            inArray(addToCartTable.variantId, guestVariantIds) // 🟢 MODIFIED
           )
         );
 
-      const existingProductIds = new Set(
-        existingCartItems.map((item) => item.productId)
+      const existingVariantIds = new Set(
+        existingCartItems.map((item) => item.variantId)
       );
 
       const promises = guestCart.map((guestItem) => {
-        if (existingProductIds.has(guestItem.productId)) {
+        if (existingVariantIds.has(guestItem.variantId)) {
+          // Update quantity for existing item
           const existingItem = existingCartItems.find(
-            (item) => item.productId === guestItem.productId
+            (item) => item.variantId === guestItem.variantId
           );
           const newQuantity = existingItem.quantity + guestItem.quantity;
           return tx
@@ -167,13 +177,15 @@ router.post("/merge", async (req, res) => {
             .where(
               and(
                 eq(addToCartTable.userId, userId),
-                eq(addToCartTable.productId, guestItem.productId)
+                eq(addToCartTable.variantId, guestItem.variantId) // 🟢 MODIFIED
               )
             );
         } else {
+          // Insert new item
           return tx.insert(addToCartTable).values({
             userId,
-            productId: guestItem.productId,
+            productId: guestItem.productId, // 🟢 Pass productId
+            variantId: guestItem.variantId, // 🟢 Pass variantId
             quantity: guestItem.quantity,
           });
         }
@@ -182,7 +194,6 @@ router.post("/merge", async (req, res) => {
     });
 
     await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
-
     res.json({ success: true, message: "Guest cart merged successfully." });
   } catch (error) {
     console.error("❌ Error merging carts:", error);
@@ -201,18 +212,18 @@ router.get(
   async (req, res) => {
     try {
       const { userId } = req.params;
+      // 🟢 MODIFIED: Join all three tables
       const wishlistItems = await db
         .select({
-          product: productsTable,
           wishlistId: wishlistTable.id,
           userId: wishlistTable.userId,
-          productId: wishlistTable.productId,
+          variantId: wishlistTable.variantId,
+          variant: productVariantsTable,
+          product: productsTable,
         })
         .from(wishlistTable)
-        .innerJoin(
-          productsTable,
-          eq(wishlistTable.productId, productsTable.id)
-        )
+        .innerJoin(productVariantsTable, eq(wishlistTable.variantId, productVariantsTable.id))
+        .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
         .where(eq(wishlistTable.userId, userId));
 
       res.json(wishlistItems);
@@ -226,14 +237,17 @@ router.get(
 // 🟢 POST /api/cart/wishlist — Add product to wishlist
 router.post("/wishlist", async (req, res) => {
   try {
-    const { userId, productId } = req.body;
+    // 🟢 MODIFIED: Receives variantId and productId
+    const { userId, productId, variantId } = req.body;
+    if (!userId || !productId || !variantId) {
+      return res.status(400).json({ error: "Missing required fields: userId, productId, variantId" });
+    }
     const [newItem] = await db
       .insert(wishlistTable)
-      .values({ userId, productId })
+      .values({ userId, productId, variantId })
       .returning();
 
     await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
-
     res.json(newItem);
   } catch (error) {
     console.error("❌ Error adding to wishlist:", error);
@@ -241,22 +255,22 @@ router.post("/wishlist", async (req, res) => {
   }
 });
 
-// 🟢 DELETE /api/cart/wishlist/:userId/:productId — Remove item
-router.delete("/wishlist/:userId/:productId", async (req, res) => {
+// 🟢 DELETE /api/cart/wishlist/:userId/:variantId — Remove item
+router.delete("/wishlist/:userId/:variantId", async (req, res) => {
   try {
-    const { userId, productId } = req.params;
+    // 🟢 MODIFIED: Uses variantId
+    const { userId, variantId } = req.params;
 
     await db
       .delete(wishlistTable)
       .where(
         and(
           eq(wishlistTable.userId, userId),
-          eq(wishlistTable.productId, productId)
+          eq(wishlistTable.variantId, variantId) // 🟢 MODIFIED
         )
       );
 
     await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
-
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error removing wishlist item:", error);
@@ -266,7 +280,7 @@ router.delete("/wishlist/:userId/:productId", async (req, res) => {
 
 // 🟢 POST /api/cart/wishlist/merge — Merge guest wishlist
 router.post("/wishlist/merge", async (req, res) => {
-  const { userId, guestWishlist } = req.body;
+  const { userId, guestWishlist } = req.body; // 🟢 guestWishlist: [{variantId, productId}]
 
   if (!userId || !Array.isArray(guestWishlist) || guestWishlist.length === 0) {
     return res
@@ -276,31 +290,33 @@ router.post("/wishlist/merge", async (req, res) => {
 
   try {
     await db.transaction(async (tx) => {
+      // 🟢 MODIFIED: Use variantId
+      const guestVariantIds = guestWishlist.map(item => item.variantId);
       const existingItems = await tx
-        .select({ productId: wishlistTable.productId })
+        .select({ variantId: wishlistTable.variantId })
         .from(wishlistTable)
         .where(
           and(
             eq(wishlistTable.userId, userId),
-            inArray(wishlistTable.productId, guestWishlist)
+            inArray(wishlistTable.variantId, guestVariantIds) // 🟢 MODIFIED
           )
         );
 
-      const existingIds = new Set(existingItems.map((i) => i.productId));
-      const newIds = guestWishlist.filter((id) => !existingIds.has(id));
+      const existingIds = new Set(existingItems.map((i) => i.variantId));
+      const newItems = guestWishlist.filter((item) => !existingIds.has(item.variantId));
 
-      if (newIds.length > 0) {
+      if (newItems.length > 0) {
         await tx.insert(wishlistTable).values(
-          newIds.map((productId) => ({
+          newItems.map((item) => ({
             userId,
-            productId,
+            productId: item.productId, // 🟢 Pass productId
+            variantId: item.variantId, // 🟢 Pass variantId
           }))
         );
       }
     });
 
     await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
-
     res.json({ success: true, message: "Guest wishlist merged successfully." });
   } catch (error) {
     console.error("❌ Error merging wishlist:", error);
@@ -314,11 +330,8 @@ router.post("/wishlist/merge", async (req, res) => {
 router.delete("/wishlist/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-
     await db.delete(wishlistTable).where(eq(wishlistTable.userId, userId));
-
     await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
-
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error clearing wishlist:", error);
@@ -326,13 +339,16 @@ router.delete("/wishlist/:userId", async (req, res) => {
   }
 });
 
+/* =========================================================
+   👑 ADMIN ROUTES
+========================================================= */
 
 router.get("/admin/abandoned", async (req, res) => {
   try {
-    // Define "abandoned" time range
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
+    // 🟢 MODIFIED: Join all three tables
     const abandonedItems = await db
       .select({
         cartItem: addToCartTable,
@@ -342,10 +358,12 @@ router.get("/admin/abandoned", async (req, res) => {
           email: usersTable.email,
         },
         product: productsTable,
+        variant: productVariantsTable,
       })
       .from(addToCartTable)
       .innerJoin(usersTable, eq(addToCartTable.userId, usersTable.id))
-      .innerJoin(productsTable, eq(addToCartTable.productId, productsTable.id))
+      .innerJoin(productVariantsTable, eq(addToCartTable.variantId, productVariantsTable.id)) // 🟢 MODIFIED
+      .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id)) // 🟢 MODIFIED
       .where(
         and(
           lt(addToCartTable.addedAt, twoHoursAgo),
@@ -354,7 +372,6 @@ router.get("/admin/abandoned", async (req, res) => {
       )
       .orderBy(desc(addToCartTable.addedAt));
 
-    // 🟢 We will group these on the frontend
     res.json(abandonedItems);
 
   } catch (error) {
@@ -363,28 +380,31 @@ router.get("/admin/abandoned", async (req, res) => {
   }
 });
 
-/**
- * 🟢 GET /api/cart/admin/wishlist-stats
- * Fetches the most popular wishlist items
- */
 router.get("/admin/wishlist-stats", async (req, res) => {
   try {
     const stats = await db
       .select({
-        productId: wishlistTable.productId,
+        // 🟢 FIXED: Get productId from the productVariantsTable
+        productId: productVariantsTable.productId,
+        variantId: wishlistTable.variantId,
         productName: productsTable.name,
-        productImage: sql`(${productsTable.imageurl}) ->> 0`.as("productImage"), // Get first image
-        count: count(wishlistTable.productId),
+        variantName: productVariantsTable.name,
+        productImage: sql`(${productsTable.imageurl}) ->> 0`.as("productImage"),
+        count: count(wishlistTable.variantId),
       })
       .from(wishlistTable)
-      .innerJoin(productsTable, eq(wishlistTable.productId, productsTable.id))
+      .innerJoin(productVariantsTable, eq(wishlistTable.variantId, productVariantsTable.id))
+      .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
       .groupBy(
-        wishlistTable.productId,
+        // 🟢 FIXED: Group by the correct table's column
+        productVariantsTable.productId,
+        wishlistTable.variantId,
         productsTable.name,
+        productVariantsTable.name,
         sql`(${productsTable.imageurl}) ->> 0`
       )
-      .orderBy(desc(count(wishlistTable.productId)))
-      .limit(20); // Get top 20
+      .orderBy(desc(count(wishlistTable.variantId)))
+      .limit(20);
 
     res.json(stats);
   } catch (error) {

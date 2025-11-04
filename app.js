@@ -18,6 +18,8 @@ import userRoutes from "./routes/User.js";
 import orderRoutes from "./routes/orders.js";
 import cartRoutes from "./routes/cart.js";
 import productRoutes from "./routes/products.js";
+import variantRoutes from "./routes/variants.js";
+import bundleRoutes from "./routes/bundles.js";
 import contactRoutes from "./routes/contact.js";
 
 const app = express();
@@ -124,6 +126,8 @@ app.use("/api/users", userRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/products", productRoutes);
+app.use("/api/variants", variantRoutes);
+app.use("/api/bundles", bundleRoutes);
 app.use("/api/contact", contactRoutes);
 
 // ───── Healthcheck & Root ─────
