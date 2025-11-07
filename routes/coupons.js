@@ -2,7 +2,8 @@
 import express from "express";
 import { db } from "../configs/index.js";
 import { couponsTable, ordersTable } from "../configs/schema.js";
-import { eq, and } from "drizzle-orm";
+// 🟢 FIX: Added missing drizzle-orm functions
+import { eq, and, isNull, gte, lte, or, inArray } from "drizzle-orm"; 
 
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
@@ -11,8 +12,8 @@ import { makeAllCouponsKey, makeCouponValidationKey, makeAvailableCouponsKey } f
 const router = express.Router();
 
 /* -------------------------------------------------------
-   🟢 GET /api/coupons — list all coupons (admin)
-   Cached for 1 hour
+   GET /api/coupons — list all coupons (admin)
+   (Unchanged)
 -------------------------------------------------------- */
 router.get("/", cache(() => makeAllCouponsKey(), 3600), async (req, res) => {
   try {
@@ -25,15 +26,32 @@ router.get("/", cache(() => makeAllCouponsKey(), 3600), async (req, res) => {
 });
 
 /* -------------------------------------------------------
-   🟢 POST /api/coupons — create a new coupon
-   Invalidates all related caches
+   🟢 POST /api/coupons — (MODIFIED)
+   Accepts all new fields for automatic promotions
 -------------------------------------------------------- */
 router.post("/", async (req, res) => {
   try {
+    const { body } = req;
+    // 🟢 NEW: Full payload from the admin panel
     const payload = {
-      ...req.body,
-      validFrom: req.body.validFrom ? new Date(req.body.validFrom) : null,
-      validUntil: req.body.validUntil ? new Date(req.body.validUntil) : null,
+      code: body.code,
+      description: body.description,
+      discountType: body.discountType,
+      discountValue: body.discountValue,
+      minOrderValue: body.minOrderValue,
+      minItemCount: body.minItemCount,
+      maxDiscountAmount: body.maxDiscountAmount, // 🟢 Added
+      validFrom: body.validFrom ? new Date(body.validFrom) : null,
+      validUntil: body.validUntil ? new Date(body.validUntil) : null,
+      firstOrderOnly: body.firstOrderOnly,
+      maxUsagePerUser: body.maxUsagePerUser,
+      isAutomatic: body.isAutomatic,
+      cond_requiredCategory: body.cond_requiredCategory,
+      cond_requiredSize: body.cond_requiredSize, // 🟢 Added
+      action_targetSize: body.action_targetSize,
+      action_targetMaxPrice: body.action_targetMaxPrice,
+      action_buyX: body.action_buyX,
+      action_getY: body.action_getY,
     };
 
     const [inserted] = await db.insert(couponsTable).values(payload).returning();
@@ -43,6 +61,7 @@ router.post("/", async (req, res) => {
       { key: makeAllCouponsKey() },
       { key: "coupons:available", prefix: true },
       { key: "coupons:validate", prefix: true },
+      { key: "coupons:auto-offers" }, // 🟢 Invalidate new cache
     ]);
 
     res.status(201).json(inserted);
@@ -53,9 +72,8 @@ router.post("/", async (req, res) => {
 });
 
 /* -------------------------------------------------------
-   🟢 GET /api/coupons/validate
-   Validate coupon by code + userId
-   Cached for 60s per (code,userId)
+   GET /api/coupons/validate — (MODIFIED)
+   This route is only for MANUAL coupons.
 -------------------------------------------------------- */
 router.get(
   "/validate",
@@ -76,6 +94,11 @@ router.get(
         .where(eq(couponsTable.code, code));
 
       if (!coupon) return res.status(404).json({ message: "Coupon not found" });
+
+      // FIX: Do not allow manual entry of automatic coupons
+      if (coupon.isAutomatic) {
+        return res.status(400).json({ message: "This offer is applied automatically." });
+      }
 
       const now = new Date();
       if (coupon.validFrom && now < new Date(coupon.validFrom)) {
@@ -120,8 +143,8 @@ router.get(
 );
 
 /* -------------------------------------------------------
-   🟢 GET /api/coupons/available?userId=123
-   Cached per user for 5 minutes
+   GET /api/coupons/available — (MODIFIED)
+   This route only shows MANUAL coupons to the user.
 -------------------------------------------------------- */
 router.get(
   "/available",
@@ -149,6 +172,9 @@ router.get(
 
       const now = new Date();
       const availableCoupons = allCoupons.filter((coupon) => {
+        // FIX: Don't show automatic offers in this list
+        if (coupon.isAutomatic) return false;
+
         const usageCount = usageMap[coupon.code] || 0;
         if (
           coupon.maxUsagePerUser !== null &&
@@ -170,16 +196,32 @@ router.get(
 );
 
 /* -------------------------------------------------------
-   🟢 PUT /api/coupons/:id — update coupon
-   Invalidates all related caches
+   PUT /api/coupons/:id — (MODIFIED)
+   Accepts all new fields for automatic promotions
 -------------------------------------------------------- */
 router.put("/:id", async (req, res) => {
   const id = Number(req.params.id);
   try {
+    const { body } = req;
     const payload = {
-      ...req.body,
-      validFrom: req.body.validFrom ? new Date(req.body.validFrom) : null,
-      validUntil: req.body.validUntil ? new Date(req.body.validUntil) : null,
+      code: body.code,
+      description: body.description,
+      discountType: body.discountType,
+      discountValue: body.discountValue,
+      minOrderValue: body.minOrderValue,
+      minItemCount: body.minItemCount,
+      maxDiscountAmount: body.maxDiscountAmount, // 🟢 Added
+      validFrom: body.validFrom ? new Date(body.validFrom) : null,
+      validUntil: body.validUntil ? new Date(body.validUntil) : null,
+      firstOrderOnly: body.firstOrderOnly,
+      maxUsagePerUser: body.maxUsagePerUser,
+      isAutomatic: body.isAutomatic,
+      cond_requiredCategory: body.cond_requiredCategory,
+      cond_requiredSize: body.cond_requiredSize, // 🟢 Added
+      action_targetSize: body.action_targetSize,
+      action_targetMaxPrice: body.action_targetMaxPrice,
+      action_buyX: body.action_buyX,
+      action_getY: body.action_getY,
     };
 
     const [updated] = await db
@@ -192,6 +234,7 @@ router.put("/:id", async (req, res) => {
       { key: makeAllCouponsKey() },
       { key: "coupons:available", prefix: true },
       { key: "coupons:validate", prefix: true },
+      { key: "coupons:auto-offers" },
     ]);
 
     res.json(updated);
@@ -202,8 +245,7 @@ router.put("/:id", async (req, res) => {
 });
 
 /* -------------------------------------------------------
-   🟢 DELETE /api/coupons/:id — delete coupon
-   Invalidates all related caches
+   DELETE /api/coupons/:id — (MODIFIED)
 -------------------------------------------------------- */
 router.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
@@ -214,6 +256,7 @@ router.delete("/:id", async (req, res) => {
       { key: makeAllCouponsKey() },
       { key: "coupons:available", prefix: true },
       { key: "coupons:validate", prefix: true },
+      { key: "coupons:auto-offers" },
     ]);
 
     res.sendStatus(204);
@@ -222,5 +265,32 @@ router.delete("/:id", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
+/* -------------------------------------------------------
+   🟢 NEW: GET /api/coupons/automatic-offers
+   Fetches all *active* automatic offers with their full rule data
+-------------------------------------------------------- */
+router.get("/automatic-offers", cache(() => "coupons:auto-offers", 3600), async (req, res) => {
+  try {
+    const now = new Date();
+    // 🟢 FIX: Change select() to get all fields
+    const allAutoOffers = await db
+      .select() // This now selects all columns
+      .from(couponsTable)
+      .where(
+        and(
+          eq(couponsTable.isAutomatic, true),
+          or(isNull(couponsTable.validFrom), lte(couponsTable.validFrom, now)),
+          or(isNull(couponsTable.validUntil), gte(couponsTable.validUntil, now))
+        )
+      );
+
+    res.json(allAutoOffers);
+  } catch (err) {
+    console.error("❌ Failed to load automatic offers:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 
 export default router;

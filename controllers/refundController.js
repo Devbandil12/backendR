@@ -1,7 +1,13 @@
-// server/controllers/refundController.js
 import Razorpay from 'razorpay';
 import { db } from '../configs/index.js';
-import { ordersTable, orderItemsTable, productsTable } from '../configs/schema.js';
+// 🟢 FIX: Import all required tables
+import { 
+  ordersTable, 
+  orderItemsTable, 
+  productsTable, 
+  productVariantsTable, 
+  productBundlesTable 
+} from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
 // Import new helpers
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -26,13 +32,13 @@ export const refundOrder = async (req, res) => {
       return res.status(400).json({ success: false, error: "Missing orderId or amount" });
     }
 
-    // Step 1: Fetch order from DB
+    // Step 1: Fetch order from DB (Unchanged)
     const [order] = await db
       .select({
         paymentId: ordersTable.transactionId,
         status: ordersTable.status,
         refundId: ordersTable.refund_id,
-        userId: ordersTable.userId, // Need userId for cache
+        userId: ordersTable.userId,
       })
       .from(ordersTable)
       .where(eq(ordersTable.id, orderId));
@@ -40,108 +46,147 @@ export const refundOrder = async (req, res) => {
     if (!order) {
       return res.status(404).json({ success: false, error: "Order not found" });
     }
-    if (order.status !== "order placed") {
-      return res.status(400).json({ success: false, error: "Cannot refund after order progressed" });
+    // 🟢 MODIFIED: Allow refunding from 'Order Placed' or 'Processing' etc.
+    // You might want to adjust this logic based on your business rules.
+    if (order.status === "Delivered" || order.status === "Order Cancelled") {
+      return res.status(400).json({ success: false, error: `Cannot refund an order that is already ${order.status}` });
     }
     if (order.refundId) {
       return res.status(400).json({ success: false, error: "Refund already initiated" });
     }
     if (!order.paymentId) {
-      return res.status(404).json({ success: false, error: "No payment found to refund" });
-    }
-
-    // Step 2: Convert amount to paise
-    // Step: Convert to paise
-    const amountInPaise = Math.round(amount * 100);
-
-    // Try to apply 5% deduction
-    let refundInPaise = Math.round(amountInPaise * 0.95);
-
-    // If after deduction refund < 1 rupee (100 paise), skip deduction and refund full amount
-    if (refundInPaise < 100) {
-      console.log("Refund after deduction is < ₹1 → skipping deduction, refunding full amount");
-      refundInPaise = amountInPaise;
+      // This is a COD order, just update status
+      await db
+        .update(ordersTable)
+        .set({
+          status: "Order Cancelled",
+          paymentStatus: 'cancelled',
+          updatedAt: new Date(),
+        })
+        .where(eq(ordersTable.id, orderId));
+      
+      // We still need to restore stock for COD orders
+      // (Proceed to Step 8)
     } else {
-      console.log("Refund after 5% deduction:", refundInPaise, `paise (₹${(refundInPaise / 100).toFixed(2)})`);
-    }
+      // --- Online Payment Refund Logic (Steps 2-7) ---
+      
+      // Step 2: Convert amount to paise (Unchanged)
+      const amountInPaise = Math.round(amount * 100);
+      let refundInPaise = Math.round(amountInPaise * 0.95);
+      if (refundInPaise < 100) {
+        refundInPaise = amountInPaise;
+      }
+      
+      // Step 3: Fetch payment (Unchanged)
+      const payment = await razorpay.payments.fetch(order.paymentId);
+      
+      // Step 4: Validate (Unchanged)
+      const alreadyRefunded = (payment.refunds || []).reduce((sum, r) => sum + (r.amount || 0), 0);
+      const maxRefundable = payment.amount - alreadyRefunded;
+      if (refundInPaise > maxRefundable) {
+        return res.status(400).json({
+          success: false,
+          error: `Refund amount exceeds remaining refundable amount ₹${(maxRefundable / 100).toFixed(2)}.`,
+        });
+      }
 
-
-    // 🟩 Step 3: Fetch payment to see what Razorpay has recorded
-    const payment = await razorpay.payments.fetch(order.paymentId);
-
-    console.log(`🪙 Captured amount: ${payment.amount} paise (₹${(payment.amount / 100).toFixed(2)})`);
-    console.log(`↩️  Refund requested: ${refundInPaise} paise (₹${(refundInPaise / 100).toFixed(2)})`);
-
-    // Step 4: Validate
-    const alreadyRefunded = (payment.refunds || []).reduce((sum, r) => sum + (r.amount || 0), 0);
-    const maxRefundable = payment.amount - alreadyRefunded;
-    if (refundInPaise > maxRefundable) {
-      return res.status(400).json({
-        success: false,
-        error: `Refund amount exceeds remaining refundable amount ₹${(maxRefundable / 100).toFixed(2)}.`,
+      // Step 5: Call refund (Unchanged)
+      const refundInit = await razorpay.payments.refund(order.paymentId, {
+        amount: refundInPaise,
+        speed: 'normal',
       });
+      
+      // Step 6: Fetch accurate refund status (Unchanged)
+      const refund = await razorpay.refunds.fetch(refundInit.id);
+
+      // Step 7: Persist refund data in DB (Unchanged)
+      await db
+        .update(ordersTable)
+        .set({
+          status: "Order Cancelled",
+          paymentStatus: 'refunded',
+          refund_id: refund.id,
+          refund_amount: refund.amount,
+          refund_status: refund.status,
+          refund_speed: refund.speed_processed,
+          refund_initiated_at: new Date(refund.created_at * 1000),
+          refund_completed_at: refund.status === 'processed'
+            ? new Date(refund.processed_at * 1000)
+            : null,
+          updatedAt: new Date(),
+        })
+        .where(eq(ordersTable.id, orderId));
     }
 
-    // Step 5: Call refund
-    const refundInit = await razorpay.payments.refund(order.paymentId, {
-      amount: refundInPaise,
-      speed: 'normal',
-    });
 
-    // Step 6: Fetch accurate refund status
-    const refund = await razorpay.refunds.fetch(refundInit.id);
-
-    // Step 7: Persist refund data in DB
-    await db
-      .update(ordersTable)
-      .set({
-        status: "Order Cancelled",
-        paymentStatus: 'refunded',
-        refund_id: refund.id,
-        refund_amount: refund.amount,
-        refund_status: refund.status,
-        refund_speed: refund.speed_processed,
-        refund_initiated_at: new Date(refund.created_at * 1000),
-        refund_completed_at: refund.status === 'processed'
-          ? new Date(refund.processed_at * 1000)
-          : null,
-
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(ordersTable.id, orderId));
-
-
-    // Step 8: Restore stock for each product in the refunded order
+    // 🟢 --- FIX: Step 8: Restore stock logic ---
+    // (This now runs for both COD and Online refunds)
+    
+    // Get all items from the order
     const orderItems = await db
       .select({
-        productId: orderItemsTable.productId,
+        variantId: orderItemsTable.variantId, // 👈 Get variantId
         quantity: orderItemsTable.quantity,
+        productId: orderItemsTable.productId, // 👈 Get parent productId for cache
       })
       .from(orderItemsTable)
       .where(eq(orderItemsTable.orderId, orderId));
 
-    // Build list of items to invalidate
+    const affectedProductIds = new Set(); // To collect all products for cache invalidation
     const itemsToInvalidate = [
-      { key: makeAllProductsKey() }, // All products list
-      { key: makeAllOrdersKey() }, // All orders list
-      { key: makeOrderKey(orderId) }, // This specific order
-      { key: makeUserOrdersKey(order.userId) }, // This user's order list
+      { key: makeAllProductsKey(), prefix: true },
+      { key: makeAllOrdersKey(), prefix: true },
+      { key: makeOrderKey(orderId) },
+      { key: makeUserOrdersKey(order.userId) },
     ];
 
     for (const item of orderItems) {
-      await db
-        .update(productsTable)
-        .set({ stock: sql`${productsTable.stock} + ${item.quantity}` })
-        .where(eq(productsTable.id, item.productId));
+      // Add the item's main product ID to the set
+      affectedProductIds.add(item.productId);
 
-      // Add product-specific keys
-      itemsToInvalidate.push({ key: makeProductKey(item.productId) });
+      // 1. Check if this item is a bundle
+      const bundleContents = await db
+        .select()
+        .from(productBundlesTable)
+        .where(eq(productBundlesTable.bundleVariantId, item.variantId));
+
+      if (bundleContents.length > 0) {
+        // 2. IT IS A BUNDLE: Restore stock for each of its contents
+        for (const content of bundleContents) {
+          const stockToRestore = content.quantity * item.quantity;
+          
+          await db
+            .update(productVariantsTable) // 👈 Update productVariantsTable
+            .set({ stock: sql`${productVariantsTable.stock} + ${stockToRestore}` })
+            .where(eq(productVariantsTable.id, content.contentVariantId)); // 👈 For the content's ID
+
+          // Find the parent product of this content item for cache invalidation
+          const [contentVariant] = await db.select({ productId: productVariantsTable.productId }).from(productVariantsTable).where(eq(productVariantsTable.id, content.contentVariantId));
+          if (contentVariant) {
+            affectedProductIds.add(contentVariant.productId);
+          }
+        }
+      } else {
+        // 3. NOT A BUNDLE: Restore stock normally to the variant
+        await db
+          .update(productVariantsTable) // 👈 Update productVariantsTable
+          .set({ stock: sql`${productVariantsTable.stock} + ${item.quantity}` })
+          .where(eq(productVariantsTable.id, item.variantId)); // 👈 For the item's variantId
+      }
     }
+    // 🟢 --- END FIX (Step 8) ---
 
-    // Step 9: Invalidate caches
+
+    // 🟢 --- FIX: Step 9: Invalidate caches ---
+    // Add all unique product IDs to the invalidation list
+    for (const pid of affectedProductIds) {
+      itemsToInvalidate.push({ key: makeProductKey(pid), prefix: true });
+    }
+    
     await invalidateMultiple(itemsToInvalidate);
+    // 🟢 --- END FIX (Step 9) ---
 
-    return res.json({ success: true, refund });
+    return res.json({ success: true, message: "Order successfully cancelled and stock restored." });
 
   } catch (err) {
     console.error("refundOrder error:", err);

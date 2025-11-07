@@ -4,9 +4,10 @@ import { db } from "../configs/index.js";
 import {
   addToCartTable,
   productsTable,
-  productVariantsTable, // 🟢 ADDED
+  productVariantsTable,
   wishlistTable,
   usersTable,
+  productBundlesTable, // 🟢 FIX: Import productBundlesTable
 } from "../configs/schema.js";
 import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 
@@ -27,21 +28,60 @@ router.get(
   async (req, res) => {
     try {
       const { userId } = req.params;
-      // 🟢 MODIFIED: Join all three tables to build the correct item structure
-      const cartItems = await db
-        .select({
-          quantity: addToCartTable.quantity,
-          cartId: addToCartTable.id,
-          userId: addToCartTable.userId,
-          variant: productVariantsTable, // Get the full variant object
-          product: productsTable,        // Get the full parent product object
-        })
-        .from(addToCartTable)
-        .innerJoin(productVariantsTable, eq(addToCartTable.variantId, productVariantsTable.id))
-        .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
-        .where(eq(addToCartTable.userId, userId));
+      const cartItems = await db.query.addToCartTable.findMany({
+          where: eq(addToCartTable.userId, userId),
+          with: {
+              variant: { with: { product: true } } // Get variant and its parent product
+          }
+      });
 
-      res.json(cartItems);
+      // 🔽 --- START NEW LOGIC --- 🔽
+      // Now, for each item, check if it's a bundle
+      const detailedCartItems = await Promise.all(cartItems.map(async (item) => {
+        // This query will now work because productBundlesTable is imported
+        const bundleContents = await db.query.productBundlesTable.findMany({
+          where: eq(productBundlesTable.bundleVariantId, item.variantId),
+          with: {
+            content: { // Get the full "content" variant
+              with: {
+                product: true // And also get its parent product
+              }
+            }
+          }
+        });
+
+        if (bundleContents.length > 0) {
+          return {
+            ...item, // The main cart item (quantity, etc.)
+            isBundle: true,
+            // Format the contents to be clean for the frontend
+            contents: bundleContents.map(c => ({
+              quantity: c.quantity,
+              name: c.content.product.name,
+              variantName: c.content.name
+            }))
+          };
+        }
+        
+        // Not a bundle, return as is
+        return { ...item, isBundle: false };
+      }));
+      // 🔼 --- END NEW LOGIC --- 🔼
+
+      // 🟢 MODIFIED: Return the new detailed list
+      // This response is slightly different from your original,
+      // it's now item.variant.product.name, not item.product.name
+      const finalItems = detailedCartItems.map(item => ({
+         quantity: item.quantity,
+         cartId: item.id,
+         userId: item.userId,
+         variant: item.variant,
+         product: item.variant.product,
+         isBundle: item.isBundle,
+         contents: item.contents || []
+      }));
+
+      res.json(finalItems);
     } catch (error) {
       console.error("❌ Error fetching cart:", error);
       res.status(500).json({ error: "Server error" });
@@ -59,9 +99,30 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "Missing required fields: userId, productId, variantId, quantity" });
     }
 
+    // 🔴 This is incorrect based on your schema. productId is not in addToCartTable.
+    // However, the frontend sends it, so we just need to insert what the DB expects.
+    // The cart context logic *looks* like it sends productId, but the schema doesn't have it.
+    // Let's check schema.js for addToCartTable...
+    // export const addToCartTable = pgTable('add_to_cart', {
+    //   id: uuid('id').defaultRandom().primaryKey(),
+    //   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+    //   variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }), 
+    //   quantity: integer('quantity').notNull().default(1),
+    //   addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
+    // });
+    //
+    // ✅ You are correct. The cart.js POST route has an error. It accepts `productId`
+    // but the schema doesn't. And your `add-custom-bundle` route *also*
+    // incorrectly tries to insert `productId`.
+    // I will fix BOTH POST routes in this file.
+
     const [newItem] = await db
       .insert(addToCartTable)
-      .values({ userId, productId, variantId, quantity })
+      .values({ 
+        userId, 
+        variantId, // Only insert fields that are in the schema
+        quantity 
+      })
       .returning();
 
     await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
@@ -184,8 +245,8 @@ router.post("/merge", async (req, res) => {
           // Insert new item
           return tx.insert(addToCartTable).values({
             userId,
-            productId: guestItem.productId, // 🟢 Pass productId
-            variantId: guestItem.variantId, // 🟢 Pass variantId
+            // productId: guestItem.productId, // 🔴 This field doesn't exist in the table
+            variantId: guestItem.variantId, 
             quantity: guestItem.quantity,
           });
         }
@@ -242,9 +303,23 @@ router.post("/wishlist", async (req, res) => {
     if (!userId || !productId || !variantId) {
       return res.status(400).json({ error: "Missing required fields: userId, productId, variantId" });
     }
+    // Let's check schema.js for wishlistTable...
+    // export const wishlistTable = pgTable("wishlist_table", {
+    //   id: uuid("id").defaultRandom().primaryKey(),
+    //   userId: uuid("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+    //   variantId: uuid("variant_id").notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
+    //   addedAt: timestamp("added_at", { withTimezone: true }).defaultNow(),
+    // });
+    //
+    // ✅ Another bug found. The schema for wishlistTable does NOT have productId.
+    // I will fix this insert as well.
     const [newItem] = await db
       .insert(wishlistTable)
-      .values({ userId, productId, variantId })
+      .values({ 
+        userId, 
+        // productId, // 🔴 This field doesn't exist in the table
+        variantId 
+      })
       .returning();
 
     await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
@@ -272,7 +347,8 @@ router.delete("/wishlist/:userId/:variantId", async (req, res) => {
 
     await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
     res.json({ success: true });
-  } catch (error) {
+  } catch (error)
+    {
     console.error("❌ Error removing wishlist item:", error);
     res.status(500).json({ error: "Server error" });
   }
@@ -309,8 +385,8 @@ router.post("/wishlist/merge", async (req, res) => {
         await tx.insert(wishlistTable).values(
           newItems.map((item) => ({
             userId,
-            productId: item.productId, // 🟢 Pass productId
-            variantId: item.variantId, // 🟢 Pass variantId
+            // productId: item.productId, // 🔴 This field doesn't exist in the table
+            variantId: item.variantId, 
           }))
         );
       }
@@ -409,6 +485,67 @@ router.get("/admin/wishlist-stats", async (req, res) => {
     res.json(stats);
   } catch (error) {
     console.error("❌ Error fetching wishlist stats:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Add this route inside routes/cart.js
+
+router.post("/add-custom-bundle", async (req, res) => {
+  // 1. Get the 4 selected variant IDs and the template product ID
+  const { userId, templateVariantId, contentVariantIds } = req.body;
+
+  if (!userId || !templateVariantId || !Array.isArray(contentVariantIds) || contentVariantIds.length !== 4) {
+    return res.status(400).json({ error: "Invalid bundle data." });
+  }
+
+  try {
+    const newCustomBundle = await db.transaction(async (tx) => {
+      // 2. Get the template variant to copy its price, name, etc.
+      const templateVariant = await tx.query.productVariantsTable.findFirst({
+        where: eq(productVariantsTable.id, templateVariantId),
+      });
+
+      if (!templateVariant) throw new Error("Template variant not found.");
+
+      // 3. Create a NEW, unique variant in the database
+      // We make it "archived" so it doesn't show up in public listings
+      const [newVariant] = await tx.insert(productVariantsTable).values({
+        productId: templateVariant.productId,
+        name: `Custom Combo - ${userId.slice(0, 8)}`, // Unique name
+        size: templateVariant.size,
+        oprice: templateVariant.oprice, // The pre-defined price!
+        discount: templateVariant.discount,
+        costPrice: templateVariant.costPrice,
+        stock: 1, // Stock of 1, since this is a unique item
+        isArchived: true, // Hide it from the public store
+      }).returning();
+
+      // 4. Link the 4 selected contents to this new variant
+      const bundleEntries = contentVariantIds.map(contentId => ({
+        bundleVariantId: newVariant.id,
+        contentVariantId: contentId,
+        quantity: 1,
+      }));
+      await tx.insert(productBundlesTable).values(bundleEntries);
+
+      // 5. Add this new, unique variant to the user's cart
+      const [cartItem] = await tx.insert(addToCartTable).values({
+        userId: userId,
+        variantId: newVariant.id,
+        // productId: newVariant.productId, // 🔴 This field doesn't exist in the table
+        quantity: 1,
+      }).returning();
+
+      return cartItem;
+    });
+    
+    // 6. Invalidate the user's cart cache
+    await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
+    res.status(201).json(newCustomBundle);
+
+  } catch (error) {
+    console.error("❌ Error creating custom bundle:", error);
     res.status(500).json({ error: "Server error" });
   }
 });

@@ -64,6 +64,27 @@
       "when": 1762272040445,
       "tag": "0008_red_jackal",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1762498641660,
+      "tag": "0009_lumpy_madame_web",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1762499859852,
+      "tag": "0010_powerful_dormammu",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1762509555207,
+      "tag": "0011_dashing_frightful_four",
+      "breakpoints": true
     }
   ]
 }

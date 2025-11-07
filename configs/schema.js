@@ -48,15 +48,13 @@ export const productsTable = pgTable('products', {
   imageurl: jsonb("imageurl").notNull().default(sql`'{}'::jsonb`),
   category: varchar('category', { length: 100 }).default('Uncategorized'),
   isArchived: boolean('is_archived').default(false).notNull(),
-  // 🔴 REMOVED: discount, oprice, size, stock, costPrice, sold
-  // These fields have moved to productVariantsTable.
 });
 
 // 🟢 NEW: This table stores purchasable items (SKUs)
 export const productVariantsTable = pgTable('product_variants', {
   id: uuid('id').defaultRandom().primaryKey(),
   productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: 'cascade' }),
-  
+
   // Variant-specific details
   name: text('name').notNull(), // e.g., "20ml" or "Signature Combo"
   size: integer('size').notNull(),
@@ -72,10 +70,10 @@ export const productVariantsTable = pgTable('product_variants', {
 // 🟢 NEW: This table links a "combo" variant to its "content" variants
 export const productBundlesTable = pgTable('product_bundles', {
   id: uuid('id').defaultRandom().primaryKey(),
-  
+
   // The "Combo" product variant
   bundleVariantId: uuid('bundle_variant_id').notNull().references(() => productVariantsTable.id, { onDelete: 'cascade' }),
-  
+
   // The "content" product variant (e.g., one 20ml bottle)
   contentVariantId: uuid('content_variant_id').notNull().references(() => productVariantsTable.id, { onDelete: 'cascade' }),
 
@@ -96,15 +94,12 @@ export const productVariantsRelations = relations(productVariantsTable, ({ one, 
     fields: [productVariantsTable.productId],
     references: [productsTable.id],
   }),
-  // For bundles:
-  // "I am a bundle made of these entries"
-  bundleEntries: many(productBundlesTable, { 
+  bundleEntries: many(productBundlesTable, {
     relationName: 'bundleEntries',
     fields: [productVariantsTable.id],
     references: [productBundlesTable.bundleVariantId],
   }),
-  // "I am a content item inside these bundles"
-  bundleContents: many(productBundlesTable, { 
+  bundleContents: many(productBundlesTable, {
     relationName: 'bundleContents',
     fields: [productVariantsTable.id],
     references: [productBundlesTable.contentVariantId],
@@ -129,8 +124,7 @@ export const productBundlesRelations = relations(productBundlesTable, ({ one }) 
 export const addToCartTable = pgTable('add_to_cart', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  // 🔴 CHANGED: from productId to variantId
-  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }), 
+  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
   quantity: integer('quantity').notNull().default(1),
   addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
 });
@@ -140,8 +134,7 @@ export const addToCartRelations = relations(addToCartTable, ({ one }) => ({
     fields: [addToCartTable.userId],
     references: [usersTable.id],
   }),
-  // 🟢 MODIFIED: points to productVariantsTable
-  variant: one(productVariantsTable, { 
+  variant: one(productVariantsTable, {
     fields: [addToCartTable.variantId],
     references: [productVariantsTable.id],
   })
@@ -151,7 +144,6 @@ export const addToCartRelations = relations(addToCartTable, ({ one }) => ({
 export const wishlistTable = pgTable("wishlist_table", {
   id: uuid("id").defaultRandom().primaryKey(),
   userId: uuid("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  // 🔴 CHANGED: from productId to variantId
   variantId: uuid("variant_id").notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
   addedAt: timestamp("added_at", { withTimezone: true }).defaultNow(),
 });
@@ -161,15 +153,14 @@ export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
     fields: [wishlistTable.userId],
     references: [usersTable.id],
   }),
-  // 🟢 MODIFIED: points to productVariantsTable
   variant: one(productVariantsTable, {
     fields: [wishlistTable.variantId],
     references: [productVariantsTable.id],
   }),
 }));
 
+// 🟢 --- START: MODIFIED ordersTable ---
 export const ordersTable = pgTable('orders', {
-  // ... (all fields like id, userId, userAddressId, totalAmount, etc. are unchanged)
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   userId: uuid('user_id').notNull().references(() => usersTable.id),
   userAddressId: uuid('user_address_id').notNull().references(() => UserAddressTable.id),
@@ -189,9 +180,16 @@ export const ordersTable = pgTable('orders', {
   refund_speed: text('refund_speed'),
   refund_initiated_at: timestamp('refund_initiated_at'),
   refund_completed_at: timestamp('refund_completed_at'),
-  couponCode: varchar('coupon_code', { length: 50 }),
-  discountAmount: integer('discount_amount'),
+
+  // --- Discount Section ---
+  couponCode: varchar('coupon_code', { length: 50 }), // For MANUAL coupons
+  discountAmount: integer('discount_amount').default(0), // For MANUAL coupons
+
+  // 🟢 NEW: Fields for automatic offers
+  offerDiscount: integer('offer_discount').default(0), // The total discount from *automatic* offers
+  offerCodes: jsonb('offer_codes'), // An array of applied offer names, e.g., ["FREE30ML", "10PERCENTOFF"]
 });
+// 🟢 --- END: MODIFIED ordersTable ---
 
 export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
   user: one(usersTable, {
@@ -208,7 +206,6 @@ export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
 export const UserAddressTable = pgTable('user_address', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  // ... (all other address fields are unchanged)
   name: text('name').notNull(),
   phone: text('phone').notNull(),
   altPhone: text('alt_phone').default(null),
@@ -239,7 +236,6 @@ export const userAddressRelations = relations(UserAddressTable, ({ one }) => ({
 }));
 
 export const pincodeServiceabilityTable = pgTable('pincode_serviceability', {
-  // ... (this table is unchanged)
   pincode: varchar('pincode', { length: 6 }).primaryKey(),
   city: varchar('city', { length: 100 }).notNull(),
   state: varchar('state', { length: 100 }).notNull(),
@@ -255,7 +251,6 @@ export const orderItemsTable = pgTable('order_items', {
   orderId: text('order_id').notNull().references(() => ordersTable.id, { onDelete: "cascade" }),
   productName: varchar('product_name', { length: 255 }).notNull(),
   img: varchar('img', { length: 500 }).notNull(),
-  // 🔴 CHANGED: from productId to variantId
   variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id), // No cascade, protect history
   productId: uuid('product_id').notNull().references(() => productsTable.id), // Keep this to link to the main product page
   quantity: integer('quantity').notNull().default(1),
@@ -269,35 +264,47 @@ export const orderItemsRelations = relations(orderItemsTable, ({ one }) => ({
     fields: [orderItemsTable.orderId],
     references: [ordersTable.id],
   }),
-  // 🟢 MODIFIED: points to productVariantsTable
   variant: one(productVariantsTable, {
     fields: [orderItemsTable.variantId],
     references: [productVariantsTable.id],
   }),
-  // 🟢 MODIFIED: points to main productsTable
   product: one(productsTable, {
     fields: [orderItemsTable.productId],
     references: [productsTable.id],
   }),
 }));
 
+// 🟢 --- START: MODIFIED couponsTable ---
 export const couponsTable = pgTable('coupons', {
-  // ... (this table is unchanged)
   id: serial('id').primaryKey(),
   code: varchar('code', { length: 50 }).notNull().unique(),
-  discountType: varchar('discount_type', { length: 10 }).notNull(),
-  discountValue: integer('discount_value').notNull(),
   description: text('description'),
+
+  // --- Main Action ---
+  discountType: varchar('discount_type', { length: 20 }).notNull(), // 'percent', 'flat', 'free_item'
+  discountValue: integer('discount_value').notNull().default(0),
+
+  // --- Basic Rules ---
   minOrderValue: integer('min_order_value').default(0),
   minItemCount: integer('min_item_count').default(0),
+  maxDiscountAmount: integer('max_discount_amount'),
   validFrom: timestamp('valid_from'),
   validUntil: timestamp('valid_until'),
   firstOrderOnly: boolean('is_first_order_only').default(false),
   maxUsagePerUser: integer('max_usage_per_user').default(1),
+
+  // --- 🟢 NEW: Automatic Offer Rules ---
+
+  isAutomatic: boolean('is_automatic').default(false).notNull(),
+  cond_requiredCategory: varchar('cond_required_category', { length: 100 }),
+  action_targetSize: integer('action_target_size'),
+  action_targetMaxPrice: integer('action_target_max_price'),
+  cond_requiredSize: integer('cond_required_size'),
+  action_buyX: integer('action_buy_x'),
+  action_getY: integer('action_get_y'),
 });
 
 export const testimonials = pgTable("testimonials", {
-  // ... (this table is unchanged)
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   title: text("title"),
@@ -310,10 +317,8 @@ export const testimonials = pgTable("testimonials", {
 // 🟢 MODIFIED: reviewsTable
 export const reviewsTable = pgTable('product_reviews', {
   id: uuid('id').defaultRandom().primaryKey(),
-  // Reviews still point to the main product, not the variant
   productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: 'cascade' }),
   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
-  // ... (all other review fields are unchanged)
   name: text('name').notNull(),
   rating: integer('rating').notNull(),
   comment: text('comment').notNull(),
