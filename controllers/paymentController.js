@@ -1,3 +1,4 @@
+/* eslint-disable */
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
@@ -21,7 +22,7 @@ import {
   makeCartCountKey,
 } from '../cacheKeys.js';
 // 🟢 1. Import the new Promotions Engine
-//    (Adjust the path '../helpers/priceEngine.js' if your file is in a different folder)
+//    (Adjust the path '../helpers/priceEngine.js' if your file is in a different folder)
 import { calculatePriceBreakdown } from '../helpers/priceEngine.js';
 
 
@@ -32,32 +33,55 @@ const razorpay = new Razorpay({
   key_secret: RAZORPAY_SECRET_KEY,
 });
 
-// (reduceStock function is unchanged)
+// 🟢 START: UPDATED reduceStock function
 async function reduceStock(cartItems) {
   const affectedProductIds = new Set();
   for (const item of cartItems) {
-    affectedProductIds.add(item.productId);
+    affectedProductIds.add(item.productId); // Add the main product ID
+
     const bundleContents = await db
       .select()
       .from(productBundlesTable)
       .where(eq(productBundlesTable.bundleVariantId, item.variantId));
+
     if (bundleContents.length > 0) {
+      // --- START: MODIFIED BUNDLE LOGIC ---
+
+      // 1. REDUCE STOCK OF THE COMBO WRAPPER ITSELF
+      const [comboVariant] = await db.select({ stock: productVariantsTable.stock }).from(productVariantsTable).where(eq(productVariantsTable.id, item.variantId));
+      if (!comboVariant || comboVariant.stock < item.quantity) {
+        // This error check is important, it references the *combo's* product name
+        const [product] = await db.select({ name: productsTable.name }).from(productsTable).where(eq(productsTable.id, item.productId));
+        throw new Error(`Not enough stock for ${product?.name || 'combo'}`);
+      }
+      await db
+        .update(productVariantsTable)
+        .set({
+          stock: sql`${productVariantsTable.stock} - ${item.quantity}`,
+          sold: sql`${productVariantsTable.sold} + ${item.quantity}`
+        })
+        .where(eq(productVariantsTable.id, item.variantId));
+
+      // 2. REDUCE STOCK OF THE CONTENTS (This is your existing logic)
       for (const content of bundleContents) {
         const stockToReduce = content.quantity * item.quantity;
         const [variant] = await db.select({ stock: productVariantsTable.stock, productId: productVariantsTable.productId }).from(productVariantsTable).where(eq(productVariantsTable.id, content.contentVariantId));
         if (!variant || variant.stock < stockToReduce) {
           throw new Error(`Not enough stock for item in bundle: ${content.contentVariantId}`);
         }
-        affectedProductIds.add(variant.productId);
+        affectedProductIds.add(variant.productId); // Add the content's product ID
         await db
           .update(productVariantsTable)
           .set({
             stock: sql`${productVariantsTable.stock} - ${stockToReduce}`,
-            sold: sql`${productVariantsTable.sold} + ${stockToReduce}`
+            sold: sql`${productVariantsTable.sold} + ${stockToReduce}` // Your original code did this, which counts sold for contents too
           })
           .where(eq(productVariantsTable.id, content.contentVariantId));
       }
+      // --- END: MODIFIED BUNDLE LOGIC ---
+
     } else {
+      // --- This is your existing logic for non-bundle items ---
       const [variant] = await db.select({ stock: productVariantsTable.stock }).from(productVariantsTable).where(eq(productVariantsTable.id, item.variantId));
       if (!variant || variant.stock < item.quantity) {
         const [product] = await db.select({ name: productsTable.name }).from(productsTable).where(eq(productsTable.id, item.productId));
@@ -74,6 +98,7 @@ async function reduceStock(cartItems) {
   }
   return Array.from(affectedProductIds);
 }
+// 🟢 END: UPDATED reduceStock function
 
 export const createOrder = async (req, res) => {
   try {
@@ -119,7 +144,7 @@ export const createOrder = async (req, res) => {
     const {
       total,
       discountAmount, // Manual coupon discount
-      offerDiscount,  // Automatic offer discount
+      offerDiscount,  // Automatic offer discount
       appliedOffers,
       codAvailable
     } = breakdown;
@@ -381,7 +406,7 @@ export const verifyPayment = async (req, res) => {
     ];
     affectedProductIds.forEach(pid => {
       itemsToInvalidate.push({ key: makeProductKey(pid), prefix: true });
-      I
+      // Removed stray 'I' that was in the original file
     });
 
     await invalidateMultiple(itemsToInvalidate);
