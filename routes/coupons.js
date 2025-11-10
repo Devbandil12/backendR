@@ -62,6 +62,7 @@ router.post("/", async (req, res) => {
       { key: "coupons:available", prefix: true },
       { key: "coupons:validate", prefix: true },
       { key: "coupons:auto-offers" }, // 🟢 Invalidate new cache
+      { key: "promos:latest-public" }
     ]);
 
     res.status(201).json(inserted);
@@ -235,6 +236,7 @@ router.put("/:id", async (req, res) => {
       { key: "coupons:available", prefix: true },
       { key: "coupons:validate", prefix: true },
       { key: "coupons:auto-offers" },
+      { key: "promos:latest-public" }
     ]);
 
     res.json(updated);
@@ -257,6 +259,7 @@ router.delete("/:id", async (req, res) => {
       { key: "coupons:available", prefix: true },
       { key: "coupons:validate", prefix: true },
       { key: "coupons:auto-offers" },
+      { key: "promos:latest-public" }
     ]);
 
     res.sendStatus(204);

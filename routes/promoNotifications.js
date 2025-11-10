@@ -8,7 +8,6 @@ import { cache } from '../cacheMiddleware.js';
 const router = express.Router();
 
 // GET /api/promos/latest-public
-// Fetches the top 2-3 newest, active, *manual* coupons for display
 router.get('/latest-public', cache(() => 'promos:latest-public', 3600), async (req, res) => {
     try {
         const now = new Date();
@@ -18,15 +17,16 @@ router.get('/latest-public', cache(() => 'promos:latest-public', 3600), async (r
             description: couponsTable.description,
             discountType: couponsTable.discountType,
             discountValue: couponsTable.discountValue,
+            validFrom: couponsTable.validFrom, // 🟢 ADD THIS LINE
         })
         .from(couponsTable)
         .where(and(
-            eq(couponsTable.isAutomatic, false), // Only show manual coupons
+            eq(couponsTable.isAutomatic, false), 
             or(isNull(couponsTable.validFrom), lte(couponsTable.validFrom, now)),
             or(isNull(couponsTable.validUntil), gte(couponsTable.validUntil, now))
         ))
-        .orderBy(desc(couponsTable.validFrom), desc(couponsTable.id)) // Show newest first
-        .limit(2); // Only show the top 2
+        .orderBy(desc(couponsTable.validFrom), desc(couponsTable.id)) 
+        .limit(2); 
 
         res.json(promos);
     } catch (err) {
