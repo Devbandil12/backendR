@@ -6,7 +6,7 @@ import fetch from "node-fetch";
 // Import new helpers
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeUserAddressesKey } from "../cacheKeys.js";
-
+import { createNotification } from '../helpers/notificationManager.js';
 // Reverse Geocode helper to fill missing address details from lat/lng
 async function reverseGeocode(lat, lng) {
   if (!lat || !lng) return {};
@@ -360,19 +360,70 @@ export async function listPincodes(req, res) {
 // POST /api/address/pincodes
 export async function createPincode(req, res) {
   try {
+    // 1. Get data from your function
     const { pincode, isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge } = req.body;
+    
+    // 2. Use your validation
     if (!pincode || !/^\d{6}$/.test(pincode)) {
       return res.status(400).json({ success: false, msg: "Invalid pincode" });
     }
 
-    const inserted = await db
+    // 3. Use your insert logic
+    const [newPincode] = await db
       .insert(pincodeServiceabilityTable)
       .values({ pincode, isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge })
       .returning();
 
-    return res.status(201).json({ success: true, data: inserted[0] });
+    // 4. 🟢 START: Added Notification Logic
+    //    Check if this new pincode is being set as serviceable immediately
+    if (newPincode.isServiceable) {
+      
+      // 5. Find all users who *already* have this pincode saved
+      const usersToNotify = await db.selectDistinct({ 
+          userId: UserAddressTable.userId 
+      })
+      .from(UserAddressTable)
+      .where(eq(UserAddressTable.postalCode, newPincode.pincode));
+
+      if (usersToNotify.length > 0) {
+        let message = "";
+        let link = "/";
+
+        // 6. Determine the correct message based on COD status
+        if (newPincode.codAvailable) {
+          message = `Good news! Cash on Delivery is now available for your address in ${newPincode.pincode}.`;
+          link = '/cart';
+        } else {
+          message = `We've got you covered! We are now delivering to your area in ${newPincode.pincode}.`;
+          link = '/';
+        }
+
+        // 7. Create notifications for all found users
+        const promises = usersToNotify.map(user => 
+            createNotification(
+                user.userId,
+                message,
+                link,
+                'system'
+            )
+        );
+        // Run in the background; don't make the admin wait
+        Promise.allSettled(promises);
+      }
+    }
+    // 🟢 END: Added Notification Logic
+
+    // 8. Return success (from your original code)
+    return res.status(201).json({ success: true, data: newPincode });
+
   } catch (err) {
     console.error("createPincode error:", err);
+    // 9. 🟢 START: Added enhanced error handling
+    // Handle potential "duplicate key" error if pincode already exists
+    if (err.code === '23505') { // 23505 is the PostgreSQL code for unique_violation
+        return res.status(409).json({ success: false, msg: "Pincode already exists." });
+    }
+    // 🟢 END: Added enhanced error handling
     return res.status(500).json({ success: false, msg: "Server error" });
   }
 }
@@ -383,17 +434,72 @@ export async function updatePincode(req, res) {
     const { pincode } = req.params;
     const { isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge } = req.body;
 
-    const updated = await db
+    // 1. 🟢 Get the *old* status values first to compare
+    const [oldPincode] = await db
+      .select({ 
+          codAvailable: pincodeServiceabilityTable.codAvailable,
+          isServiceable: pincodeServiceabilityTable.isServiceable 
+      })
+      .from(pincodeServiceabilityTable)
+      .where(eq(pincodeServiceabilityTable.pincode, pincode));
+
+    // 2. 🟢 Update the pincode in the database
+    const [updatedPincode] = await db
       .update(pincodeServiceabilityTable)
       .set({ isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge })
       .where(eq(pincodeServiceabilityTable.pincode, pincode))
       .returning();
 
-    if (updated.length === 0) {
+    // 3. 🟢 Use your original check
+    if (!updatedPincode || updatedPincode.length === 0) {
       return res.status(404).json({ success: false, msg: "Pincode not found" });
     }
 
-    return res.json({ success: true, data: updated[0] });
+    // 4. 🟢 START: Added Notification Logic
+    //    Check if a status was just enabled (changed from false to true)
+    const codJustEnabled = codAvailable === true && oldPincode?.codAvailable === false;
+    const serviceJustEnabled = isServiceable === true && oldPincode?.isServiceable === false;
+
+    if (codJustEnabled || serviceJustEnabled) {
+      
+      // 5. Find all users who *already* have this pincode saved
+      const usersToNotify = await db.selectDistinct({ 
+          userId: UserAddressTable.userId 
+      })
+      .from(UserAddressTable)
+      .where(eq(UserAddressTable.postalCode, pincode));
+
+      if (usersToNotify.length > 0) {
+        let message = "";
+        let link = "/";
+
+        // 6. Determine the correct message (prioritizing COD)
+        if (codJustEnabled) {
+          message = `Good news! Cash on Delivery is now available for your address in ${pincode}.`;
+          link = '/cart';
+        } else if (serviceJustEnabled) {
+          message = `We've got you covered! We are now delivering to your area in ${pincode}.`;
+          link = '/';
+        }
+
+        // 7. Create notifications for all found users
+        const promises = usersToNotify.map(user => 
+            createNotification(
+                user.userId,
+                message,
+                link,
+                'system'
+            )
+        );
+        // Run in the background; don't make the admin wait
+        Promise.allSettled(promises);
+      }
+    }
+    // 🟢 END: Added Notification Logic
+
+    // 8. 🟢 Return success using your original data
+    return res.json({ success: true, data: updatedPincode });
+
   } catch (err) {
     console.error("updatePincode error:", err);
     return res.status(500).json({ success: false, msg: "Server error" });

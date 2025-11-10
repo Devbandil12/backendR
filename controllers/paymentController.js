@@ -24,6 +24,7 @@ import {
 // 🟢 1. Import the new Promotions Engine
 //    (Adjust the path '../helpers/priceEngine.js' if your file is in a different folder)
 import { calculatePriceBreakdown } from '../helpers/priceEngine.js';
+import { createNotification } from '../helpers/notificationManager.js'; // 👈 1. IMPORT
 
 
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
@@ -215,6 +216,12 @@ export const createOrder = async (req, res) => {
 
       // (This is the single, correct call to reduceStock)
       const affectedProductIds = await reduceStock(secureCartItems);
+      await createNotification(
+        user.id,
+        `Your COD order #${orderId} has been placed successfully.`,
+        `/myorder`,
+        'order'
+      );
 
       // (Clear cart logic)
       const variantIdsToClear = secureCartItems.map(item => item.variantId);

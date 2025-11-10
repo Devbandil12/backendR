@@ -21,7 +21,8 @@ import productRoutes from "./routes/products.js";
 import variantRoutes from "./routes/variants.js";
 import bundleRoutes from "./routes/bundles.js";
 import contactRoutes from "./routes/contact.js";
-
+import notificationRoutes from './routes/notifications.js';
+import promoRoutes from './routes/promoNotifications.js';
 const app = express();
 const server = http.createServer(app);
 
@@ -129,6 +130,8 @@ app.use("/api/products", productRoutes);
 app.use("/api/variants", variantRoutes);
 app.use("/api/bundles", bundleRoutes);
 app.use("/api/contact", contactRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/promos', promoRoutes);
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));

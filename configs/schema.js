@@ -27,6 +27,7 @@ export const usersRelations = relations(usersTable, ({ many }) => ({
   reviews: many(reviewsTable),
   cartItems: many(addToCartTable),
   wishlistItems: many(wishlistTable),
+  notifications: many(notificationsTable),
 }));
 
 export const querytable = pgTable("query", {
@@ -339,6 +340,26 @@ export const reviewsRelations = relations(reviewsTable, ({ one }) => ({
   }),
   user: one(usersTable, {
     fields: [reviewsTable.userId],
+    references: [usersTable.id],
+  }),
+}));
+
+
+export const notificationsTable = pgTable('notifications', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  message: text('message').notNull(),
+  link: text('link'), // e.g., /myorder/DA123456
+  isRead: boolean('is_read').default(false).notNull(),
+  type: varchar('type', { length: 50 }).default('general'), // e.g., 'order', 'coupon', 'system'
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  userIdIdx: index('idx_notifications_user_id').on(table.userId),
+}));
+
+export const notificationsRelations = relations(notificationsTable, ({ one }) => ({
+  user: one(usersTable, {
+    fields: [notificationsTable.userId],
     references: [usersTable.id],
   }),
 }));
