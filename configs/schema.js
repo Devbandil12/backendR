@@ -19,6 +19,9 @@ export const usersTable = pgTable('users', {
   dob: timestamp('dob', { withTimezone: true }).default(null),
   gender: text('gender').default(null),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  notify_order_updates: boolean('notify_order_updates').default(true).notNull(),
+  notify_promos: boolean('notify_promos').default(true).notNull(),
+  notify_pincode: boolean('notify_pincode').default(true).notNull()
 });
 
 export const usersRelations = relations(usersTable, ({ many }) => ({

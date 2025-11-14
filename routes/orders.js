@@ -236,7 +236,7 @@ router.put("/:id/status", async (req, res) => {
 
         // 🟢 Add order keys to invalidation list
         itemsToInvalidate.push({ key: makeAllOrdersKey() });
-        itemsToToInvalidate.push({ key: makeOrderKey(updatedOrder.id) });
+        itemsToInvalidate.push({ key: makeOrderKey(updatedOrder.id) });
         itemsToInvalidate.push({ key: makeUserOrdersKey(updatedOrder.userId) });
         itemsToInvalidate.push({ key: makeAdminOrdersReportKey() }); // Report data changed
 
