@@ -2,30 +2,39 @@
 import { db } from '../configs/index.js';
 import { couponsTable, productVariantsTable } from '../configs/schema.js';
 import { eq, inArray, and, isNull, gte, lte, or } from 'drizzle-orm';
-import { getPincodeDetails } from '../controllers/addressController.js'; // Adjust path if needed
+import { getPincodeDetails } from '../controllers/addressController.js'; 
 
-/**
- * This is the central "Promotions Engine".
- * It calculates all product totals, automatic offers, and manual coupons.
- * It is used by both priceController (for display) and paymentController (for charging).
- */
 export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) => {
   // 1. Initialize totals
   let originalTotal = 0;
   let productTotal = 0;
   let manualDiscountAmount = 0;
-  let offerDiscount = 0; // We'll use this to store the *winning* discount
-  let appliedOffers = []; // This will hold *only* the single best offer
+  let offerDiscount = 0; 
+  let appliedOffers = []; 
 
-  // 2. Get delivery details
-  const pincodeDetails = await getPincodeDetails(pincode);
-  const deliveryCharge = pincodeDetails ? pincodeDetails.deliveryCharge : 0;
-  const codAvailable = pincodeDetails ? pincodeDetails.codAvailable : false;
+  // 🟢 FIX 1: STRICT DELIVERY CHARGE HANDLING
+  // Only fetch details if a valid pincode is provided. 
+  // If pincode is null/undefined (Cart View), deliveryCharge must be 0.
+  let deliveryCharge = 0;
+  let codAvailable = false;
+
+  if (pincode) {
+    const pincodeDetails = await getPincodeDetails(pincode);
+    if (pincodeDetails) {
+      deliveryCharge = pincodeDetails.deliveryCharge;
+      codAvailable = pincodeDetails.codAvailable;
+    }
+  }
 
   // 3. Get full cart item details from DB
   const variantIds = cartItems.map(item => item.variantId);
   if (variantIds.length === 0) {
-    throw new Error("Cart is empty");
+     // Return zeroed out structure if empty
+     return { 
+        originalTotal: 0, productTotal: 0, deliveryCharge: 0, 
+        offerDiscount: 0, appliedOffers: [], discountAmount: 0, 
+        total: 0, codAvailable: false 
+     };
   }
   
   const fullCart = await db.query.productVariantsTable.findMany({
@@ -70,7 +79,6 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
       )
     );
     
-  // We'll find the best *possible* automatic offer
   let bestAutoOffer = null;
 
   for (const offer of autoCoupons) {
@@ -82,9 +90,6 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
     if (offer.minItemCount > 0 && fullCartWithQuantities.reduce((acc, item) => acc + item.quantity, 0) < offer.minItemCount) offerIsValid = false;
 
     if (offerIsValid) {
-      // 🟢 FIX: Changed 'else if' to 'if' so all offers are checked
-      
-      // A) "Free Item with Category" (e.g., Free 30ml with Combo)
       if (offer.discountType === 'free_item' && offer.cond_requiredCategory && offer.action_targetSize && !offer.action_buyX) {
         const hasRequiredCategory = fullCartWithQuantities.some(v => v.product.category === offer.cond_requiredCategory);
         if (hasRequiredCategory) {
@@ -100,7 +105,6 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
         } else { offerIsValid = false; }
       }
       
-      // B) "Buy X, Get Y Free" (Same Size)
       if (offer.discountType === 'free_item' && offer.action_buyX && offer.action_getY && offer.action_targetSize && !offer.cond_requiredSize) {
         const matchingItems = fullCartWithQuantities.filter(v => v.size === offer.action_targetSize);
         const totalMatchingQty = matchingItems.reduce((acc, item) => acc + item.quantity, 0);
@@ -114,7 +118,6 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
         } else { offerIsValid = false; }
       }
       
-      // C) "Buy X of Size A, Get Y of Size B Free"
       if (offer.discountType === 'free_item' && offer.action_buyX && offer.action_getY && offer.cond_requiredSize && offer.action_targetSize) {
         const matchingBoughtItems = fullCartWithQuantities.filter(v => v.size === offer.cond_requiredSize);
         const totalBoughtQty = matchingBoughtItems.reduce((acc, item) => acc + item.quantity, 0);
@@ -135,10 +138,8 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
         } else { offerIsValid = false; }
       }
 
-      // D) "Automatic Percent Off Cart"
       if (offer.discountType === 'percent') {
         let rawDiscount = Math.floor(productTotal * (offer.discountValue / 100));
-        // 🟢 FIX: Apply Max Discount Cap
         if (offer.maxDiscountAmount && rawDiscount > offer.maxDiscountAmount) {
           discountAmount = offer.maxDiscountAmount;
         } else {
@@ -146,19 +147,17 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
         }
       }
 
-      // E) "Automatic Flat Off Cart"
       if (offer.discountType === 'flat') {
         discountAmount = offer.discountValue;
       }
     }
     
-    // If this offer is valid and better than the last one, save it
     if (offerIsValid && discountAmount > (bestAutoOffer?.amount || 0)) {
       bestAutoOffer = {
         title: offer.code,
         amount: discountAmount,
         appliesToVariantId: appliesToVariantId,
-        offer: offer // 🟢 Store the full offer object
+        offer: offer 
       };
     }
   }
@@ -169,11 +168,10 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
       const [c] = await db.select().from(couponsTable).where(
         and(
           eq(couponsTable.code, couponCode),
-          eq(couponsTable.isAutomatic, false) // Only find manual coupons
+          eq(couponsTable.isAutomatic, false) 
         )
       );
       
-      // Check if the manual coupon is valid
       if (c) {
           const now = new Date();
           if (
@@ -185,48 +183,39 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
               let couponDiscount = 0;
               if (c.discountType === 'percent') {
                 couponDiscount = Math.floor((c.discountValue / 100) * productTotal);
-                // 🟢 FIX: Apply Max Discount Cap
                 if (c.maxDiscountAmount && couponDiscount > c.maxDiscountAmount) {
                   couponDiscount = c.maxDiscountAmount;
                 }
               } else {
                 couponDiscount = c.discountValue;
               }
-              
-              manualCoupon = {
-                amount: couponDiscount,
-              };
+              manualCoupon = { amount: couponDiscount };
           }
       }
   }
 
   // 7. --- APPLY THE WINNING DISCOUNT ---
-  
   if (manualCoupon) {
-    // A manual coupon was entered and is valid
-    // Per your request, the manual coupon *always* wins
     manualDiscountAmount = manualCoupon.amount;
     offerDiscount = 0;
-    appliedOffers = []; // Wipe out auto-offers
+    appliedOffers = []; 
   } else if (bestAutoOffer) {
-    // No manual coupon was entered, so apply the best automatic offer
     manualDiscountAmount = 0;
     offerDiscount = bestAutoOffer.amount;
-    appliedOffers = [bestAutoOffer]; // Add the best one
+    appliedOffers = [bestAutoOffer]; 
   }
-  // -------------------------------------------------
 
   // 8. Calculate Final Total
   const total = Math.max(productTotal - offerDiscount - manualDiscountAmount + deliveryCharge, 0);
 
-  // 9. Return the full, secure breakdown
+  // 9. Return result
   return { 
     originalTotal,
     productTotal,
     deliveryCharge,
-    offerDiscount: offerDiscount, // Total auto-offer discount
-    appliedOffers, // The array of the single best offer
-    discountAmount: manualDiscountAmount, // Manual coupon discount
+    offerDiscount: offerDiscount, 
+    appliedOffers, 
+    discountAmount: manualDiscountAmount, 
     total,
     codAvailable 
   };
