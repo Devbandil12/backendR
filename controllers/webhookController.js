@@ -3,8 +3,7 @@
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
-import { eq } from 'drizzle-orm';
-// Import new helpers
+import { eq, or } from 'drizzle-orm'; // 🟢 ADDED 'or'
 import { invalidateMultiple } from '../invalidateHelpers.js';
 import {
   makeAllOrdersKey,
@@ -62,37 +61,45 @@ const razorpayWebhookHandler = async (req, res) => {
   const now = new Date().toISOString();
 
   try {
-    // 🟢 Fetch the existing order to check its current status
+    // 🟢 FIX: Search by Refund ID OR Payment ID (Transaction ID)
+    // This fixes the race condition where refund_id isn't in DB yet.
     const [existingOrder] = await db
       .select({
-        id: ordersTable.id, // Need id
-        userId: ordersTable.userId, // Need userId
+        id: ordersTable.id,
+        userId: ordersTable.userId,
         refund_status: ordersTable.refund_status,
         refund_speed: ordersTable.refund_speed,
       })
       .from(ordersTable)
-      .where(eq(ordersTable.refund_id, entity.id));
+      .where(or(
+        eq(ordersTable.refund_id, entity.id),
+        eq(ordersTable.transactionId, entity.payment_id) // 👈 Fallback lookup
+      ));
 
     if (!existingOrder) {
       console.warn(`⚠️ Order not found for refund ID: ${entity.id}`);
-      return res.status(404).send('Order not found');
+      // 🟢 Return 200 instead of 404 to stop Razorpay from retrying/disabling the webhook
+      return res.status(200).send('Order not found (Ignored)');
     }
 
-    let cacheNeedsInvalidation = false; // Flag to invalidate once
+    let cacheNeedsInvalidation = false;
 
+    // 🟢 IMPORTANT: Use 'existingOrder.id' for updates, NOT 'refund_id'
+    // because refund_id might be null in the DB during the race condition.
+    
     switch (event) {
       case 'refund.created':
         if (existingOrder.refund_status !== 'in_progress') {
           await db.update(ordersTable).set({
             refund_status: 'in_progress',
+            refund_id: entity.id, // Ensure ID is saved if it was missing
             refund_initiated_at: safeDate(entity.created_at),
             refund_speed: entity.speed_processed,
             updatedAt: now,
-          }).where(eq(ordersTable.refund_id, entity.id));
+          }).where(eq(ordersTable.id, existingOrder.id)); // 👈 Use Primary Key
+          
           console.log(`🔄 refund.created → in_progress [${entity.id}]`);
-          cacheNeedsInvalidation = true; // Mark for invalidation
-        } else {
-          console.log(`ℹ️ Duplicate event for refund created [${entity.id}]`);
+          cacheNeedsInvalidation = true;
         }
         break;
 
@@ -101,11 +108,10 @@ const razorpayWebhookHandler = async (req, res) => {
           await db.update(ordersTable).set({
             refund_speed: entity.speed_processed,
             updatedAt: now,
-          }).where(eq(ordersTable.refund_id, entity.id));
-          console.log(`🔁 refund.speed_changed → ${entity.speed_processed} [${entity.id}]`);
-          cacheNeedsInvalidation = true; // Mark for invalidation
-        } else {
-          console.log(`ℹ️ Duplicate speed change event [${entity.id}]`);
+          }).where(eq(ordersTable.id, existingOrder.id));
+
+          console.log(`🔁 refund.speed_changed → ${entity.speed_processed}`);
+          cacheNeedsInvalidation = true;
         }
         break;
 
@@ -117,11 +123,10 @@ const razorpayWebhookHandler = async (req, res) => {
             refund_speed: entity.speed_processed,
             paymentStatus: 'refunded',
             updatedAt: now,
-          }).where(eq(ordersTable.refund_id, entity.id));
+          }).where(eq(ordersTable.id, existingOrder.id));
+
           console.log(`✅ refund.processed → processed [${entity.id}]`);
-          cacheNeedsInvalidation = true; // Mark for invalidation
-        } else {
-          console.log(`ℹ️ Duplicate event for processed refund [${entity.id}]`);
+          cacheNeedsInvalidation = true;
         }
         break;
 
@@ -130,19 +135,14 @@ const razorpayWebhookHandler = async (req, res) => {
           await db.update(ordersTable).set({
             refund_status: 'failed',
             updatedAt: now,
-          }).where(eq(ordersTable.refund_id, entity.id));
+          }).where(eq(ordersTable.id, existingOrder.id));
+
           console.log(`❌ refund.failed → failed [${entity.id}]`);
-          cacheNeedsInvalidation = true; // Mark for invalidation
-        } else {
-          console.log(`ℹ️ Duplicate failed event [${entity.id}]`);
+          cacheNeedsInvalidation = true;
         }
         break;
-
-      default:
-        console.log(`ℹ️ Event ignored: ${event}`);
     }
 
-    // Invalidate cache if any DB update occurred
     if (cacheNeedsInvalidation) {
       await invalidateOrderCaches(existingOrder);
     }

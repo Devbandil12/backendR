@@ -1,15 +1,13 @@
 import Razorpay from 'razorpay';
 import { db } from '../configs/index.js';
-// 🟢 FIX: Import all required tables
 import {
     ordersTable,
     orderItemsTable,
     productsTable,
     productVariantsTable,
-    productBundlesTable // 👈 Keep this for bundle content lookup
+    productBundlesTable
 } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
-// Import new helpers
 import { invalidateMultiple } from '../invalidateHelpers.js';
 import {
     makeAllProductsKey,
@@ -18,8 +16,13 @@ import {
     makeUserOrdersKey,
     makeOrderKey,
 } from '../cacheKeys.js';
-import { createNotification } from '../helpers/notificationManager.js'; // 👈 1. IMPORT
+import { createNotification } from '../helpers/notificationManager.js';
 
+// 🟢 Helper: Safely convert timestamp to Date object
+const safeDate = (timestamp) => {
+    if (!timestamp || isNaN(timestamp)) return null;
+    return new Date(timestamp * 1000);
+};
 
 export const refundOrder = async (req, res) => {
     const razorpay = new Razorpay({
@@ -33,7 +36,7 @@ export const refundOrder = async (req, res) => {
             return res.status(400).json({ success: false, error: "Missing orderId or amount" });
         }
 
-        // Step 1: Fetch order from DB (Unchanged)
+        // Step 1: Fetch order from DB
         const [order] = await db
             .select({
                 paymentId: ordersTable.transactionId,
@@ -47,14 +50,16 @@ export const refundOrder = async (req, res) => {
         if (!order) {
             return res.status(404).json({ success: false, error: "Order not found" });
         }
-        // 🟢 MODIFIED: Allow refunding from 'Order Placed' or 'Processing' etc.
-        // You might want to adjust this logic based on your business rules.
+
         if (order.status === "Delivered" || order.status === "Order Cancelled") {
             return res.status(400).json({ success: false, error: `Cannot refund an order that is already ${order.status}` });
         }
         if (order.refundId) {
             return res.status(400).json({ success: false, error: "Refund already initiated" });
         }
+
+        let refund = null;
+
         if (!order.paymentId) {
             // This is a COD order, just update status
             await db
@@ -65,29 +70,20 @@ export const refundOrder = async (req, res) => {
                     updatedAt: new Date(),
                 })
                 .where(eq(ordersTable.id, orderId));
-
-            await createNotification(
-                order.userId,
-                `Your COD order #${orderId} has been successfully cancelled.`,
-                `/myorder`,
-                'order'
-            );
-            // We still need to restore stock for COD orders
-            // (Proceed to Step 8)
         } else {
-            // --- Online Payment Refund Logic (Steps 2-7) ---
+            // --- Online Payment Refund Logic ---
 
-            // Step 2: Convert amount to paise (Unchanged)
+            // Step 2: Convert amount to paise
             const amountInPaise = Math.round(amount * 100);
             let refundInPaise = Math.round(amountInPaise * 0.95);
             if (refundInPaise < 100) {
                 refundInPaise = amountInPaise;
             }
 
-            // Step 3: Fetch payment (Unchanged)
+            // Step 3: Fetch payment
             const payment = await razorpay.payments.fetch(order.paymentId);
 
-            // Step 4: Validate (Unchanged)
+            // Step 4: Validate
             const alreadyRefunded = (payment.refunds || []).reduce((sum, r) => sum + (r.amount || 0), 0);
             const maxRefundable = payment.amount - alreadyRefunded;
             if (refundInPaise > maxRefundable) {
@@ -97,16 +93,22 @@ export const refundOrder = async (req, res) => {
                 });
             }
 
-            // Step 5: Call refund (Unchanged)
+            // Step 5: Call refund
             const refundInit = await razorpay.payments.refund(order.paymentId, {
                 amount: refundInPaise,
                 speed: 'normal',
             });
 
-            // Step 6: Fetch accurate refund status (Unchanged)
-            const refund = await razorpay.refunds.fetch(refundInit.id);
+            // Step 6: Fetch accurate refund status
+            refund = await razorpay.refunds.fetch(refundInit.id);
 
-            // Step 7: Persist refund data in DB (Unchanged)
+            // 🟢 FIX: Use safeDate helper to prevent "Invalid time value" crash
+            const initiatedAt = refund.created_at ? safeDate(refund.created_at) : new Date();
+            const completedAt = (refund.status === 'processed' && refund.processed_at)
+                ? safeDate(refund.processed_at)
+                : null;
+
+            // Step 7: Persist refund data in DB
             await db
                 .update(ordersTable)
                 .set({
@@ -116,37 +118,37 @@ export const refundOrder = async (req, res) => {
                     refund_amount: refund.amount,
                     refund_status: refund.status,
                     refund_speed: refund.speed_processed,
-                    refund_initiated_at: new Date(refund.created_at * 1000),
-                    refund_completed_at: refund.status === 'processed'
-                        ? new Date(refund.processed_at * 1000)
-                        : null,
+                    refund_initiated_at: initiatedAt,
+                    refund_completed_at: completedAt,
                     updatedAt: new Date(),
                 })
                 .where(eq(ordersTable.id, orderId));
         }
 
 
+        // Build notification message
+        const notifMessage = refund
+            ? `Your refund for order #${orderId} has been ${refund.status}.`
+            : `Your order #${orderId} has been cancelled.`;
+
         await createNotification(
             order.userId,
-            `Your refund for order #${orderId} has been ${refund.status}.`,
+            notifMessage,
             `/myorder`,
             'order'
         );
 
-        // 🟢 --- START: Step 8: Restore stock logic (FIXED for bundles) ---
-        // (This now runs for both COD and Online refunds)
-
-        // Get all items from the order
+        // 🟢 --- START: Step 8: Restore stock logic ---
         const orderItems = await db
             .select({
-                variantId: orderItemsTable.variantId, // 👈 Get variantId
+                variantId: orderItemsTable.variantId,
                 quantity: orderItemsTable.quantity,
-                productId: orderItemsTable.productId, // 👈 Get parent productId for cache
+                productId: orderItemsTable.productId,
             })
             .from(orderItemsTable)
             .where(eq(orderItemsTable.orderId, orderId));
 
-        const affectedProductIds = new Set(); // To collect all products for cache invalidation
+        const affectedProductIds = new Set();
         const itemsToInvalidate = [
             { key: makeAllProductsKey(), prefix: true },
             { key: makeAllOrdersKey(), prefix: true },
@@ -155,14 +157,13 @@ export const refundOrder = async (req, res) => {
         ];
 
         for (const item of orderItems) {
-            // Add the item's main product ID to the set (the combo wrapper)
             affectedProductIds.add(item.productId);
 
-            // 1. Restore stock to the COMBO WRAPPER variant itself
+            // 1. Restore stock to the item variant
             await db
-                .update(productVariantsTable) // 👈 Update productVariantsTable
+                .update(productVariantsTable)
                 .set({ stock: sql`${productVariantsTable.stock} + ${item.quantity}` })
-                .where(eq(productVariantsTable.id, item.variantId)); // 👈 For the combo's variant ID
+                .where(eq(productVariantsTable.id, item.variantId));
 
             // 2. Check if this item is a bundle
             const bundleContents = await db
@@ -176,14 +177,16 @@ export const refundOrder = async (req, res) => {
                     const stockToRestore = content.quantity * item.quantity;
 
                     await db
-                        .update(productVariantsTable) // 👈 Update productVariantsTable
+                        .update(productVariantsTable)
                         .set({ stock: sql`${productVariantsTable.stock} + ${stockToRestore}` })
-                        .where(eq(productVariantsTable.id, content.contentVariantId)); // 👈 For the content's ID
+                        .where(eq(productVariantsTable.id, content.contentVariantId));
 
-                    // Find the parent product of this content item for cache invalidation
-                    const [contentVariant] = await db.select({ productId: productVariantsTable.productId }).from(productVariantsTable).where(eq(productVariantsTable.id, content.contentVariantId));
+                    const [contentVariant] = await db.select({ productId: productVariantsTable.productId })
+                        .from(productVariantsTable)
+                        .where(eq(productVariantsTable.id, content.contentVariantId));
+                    
                     if (contentVariant) {
-                        affectedProductIds.add(contentVariant.productId); // Add the content's product ID
+                        affectedProductIds.add(contentVariant.productId);
                     }
                 }
             }
@@ -192,13 +195,11 @@ export const refundOrder = async (req, res) => {
 
 
         // 🟢 --- Step 9: Invalidate caches ---
-        // Add all unique product IDs to the invalidation list
         for (const pid of affectedProductIds) {
             itemsToInvalidate.push({ key: makeProductKey(pid), prefix: true });
         }
 
         await invalidateMultiple(itemsToInvalidate);
-        // 🟢 --- END: Step 9: Invalidate caches ---
 
         return res.json({ success: true, message: "Order successfully cancelled and stock restored." });
 
