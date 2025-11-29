@@ -7,13 +7,14 @@ import {
   productVariantsTable,
   wishlistTable,
   usersTable,
-  productBundlesTable, // 🟢 FIX: Import productBundlesTable
+  productBundlesTable, 
+  savedForLaterTable // 🟢 IMPORTED
 } from "../configs/schema.js";
 import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
-import * as keys from "../cacheKeys.js"; // 🟢 Use 'keys' to avoid name conflicts
+import * as keys from "../cacheKeys.js";
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ const router = express.Router();
    🛒 CART ROUTES
 ========================================================= */
 
-// 🟢 GET /api/cart/:userId — Get all cart items for a user
+// GET /api/cart/:userId — Get all cart items for a user
 router.get(
   "/:userId",
   cache((req) => keys.makeCartKey(req.params.userId), 300),
@@ -31,20 +32,17 @@ router.get(
       const cartItems = await db.query.addToCartTable.findMany({
           where: eq(addToCartTable.userId, userId),
           with: {
-              variant: { with: { product: true } } // Get variant and its parent product
+              variant: { with: { product: true } }
           }
       });
 
-      // 🔽 --- START NEW LOGIC --- 🔽
-      // Now, for each item, check if it's a bundle
       const detailedCartItems = await Promise.all(cartItems.map(async (item) => {
-        // This query will now work because productBundlesTable is imported
         const bundleContents = await db.query.productBundlesTable.findMany({
           where: eq(productBundlesTable.bundleVariantId, item.variantId),
           with: {
-            content: { // Get the full "content" variant
+            content: { 
               with: {
-                product: true // And also get its parent product
+                product: true 
               }
             }
           }
@@ -52,9 +50,8 @@ router.get(
 
         if (bundleContents.length > 0) {
           return {
-            ...item, // The main cart item (quantity, etc.)
+            ...item,
             isBundle: true,
-            // Format the contents to be clean for the frontend
             contents: bundleContents.map(c => ({
               quantity: c.quantity,
               name: c.content.product.name,
@@ -63,14 +60,9 @@ router.get(
           };
         }
         
-        // Not a bundle, return as is
         return { ...item, isBundle: false };
       }));
-      // 🔼 --- END NEW LOGIC --- 🔼
 
-      // 🟢 MODIFIED: Return the new detailed list
-      // This response is slightly different from your original,
-      // it's now item.variant.product.name, not item.product.name
       const finalItems = detailedCartItems.map(item => ({
          quantity: item.quantity,
          cartId: item.id,
@@ -89,38 +81,20 @@ router.get(
   }
 );
 
-// 🟢 POST /api/cart — Add product to cart
+// POST /api/cart — Add product to cart
 router.post("/", async (req, res) => {
   try {
-    // 🟢 MODIFIED: Receives variantId and productId
     const { userId, productId, variantId, quantity } = req.body;
 
     if (!userId || !productId || !variantId || !quantity) {
-      return res.status(400).json({ error: "Missing required fields: userId, productId, variantId, quantity" });
+      return res.status(400).json({ error: "Missing required fields" });
     }
-
-    // 🔴 This is incorrect based on your schema. productId is not in addToCartTable.
-    // However, the frontend sends it, so we just need to insert what the DB expects.
-    // The cart context logic *looks* like it sends productId, but the schema doesn't have it.
-    // Let's check schema.js for addToCartTable...
-    // export const addToCartTable = pgTable('add_to_cart', {
-    //   id: uuid('id').defaultRandom().primaryKey(),
-    //   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-    //   variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }), 
-    //   quantity: integer('quantity').notNull().default(1),
-    //   addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
-    // });
-    //
-    // ✅ You are correct. The cart.js POST route has an error. It accepts `productId`
-    // but the schema doesn't. And your `add-custom-bundle` route *also*
-    // incorrectly tries to insert `productId`.
-    // I will fix BOTH POST routes in this file.
 
     const [newItem] = await db
       .insert(addToCartTable)
       .values({ 
         userId, 
-        variantId, // Only insert fields that are in the schema
+        variantId, 
         quantity 
       })
       .returning();
@@ -134,10 +108,9 @@ router.post("/", async (req, res) => {
   }
 });
 
-// 🟢 PUT /api/cart/:userId/:variantId — Update quantity
+// PUT /api/cart/:userId/:variantId — Update quantity
 router.put("/:userId/:variantId", async (req, res) => {
   try {
-    // 🟢 MODIFIED: Uses variantId
     const { userId, variantId } = req.params;
     const { quantity } = req.body;
 
@@ -147,7 +120,7 @@ router.put("/:userId/:variantId", async (req, res) => {
       .where(
         and(
           eq(addToCartTable.userId, userId),
-          eq(addToCartTable.variantId, variantId) // 🟢 MODIFIED
+          eq(addToCartTable.variantId, variantId)
         )
       );
 
@@ -160,10 +133,9 @@ router.put("/:userId/:variantId", async (req, res) => {
   }
 });
 
-// 🟢 DELETE /api/cart/:userId/:variantId — Remove one product
+// DELETE /api/cart/:userId/:variantId — Remove one product
 router.delete("/:userId/:variantId", async (req, res) => {
   try {
-    // 🟢 MODIFIED: Uses variantId
     const { userId, variantId } = req.params;
 
     await db
@@ -171,7 +143,7 @@ router.delete("/:userId/:variantId", async (req, res) => {
       .where(
         and(
           eq(addToCartTable.userId, userId),
-          eq(addToCartTable.variantId, variantId) // 🟢 MODIFIED
+          eq(addToCartTable.variantId, variantId)
         )
       );
 
@@ -184,7 +156,7 @@ router.delete("/:userId/:variantId", async (req, res) => {
   }
 });
 
-// 🟢 DELETE /api/cart/:userId — Clear all items
+// DELETE /api/cart/:userId — Clear all items
 router.delete("/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -197,9 +169,9 @@ router.delete("/:userId", async (req, res) => {
   }
 });
 
-// 🟢 POST /api/cart/merge — Merge guest cart with user
+// POST /api/cart/merge — Merge guest cart with user
 router.post("/merge", async (req, res) => {
-  const { userId, guestCart } = req.body; // 🟢 guestCart: [{ variantId, quantity, productId }]
+  const { userId, guestCart } = req.body;
 
   if (!userId || !Array.isArray(guestCart) || guestCart.length === 0) {
     return res
@@ -209,7 +181,6 @@ router.post("/merge", async (req, res) => {
 
   try {
     await db.transaction(async (tx) => {
-      // 🟢 MODIFIED: Use variantId
       const guestVariantIds = guestCart.map((item) => item.variantId);
       const existingCartItems = await tx
         .select()
@@ -217,7 +188,7 @@ router.post("/merge", async (req, res) => {
         .where(
           and(
             eq(addToCartTable.userId, userId),
-            inArray(addToCartTable.variantId, guestVariantIds) // 🟢 MODIFIED
+            inArray(addToCartTable.variantId, guestVariantIds)
           )
         );
 
@@ -227,7 +198,6 @@ router.post("/merge", async (req, res) => {
 
       const promises = guestCart.map((guestItem) => {
         if (existingVariantIds.has(guestItem.variantId)) {
-          // Update quantity for existing item
           const existingItem = existingCartItems.find(
             (item) => item.variantId === guestItem.variantId
           );
@@ -238,14 +208,12 @@ router.post("/merge", async (req, res) => {
             .where(
               and(
                 eq(addToCartTable.userId, userId),
-                eq(addToCartTable.variantId, guestItem.variantId) // 🟢 MODIFIED
+                eq(addToCartTable.variantId, guestItem.variantId)
               )
             );
         } else {
-          // Insert new item
           return tx.insert(addToCartTable).values({
             userId,
-            // productId: guestItem.productId, // 🔴 This field doesn't exist in the table
             variantId: guestItem.variantId, 
             quantity: guestItem.quantity,
           });
@@ -263,17 +231,158 @@ router.post("/merge", async (req, res) => {
 });
 
 /* =========================================================
+   🕒 SAVED FOR LATER ROUTES (NEW)
+========================================================= */
+
+// GET /api/cart/saved-for-later/:userId
+/* =========================================================
+   🕒 SAVED FOR LATER ROUTES
+========================================================= */
+
+// 🟢 GET /api/cart/saved-for-later/:userId
+router.get("/saved-for-later/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const savedItems = await db.query.savedForLaterTable.findMany({
+      where: eq(savedForLaterTable.userId, userId),
+      with: {
+        variant: { with: { product: true } },
+      },
+    });
+    
+    // Transform to match frontend expectations
+    const formatted = savedItems.map(item => ({
+      ...item,
+      product: item.variant.product,
+    }));
+
+    res.json(formatted);
+  } catch (error) {
+    console.error("❌ Error fetching saved items:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 🟢 POST /api/cart/save-for-later — Move from Cart to Saved (Handles Merging)
+router.post("/save-for-later", async (req, res) => {
+  const { userId, variantId, quantity } = req.body;
+  if (!userId || !variantId) return res.status(400).json({ error: "Missing fields" });
+
+  try {
+    await db.transaction(async (tx) => {
+      // 1. Remove from Cart
+      await tx.delete(addToCartTable).where(
+        and(eq(addToCartTable.userId, userId), eq(addToCartTable.variantId, variantId))
+      );
+
+      // 2. Check if THIS variant is already in Saved
+      // (This prevents duplicates from showing up)
+      const existing = await tx.query.savedForLaterTable.findFirst({
+        where: and(
+          eq(savedForLaterTable.userId, userId),
+          eq(savedForLaterTable.variantId, variantId)
+        ),
+      });
+
+      // 3. Insert or Update Saved
+      if (existing) {
+        // If it exists, just increase quantity
+        await tx.update(savedForLaterTable)
+          .set({ quantity: existing.quantity + (quantity || 1) })
+          .where(eq(savedForLaterTable.id, existing.id));
+      } else {
+        // If it doesn't exist, create new row
+        await tx.insert(savedForLaterTable).values({
+          userId,
+          variantId,
+          quantity: quantity || 1,
+        });
+      }
+    });
+
+    await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("❌ Error saving for later:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 🟢 POST /api/cart/move-to-cart — Move from Saved to Cart (Handles Merging)
+router.post("/move-to-cart", async (req, res) => {
+  const { userId, variantId, quantity } = req.body;
+  if (!userId || !variantId) return res.status(400).json({ error: "Missing fields" });
+
+  try {
+    await db.transaction(async (tx) => {
+      // 1. Remove from Saved
+      await tx.delete(savedForLaterTable).where(
+        and(eq(savedForLaterTable.userId, userId), eq(savedForLaterTable.variantId, variantId))
+      );
+
+      // 2. Check if already in Cart
+      const existing = await tx.query.addToCartTable.findFirst({
+        where: and(eq(addToCartTable.userId, userId), eq(addToCartTable.variantId, variantId)),
+      });
+
+      // 3. Insert or Update Cart
+      if (existing) {
+        await tx.update(addToCartTable)
+          .set({ quantity: existing.quantity + (quantity || 1) })
+          .where(eq(addToCartTable.id, existing.id));
+      } else {
+        await tx.insert(addToCartTable).values({
+          userId,
+          variantId,
+          quantity: quantity || 1,
+        });
+      }
+    });
+
+    await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("❌ Error moving to cart:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 🟢 DELETE /api/cart/saved-for-later/:userId/:variantId
+router.delete("/saved-for-later/:userId/:variantId", async (req, res) => {
+  try {
+    const { userId, variantId } = req.params;
+    await db.delete(savedForLaterTable).where(
+      and(eq(savedForLaterTable.userId, userId), eq(savedForLaterTable.variantId, variantId))
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error("❌ Error removing saved item:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// 🔴 TEMPORARY ROUTE: Run once to fix your "All sizes showing" issue
+// Usage: Open browser to http://localhost:YOUR_PORT/api/cart/cleanup-saved/YOUR_USER_ID
+router.get("/cleanup-saved/:userId", async (req, res) => {
+  try {
+    await db.delete(savedForLaterTable).where(eq(savedForLaterTable.userId, req.params.userId));
+    res.json({ message: "SUCCESS: All saved items cleared. Please test 'Save for Later' again now." });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* =========================================================
    💖 WISHLIST ROUTES
 ========================================================= */
 
-// 🟢 GET /api/cart/wishlist/:userId — Get wishlist items
+// GET /api/cart/wishlist/:userId
 router.get(
   "/wishlist/:userId",
   cache((req) => keys.makeWishlistKey(req.params.userId), 300),
   async (req, res) => {
     try {
       const { userId } = req.params;
-      // 🟢 MODIFIED: Join all three tables
       const wishlistItems = await db
         .select({
           wishlistId: wishlistTable.id,
@@ -295,29 +404,17 @@ router.get(
   }
 );
 
-// 🟢 POST /api/cart/wishlist — Add product to wishlist
+// POST /api/cart/wishlist
 router.post("/wishlist", async (req, res) => {
   try {
-    // 🟢 MODIFIED: Receives variantId and productId
     const { userId, productId, variantId } = req.body;
     if (!userId || !productId || !variantId) {
-      return res.status(400).json({ error: "Missing required fields: userId, productId, variantId" });
+      return res.status(400).json({ error: "Missing required fields" });
     }
-    // Let's check schema.js for wishlistTable...
-    // export const wishlistTable = pgTable("wishlist_table", {
-    //   id: uuid("id").defaultRandom().primaryKey(),
-    //   userId: uuid("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-    //   variantId: uuid("variant_id").notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
-    //   addedAt: timestamp("added_at", { withTimezone: true }).defaultNow(),
-    // });
-    //
-    // ✅ Another bug found. The schema for wishlistTable does NOT have productId.
-    // I will fix this insert as well.
     const [newItem] = await db
       .insert(wishlistTable)
       .values({ 
         userId, 
-        // productId, // 🔴 This field doesn't exist in the table
         variantId 
       })
       .returning();
@@ -330,10 +427,9 @@ router.post("/wishlist", async (req, res) => {
   }
 });
 
-// 🟢 DELETE /api/cart/wishlist/:userId/:variantId — Remove item
+// DELETE /api/cart/wishlist/:userId/:variantId
 router.delete("/wishlist/:userId/:variantId", async (req, res) => {
   try {
-    // 🟢 MODIFIED: Uses variantId
     const { userId, variantId } = req.params;
 
     await db
@@ -341,7 +437,7 @@ router.delete("/wishlist/:userId/:variantId", async (req, res) => {
       .where(
         and(
           eq(wishlistTable.userId, userId),
-          eq(wishlistTable.variantId, variantId) // 🟢 MODIFIED
+          eq(wishlistTable.variantId, variantId)
         )
       );
 
@@ -354,9 +450,9 @@ router.delete("/wishlist/:userId/:variantId", async (req, res) => {
   }
 });
 
-// 🟢 POST /api/cart/wishlist/merge — Merge guest wishlist
+// POST /api/cart/wishlist/merge
 router.post("/wishlist/merge", async (req, res) => {
-  const { userId, guestWishlist } = req.body; // 🟢 guestWishlist: [{variantId, productId}]
+  const { userId, guestWishlist } = req.body;
 
   if (!userId || !Array.isArray(guestWishlist) || guestWishlist.length === 0) {
     return res
@@ -366,7 +462,6 @@ router.post("/wishlist/merge", async (req, res) => {
 
   try {
     await db.transaction(async (tx) => {
-      // 🟢 MODIFIED: Use variantId
       const guestVariantIds = guestWishlist.map(item => item.variantId);
       const existingItems = await tx
         .select({ variantId: wishlistTable.variantId })
@@ -374,7 +469,7 @@ router.post("/wishlist/merge", async (req, res) => {
         .where(
           and(
             eq(wishlistTable.userId, userId),
-            inArray(wishlistTable.variantId, guestVariantIds) // 🟢 MODIFIED
+            inArray(wishlistTable.variantId, guestVariantIds)
           )
         );
 
@@ -385,7 +480,6 @@ router.post("/wishlist/merge", async (req, res) => {
         await tx.insert(wishlistTable).values(
           newItems.map((item) => ({
             userId,
-            // productId: item.productId, // 🔴 This field doesn't exist in the table
             variantId: item.variantId, 
           }))
         );
@@ -402,7 +496,7 @@ router.post("/wishlist/merge", async (req, res) => {
   }
 });
 
-// 🟢 DELETE /api/cart/wishlist/:userId — Clear wishlist
+// DELETE /api/cart/wishlist/:userId
 router.delete("/wishlist/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -424,7 +518,6 @@ router.get("/admin/abandoned", async (req, res) => {
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    // 🟢 MODIFIED: Join all three tables
     const abandonedItems = await db
       .select({
         cartItem: addToCartTable,
@@ -438,8 +531,8 @@ router.get("/admin/abandoned", async (req, res) => {
       })
       .from(addToCartTable)
       .innerJoin(usersTable, eq(addToCartTable.userId, usersTable.id))
-      .innerJoin(productVariantsTable, eq(addToCartTable.variantId, productVariantsTable.id)) // 🟢 MODIFIED
-      .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id)) // 🟢 MODIFIED
+      .innerJoin(productVariantsTable, eq(addToCartTable.variantId, productVariantsTable.id))
+      .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
       .where(
         and(
           lt(addToCartTable.addedAt, twoHoursAgo),
@@ -460,7 +553,6 @@ router.get("/admin/wishlist-stats", async (req, res) => {
   try {
     const stats = await db
       .select({
-        // 🟢 FIXED: Get productId from the productVariantsTable
         productId: productVariantsTable.productId,
         variantId: wishlistTable.variantId,
         productName: productsTable.name,
@@ -472,7 +564,6 @@ router.get("/admin/wishlist-stats", async (req, res) => {
       .innerJoin(productVariantsTable, eq(wishlistTable.variantId, productVariantsTable.id))
       .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
       .groupBy(
-        // 🟢 FIXED: Group by the correct table's column
         productVariantsTable.productId,
         wishlistTable.variantId,
         productsTable.name,
@@ -489,10 +580,7 @@ router.get("/admin/wishlist-stats", async (req, res) => {
   }
 });
 
-// Add this route inside routes/cart.js
-
 router.post("/add-custom-bundle", async (req, res) => {
-  // 1. Get the 4 selected variant IDs and the template product ID
   const { userId, templateVariantId, contentVariantIds } = req.body;
 
   if (!userId || !templateVariantId || !Array.isArray(contentVariantIds) || contentVariantIds.length !== 4) {
@@ -501,27 +589,23 @@ router.post("/add-custom-bundle", async (req, res) => {
 
   try {
     const newCustomBundle = await db.transaction(async (tx) => {
-      // 2. Get the template variant to copy its price, name, etc.
       const templateVariant = await tx.query.productVariantsTable.findFirst({
         where: eq(productVariantsTable.id, templateVariantId),
       });
 
       if (!templateVariant) throw new Error("Template variant not found.");
 
-      // 3. Create a NEW, unique variant in the database
-      // We make it "archived" so it doesn't show up in public listings
       const [newVariant] = await tx.insert(productVariantsTable).values({
         productId: templateVariant.productId,
-        name: `Custom Combo - ${userId.slice(0, 8)}`, // Unique name
+        name: `Custom Combo - ${userId.slice(0, 8)}`, 
         size: templateVariant.size,
-        oprice: templateVariant.oprice, // The pre-defined price!
+        oprice: templateVariant.oprice,
         discount: templateVariant.discount,
         costPrice: templateVariant.costPrice,
-        stock: 1, // Stock of 1, since this is a unique item
-        isArchived: true, // Hide it from the public store
+        stock: 1, 
+        isArchived: true, 
       }).returning();
 
-      // 4. Link the 4 selected contents to this new variant
       const bundleEntries = contentVariantIds.map(contentId => ({
         bundleVariantId: newVariant.id,
         contentVariantId: contentId,
@@ -529,18 +613,15 @@ router.post("/add-custom-bundle", async (req, res) => {
       }));
       await tx.insert(productBundlesTable).values(bundleEntries);
 
-      // 5. Add this new, unique variant to the user's cart
       const [cartItem] = await tx.insert(addToCartTable).values({
         userId: userId,
         variantId: newVariant.id,
-        // productId: newVariant.productId, // 🔴 This field doesn't exist in the table
         quantity: 1,
       }).returning();
 
       return cartItem;
     });
     
-    // 6. Invalidate the user's cart cache
     await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
     res.status(201).json(newCustomBundle);
 

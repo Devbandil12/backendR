@@ -31,6 +31,7 @@ export const usersRelations = relations(usersTable, ({ many }) => ({
   cartItems: many(addToCartTable),
   wishlistItems: many(wishlistTable),
   notifications: many(notificationsTable),
+  savedItems: many(savedForLaterTable), 
 }));
 
 export const querytable = pgTable("query", {
@@ -161,6 +162,28 @@ export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
     fields: [wishlistTable.variantId],
     references: [productVariantsTable.id],
   }),
+}));
+
+// 🟢 NEW: Table for "Save for Later" items (distinct from Wishlist)
+export const savedForLaterTable = pgTable('saved_for_later', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
+  quantity: integer('quantity').notNull().default(1), // Preserves the quantity from the cart
+  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
+});
+
+
+// 🟢 NEW: Relations for savedForLaterTable
+export const savedForLaterRelations = relations(savedForLaterTable, ({ one }) => ({
+  user: one(usersTable, {
+    fields: [savedForLaterTable.userId],
+    references: [usersTable.id],
+  }),
+  variant: one(productVariantsTable, {
+    fields: [savedForLaterTable.variantId],
+    references: [productVariantsTable.id],
+  })
 }));
 
 // 🟢 --- START: MODIFIED ordersTable ---
