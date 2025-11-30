@@ -24,7 +24,7 @@ import {
     makeAdminOrdersReportKey,
 } from "../cacheKeys.js";
 import { createNotification } from '../helpers/notificationManager.js';
-
+import { generateInvoicePDF } from "../services/invoice.service.js";
 const router = express.Router();
 
 // 🟢 Initialize Razorpay for Auto-Sync
@@ -70,7 +70,7 @@ router.get(
     async (req, res) => {
         try {
             const orderId = req.params.id;
-            
+
             // 1. Fetch Order
             let order = await db.query.ordersTable.findFirst({
                 where: eq(ordersTable.id, orderId),
@@ -126,7 +126,7 @@ router.get(
                         order.refund_speed = refund.speed_processed || order.refund_speed;
                         order.refund_completed_at = completedAt;
                         if (refund.status === 'processed') order.paymentStatus = 'refunded';
-                        
+
                         console.log(`✅ Auto-synced refund status to: ${refund.status}`);
                     }
                 } catch (syncErr) {
@@ -164,6 +164,93 @@ router.get(
         }
     }
 );
+
+// 🟢 NEW ENDPOINT: Generate and Download Invoice
+router.get("/:id/invoice", async (req, res) => {
+    try {
+        const orderId = req.params.id;
+
+        // 1. Fetch Order
+        const order = await db.query.ordersTable.findFirst({
+            where: eq(ordersTable.id, orderId),
+            with: {
+                user: { columns: { name: true, phone: true, email: true } },
+                address: true,
+                orderItems: {
+                    with: {
+                        product: true,
+                        variant: true,
+                    },
+                },
+            },
+        });
+
+        if (!order) {
+            return res.status(404).json({ error: "Order not found" });
+        }
+
+        // 2. Format Address
+        const addr = order.address || {};
+        const formattedAddress = [
+            addr.address,
+            addr.landmark,
+            `${addr.city}, ${addr.state}`,
+            `${addr.country} - ${addr.postalCode}`
+        ].filter(Boolean).join(", ");
+
+        const billing = {
+            name: order.user?.name || "Guest",
+            phone: order.address?.phone || order.user?.phone || "-",
+            address: formattedAddress,
+        };
+
+        const items = order.orderItems.map(item => ({
+            productName: item.product?.name || "Product",
+            size: item.variant?.size || "-",
+            quantity: item.quantity,
+            price: item.price,
+            totalPrice: item.price * item.quantity
+        }));
+
+        // 🟢 FIX: Correctly access 'transactionId' from schema
+        // Also handling cases where it might be string "null" from DB default
+        let txnId = order.transactionId;
+        if (!txnId || txnId === "null" || txnId === "undefined") {
+            txnId = null;
+        }
+
+        const orderYear = new Date(order.createdAt).getFullYear();
+        const invoiceNo = `INV-${orderYear}-${order.id}`;
+
+        const orderData = {
+            id: order.id,
+            orderId: order.id,
+            createdAt: order.createdAt,
+            paymentMode: order.paymentMode,
+            transactionId: txnId,
+            invoiceNumber: invoiceNo,
+            totals: {
+                subtotal: items.reduce((sum, item) => sum + item.totalPrice, 0),
+                discount: 0,
+                delivery: 0,
+                grandTotal: order.totalAmount
+            }
+        };
+
+        const { filePath } = await generateInvoicePDF({
+            order: orderData,
+            items: items,
+            billing: billing
+        });
+
+        res.download(filePath, `Invoice-${order.id}.pdf`);
+
+    } catch (error) {
+        console.error("❌ Error generating invoice:", error);
+        res.status(500).json({ error: "Failed to generate invoice" });
+    }
+});
+
 
 // 🟢 POST to get a user's orders
 router.post(
