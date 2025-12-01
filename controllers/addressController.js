@@ -1,73 +1,12 @@
+// src/controllers/addressController.js
 import { db } from '../configs/index.js';
 import { UserAddressTable, pincodeServiceabilityTable } from '../configs/schema.js';
 import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import fetch from "node-fetch";
-// Import helpers
+// Import new helpers
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeUserAddressesKey } from "../cacheKeys.js";
 import { createNotification } from '../helpers/notificationManager.js';
-
-// 🟢 NEW: Helper to fetch from Google Places API
-async function fetchGooglePlaces(query, key, pageToken = '') {
-  const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}${pageToken ? `&pagetoken=${pageToken}` : ''}`;
-  const res = await fetch(url);
-  return await res.json();
-}
-
-// 🟢 NEW: Controller to fetch pincodes via Google API (Smarter than India Post API)
-export async function fetchGooglePincodes(req, res) {
-  const { city } = req.params;
-  const apiKey = process.env.GOOGLE_API_KEY;
-
-  if (!city) return res.status(400).json({ success: false, msg: "City is required" });
-  if (!apiKey) return res.status(500).json({ success: false, msg: "Google API Key is missing in server env" });
-
-  try {
-    const pincodesSet = new Set();
-    const query = `Post offices in ${city}`;
-    
-    // Google Places API returns 20 results per page. We'll fetch up to 3 pages (60 results).
-    let nextPageToken = null;
-    let attempts = 0;
-
-    do {
-      const data = await fetchGooglePlaces(query, apiKey, nextPageToken);
-      
-      if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-        console.error("Google Places Error:", data.status);
-        break;
-      }
-
-      // Extract pincodes from formatted_address (e.g., "Morar, Gwalior, MP 474006, India")
-      data.results?.forEach(place => {
-        const match = place.formatted_address.match(/\b\d{6}\b/);
-        if (match) {
-          pincodesSet.add(match[0]);
-        }
-      });
-
-      nextPageToken = data.next_page_token;
-      attempts++;
-
-      // Google requires a short delay before the next_page_token becomes valid
-      if (nextPageToken) await new Promise(r => setTimeout(r, 2000));
-
-    } while (nextPageToken && attempts < 3);
-
-    const sortedPincodes = Array.from(pincodesSet).sort();
-
-    if (sortedPincodes.length === 0) {
-      return res.json({ success: false, msg: "No pincodes found via Google Maps." });
-    }
-
-    return res.json({ success: true, data: sortedPincodes });
-
-  } catch (error) {
-    console.error("fetchGooglePincodes error:", error);
-    return res.status(500).json({ success: false, msg: "Server error fetching from Google" });
-  }
-}
-
 // Reverse Geocode helper to fill missing address details from lat/lng
 async function reverseGeocode(lat, lng) {
   if (!lat || !lng) return {};
@@ -75,7 +14,8 @@ async function reverseGeocode(lat, lng) {
     `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${process.env.GOOGLE_API_KEY}`
   );
   const data = await res.json();
-  
+  // ✅ ADD THIS LINE TO DEBUG
+  console.log("Google Maps API Response:", data);
   if (data.results?.[0]) {
     const updated = {};
     data.results[0].address_components.forEach(c => {
@@ -89,7 +29,6 @@ async function reverseGeocode(lat, lng) {
   }
   return {};
 }
-
 export async function reverseGeocodeController(req, res) {
   const { lat, lon } = req.query;
 
@@ -99,13 +38,16 @@ export async function reverseGeocodeController(req, res) {
 
   try {
     const geoData = await reverseGeocode(lat, lon);
+
+    // The reverseGeocode helper returns an empty object on failure, which is fine.
+    // We just forward the result to the frontend.
     return res.json(geoData);
+
   } catch (error) {
     console.error("Reverse geocode controller error:", error);
     return res.status(500).json({ success: false, msg: "Server error during reverse geocoding." });
   }
 }
-
 // POST /api/address/save
 export async function saveAddress(req, res) {
   try {
@@ -116,10 +58,12 @@ export async function saveAddress(req, res) {
       isDefault = false, isVerified = false, isDeleted = false
     } = req.body;
 
+    // Validate required fields
     if (!userId || !name || !phone) {
       return res.status(400).json({ success: false, msg: "Missing required fields: userId, name, or phone" });
     }
 
+    // Reverse geocode if address incomplete but lat/lng present
     if ((!address || !city || !state || !postalCode || !country) && latitude && longitude) {
       const geoData = await reverseGeocode(latitude, longitude);
       address = address || geoData.address;
@@ -129,10 +73,12 @@ export async function saveAddress(req, res) {
       country = country || geoData.country;
     }
 
+    // Final check for address completeness
     if (!address || !city || !state || !postalCode || !country) {
       return res.status(400).json({ success: false, msg: "Incomplete address details after geocoding" });
     }
 
+    // If setting this as default, clear default from other addresses for user
     if (isDefault) {
       await db
         .update(UserAddressTable)
@@ -162,9 +108,11 @@ export async function saveAddress(req, res) {
         isDefault,
         isVerified,
         isDeleted,
+        // 🟢 REMOVED: createdAt and updatedAt. The database will set them.
       })
       .returning();
 
+    // Invalidate user's address list cache
     await invalidateMultiple([{ key: makeUserAddressesKey(userId) }]);
 
     return res.json({ success: true, msg: "Address saved successfully", data: inserted[0] });
@@ -187,6 +135,7 @@ export async function updateAddress(req, res) {
       isDefault, isVerified, isDeleted
     } = req.body;
 
+    // Reverse geocode if needed
     if ((!address || !city || !state || !postalCode || !country) && latitude && longitude) {
       const geoData = await reverseGeocode(latitude, longitude);
       address = address || geoData.address;
@@ -200,9 +149,11 @@ export async function updateAddress(req, res) {
       return res.status(400).json({ success: false, msg: "Incomplete address details after geocoding" });
     }
 
+    // Fetch existing address to check userId
     const existing = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, id));
     if (existing.length === 0) return res.status(404).json({ success: false, msg: "Address not found" });
 
+    // If setting default, clear others for user
     if (isDefault) {
       await db
         .update(UserAddressTable)
@@ -231,11 +182,12 @@ export async function updateAddress(req, res) {
         isDefault,
         isVerified,
         isDeleted,
-        updatedAt: new Date()
+        updatedAt: new Date() // 🟢 FIXED: Pass a Date object, not a string
       })
       .where(eq(UserAddressTable.id, id))
       .returning();
 
+    // Invalidate user's address list cache
     await invalidateMultiple([{ key: makeUserAddressesKey(existing[0].userId) }]);
 
     return res.json({ success: true, msg: "Address updated successfully", data: updated[0] });
@@ -278,6 +230,7 @@ export async function softDeleteAddress(req, res) {
 
     const userId = existing[0].userId;
 
+    // Prevent deleting last address of user
     const total = await db.select().from(UserAddressTable).where(and(
       eq(UserAddressTable.userId, userId),
       eq(UserAddressTable.isDeleted, false)
@@ -289,9 +242,10 @@ export async function softDeleteAddress(req, res) {
 
     await db
       .update(UserAddressTable)
-      .set({ isDeleted: true, updatedAt: new Date() })
+      .set({ isDeleted: true, updatedAt: new Date() }) // 🟢 FIXED
       .where(eq(UserAddressTable.id, id));
 
+    // If deleted was default → set latest as default
     if (existing[0].isDefault) {
       const latest = await db
         .select()
@@ -303,11 +257,12 @@ export async function softDeleteAddress(req, res) {
       if (latest.length > 0) {
         await db
           .update(UserAddressTable)
-          .set({ isDefault: true, updatedAt: new Date() })
+          .set({ isDefault: true, updatedAt: new Date() }) // 🟢 FIXED
           .where(eq(UserAddressTable.id, latest[0].id));
       }
     }
 
+    // Invalidate user's address list cache
     await invalidateMultiple([{ key: makeUserAddressesKey(userId) }]);
 
     return res.json({ success: true, msg: "Address deleted successfully" });
@@ -326,16 +281,19 @@ export async function setDefaultAddress(req, res) {
     const existing = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, id));
     if (existing.length === 0) return res.status(404).json({ success: false, msg: "Address not found" });
 
+    // Reset all to false first
     await db
       .update(UserAddressTable)
       .set({ isDefault: false })
       .where(eq(UserAddressTable.userId, existing[0].userId));
 
+    // Set selected as default
     await db
       .update(UserAddressTable)
-      .set({ isDefault: true, updatedAt: new Date() })
+      .set({ isDefault: true, updatedAt: new Date() }) // 🟢 FIXED
       .where(eq(UserAddressTable.id, id));
 
+    // Invalidate user's address list cache
     await invalidateMultiple([{ key: makeUserAddressesKey(existing[0].userId) }]);
 
     return res.json({ success: true, msg: "Default address updated" });
@@ -353,15 +311,11 @@ export async function createPincodesBatch(req, res) {
       return res.status(400).json({ success: false, msg: "Pincode data is missing or invalid." });
     }
 
-    // 🟢 FIX 1: Sanitize batch data (Trim spaces from City/State)
-    const cleanPincodes = pincodes.map(p => ({
-      ...p,
-      city: p.city ? p.city.trim() : 'Unknown',
-      state: p.state ? p.state.trim() : 'Unknown'
-    }));
+    // --- Notification Logic ---
+    // 1. Get *all* pincode strings from the admin's batch
+    const allPincodeStrings = pincodes.map(p => p.pincode);
 
-    const allPincodeStrings = cleanPincodes.map(p => p.pincode);
-
+    // 2. Find all users who have *any* of these pincodes saved
     const potentialUsers = await db.selectDistinct({ 
         userId: UserAddressTable.userId, 
         postalCode: UserAddressTable.postalCode 
@@ -369,8 +323,10 @@ export async function createPincodesBatch(req, res) {
       .from(UserAddressTable)
       .where(inArray(UserAddressTable.postalCode, allPincodeStrings));
 
+    // --- Database Operation ---
+    // 3. Run your batch insert/update. This is smart, it updates existing ones.
     await db.insert(pincodeServiceabilityTable)
-      .values(cleanPincodes)
+      .values(pincodes)
       .onConflictDoUpdate({
         target: pincodeServiceabilityTable.pincode,
         set: {
@@ -382,29 +338,44 @@ export async function createPincodesBatch(req, res) {
         }
       });
     
+    // --- Send Notifications ---
+    // 4. Now, figure out *who* to notify
     if (potentialUsers.length > 0) {
       let notificationPromises = [];
-      const pincodeRules = new Map(cleanPincodes.map(p => [p.pincode, p]));
+      const pincodeRules = new Map(pincodes.map(p => [p.pincode, p]));
 
       for (const user of potentialUsers) {
+        // Find the rule for this user's specific pincode
         const rule = pincodeRules.get(user.postalCode);
-        if (!rule) continue;
+        if (!rule) continue; // Should not happen, but a good safeguard
 
+        // This is the logic for a NEW pincode (or one being set to serviceable)
         if (rule.isServiceable) {
           notificationPromises.push(
-            createNotification(user.userId, `We've got you covered! We are now delivering to your area in ${user.postalCode}.`, '/', 'system')
+            createNotification(
+              user.userId,
+              `We've got you covered! We are now delivering to your area in ${user.postalCode}.`,
+              '/',
+              'system'
+            )
           );
         }
         if (rule.codAvailable) {
           notificationPromises.push(
-            createNotification(user.userId, `Good news! Cash on Delivery is now available for your address in ${user.postalCode}.`, '/cart', 'system')
+            createNotification(
+              user.userId,
+              `Good news! Cash on Delivery is now available for your address in ${user.postalCode}.`,
+              '/cart',
+              'system'
+            )
           );
         }
       }
+      // Run all notification jobs in the background
       Promise.allSettled(notificationPromises);
     }
     
-    return res.status(201).json({ success: true, msg: `${cleanPincodes.length} pincodes processed successfully.` });
+    return res.status(201).json({ success: true, msg: `${pincodes.length} pincodes processed successfully.` });
   
   } catch (err) {
     console.error("createPincodesBatch error:", err);
@@ -417,11 +388,9 @@ export async function listPincodes(req, res) {
   try {
     const allPincodes = await db.select().from(pincodeServiceabilityTable).orderBy(pincodeServiceabilityTable.state, pincodeServiceabilityTable.city, pincodeServiceabilityTable.pincode);
 
-    // 🟢 FIX 2: Robust Grouping Logic
+    // Group the flat array into a nested object structure for the frontend
     const grouped = allPincodes.reduce((acc, pincode) => {
-      const state = pincode.state ? pincode.state.trim() : "Unknown";
-      const city = pincode.city ? pincode.city.trim() : "Unknown";
-
+      const { state, city } = pincode;
       if (!acc[state]) {
         acc[state] = {};
       }
@@ -441,37 +410,75 @@ export async function listPincodes(req, res) {
 
 // POST /api/address/pincodes
 export async function createPincode(req, res) {
+  // 🟢 1. LOG: Did the function start?
+  console.log(`[DEBUG] createPincode START. Body:`, req.body);
+
   try {
-    let { pincode, city, state, isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge } = req.body;
+    const { pincode, city, state, isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge } = req.body;
 
     if (!pincode || !/^\d{6}$/.test(pincode)) {
+      console.log(`[DEBUG] Pincode validation failed.`);
       return res.status(400).json({ success: false, msg: "Invalid pincode" });
     }
-
-    // 🟢 FIX 3: Sanitize Single Entry inputs
-    city = city ? city.trim() : 'Unknown';
-    state = state ? state.trim() : 'Unknown';
 
     const [newPincode] = await db
       .insert(pincodeServiceabilityTable)
       .values({
-        pincode, city, state, isServiceable, codAvailable, onlinePaymentAvailable, deliveryCharge
+        pincode,
+        city: city || 'Unknown',
+        state: state || 'Unknown',
+        isServiceable,
+        codAvailable,
+        onlinePaymentAvailable,
+        deliveryCharge
       })
       .returning();
 
+    // 🟢 2. LOG: Was the pincode created?
+    console.log(`[DEBUG] Pincode ${newPincode.pincode} CREATED in DB.`);
+
+    // --- Notification Logic ---
+    // 🟢 3. LOG: Is it serviceable?
+    console.log(`[DEBUG] Checking conditions... newPincode.isServiceable: ${newPincode.isServiceable}`);
+
     if (newPincode.isServiceable) {
-      const usersToNotify = await db.selectDistinct({ userId: UserAddressTable.userId })
+
+      const usersToNotify = await db.selectDistinct({
+        userId: UserAddressTable.userId
+      })
         .from(UserAddressTable)
         .where(eq(UserAddressTable.postalCode, newPincode.pincode));
 
-      if (usersToNotify.length > 0) {
-        let message = newPincode.codAvailable 
-          ? `Good news! We are now delivering to your area (${pincode}) and Cash on Delivery is available.`
-          : `We've got you covered! We are now delivering to your area in ${newPincode.pincode}.`;
-        
-        let link = newPincode.codAvailable ? '/cart' : '/';
+      // 🟢 4. LOG: Did we find users?
+      console.log(`[DEBUG] Found ${usersToNotify.length} users for pincode ${newPincode.pincode}.`);
 
-        const promises = usersToNotify.map(user => createNotification(user.userId, message, link, 'system'));
+      if (usersToNotify.length > 0) {
+
+        // 🟢 FIXED LOGIC: Prioritize the best message
+        let message = "";
+        let link = "/";
+
+        if (newPincode.codAvailable) {
+          // If COD is on, this is the only message they need
+          message = `Good news! We are now delivering to your area (${pincode}) and Cash on Delivery is available.`;
+          link = '/cart';
+        } else {
+          // Otherwise, send the general service message
+          message = `We've got you covered! We are now delivering to your area in ${newPincode.pincode}.`;
+          link = '/';
+        }
+
+        // 🟢 5. LOG: What message are we sending?
+        console.log(`[DEBUG] Sending message: "${message}" to ${usersToNotify.length} users.`);
+
+        const promises = usersToNotify.map(user =>
+          createNotification(
+            user.userId,
+            message,
+            link,
+            'system'
+          )
+        );
         Promise.allSettled(promises);
       }
     }
@@ -480,6 +487,7 @@ export async function createPincode(req, res) {
 
   } catch (err) {
     console.error("[DEBUG] createPincode FAILED:", err);
+
     if (err.code === '23505') {
       return res.status(409).json({ success: false, msg: "Pincode already exists." });
     }
@@ -507,7 +515,7 @@ export async function updatePincode(req, res) {
       .where(eq(pincodeServiceabilityTable.pincode, pincode))
       .returning();
 
-    if (!updatedPincode) {
+    if (!updatedPincode || updatedPincode.length === 0) {
       return res.status(404).json({ success: false, msg: "Pincode not found" });
     }
 
@@ -516,26 +524,46 @@ export async function updatePincode(req, res) {
     const serviceJustEnabled = isServiceable === true && oldPincode?.isServiceable === false;
 
     if (codJustEnabled || serviceJustEnabled) {
-      const usersToNotify = await db.selectDistinct({ userId: UserAddressTable.userId })
+
+      const usersToNotify = await db.selectDistinct({
+        userId: UserAddressTable.userId
+      })
         .from(UserAddressTable)
         .where(eq(UserAddressTable.postalCode, pincode));
 
       if (usersToNotify.length > 0) {
         let notificationsToSend = [];
+
+        // 🟢 FIXED: Use two separate IF statements
         if (serviceJustEnabled) {
-          notificationsToSend.push({ message: `We've got you covered! We are now delivering to your area in ${pincode}.`, link: '/' });
+          notificationsToSend.push({
+            message: `We've got you covered! We are now delivering to your area in ${pincode}.`,
+            link: '/'
+          });
         }
         if (codJustEnabled) {
-          notificationsToSend.push({ message: `Good news! Cash on Delivery is now available for your address in ${pincode}.`, link: '/cart' });
+          notificationsToSend.push({
+            message: `Good news! Cash on Delivery is now available for your address in ${pincode}.`,
+            link: '/cart'
+          });
         }
 
-        let promises = [];
-        for (const user of usersToNotify) {
-          for (const notif of notificationsToSend) {
-            promises.push(createNotification(user.userId, notif.message, notif.link, 'system'));
+        if (notificationsToSend.length > 0) {
+          let promises = [];
+          for (const user of usersToNotify) {
+            for (const notif of notificationsToSend) {
+              promises.push(
+                createNotification(
+                  user.userId,
+                  notif.message,
+                  notif.link,
+                  'system'
+                )
+              );
+            }
           }
+          Promise.allSettled(promises);
         }
-        Promise.allSettled(promises);
       }
     }
 
@@ -575,6 +603,7 @@ export async function checkPincodeServiceability(req, res) {
     if (serviceability.length > 0) {
       return res.json({ success: true, data: serviceability[0] });
     } else {
+      // Default response for pincodes not in the database
       return res.json({
         success: true,
         data: {
@@ -582,7 +611,7 @@ export async function checkPincodeServiceability(req, res) {
           isServiceable: false,
           codAvailable: false,
           onlinePaymentAvailable: true,
-          deliveryCharge: 100,
+          deliveryCharge: 100, // Higher default charge for non-serviceable areas
         },
       });
     }
@@ -593,48 +622,22 @@ export async function checkPincodeServiceability(req, res) {
 }
 
 export async function getPincodeDetails(pincode) {
-  const defaults = { isServiceable: false, codAvailable: false, deliveryCharge: 100 };
-  if (!pincode || !/^\d{6}$/.test(pincode)) return defaults;
+  // Return a default object for invalid or non-serviceable pincodes
+  const defaults = {
+    isServiceable: false,
+    codAvailable: false,
+    deliveryCharge: 100, // A default/higher charge
+  };
+
+  if (!pincode || !/^\d{6}$/.test(pincode)) {
+    return defaults;
+  }
 
   const [details] = await db
     .select()
     .from(pincodeServiceabilityTable)
     .where(eq(pincodeServiceabilityTable.pincode, pincode));
 
+  // If found, return the details from DB; otherwise, return the defaults
   return details ? details : defaults;
-}
-
-
-// 🟢 NEW: Helper to fetch City Suggestions from Google Autocomplete
-export async function searchGoogleCities(req, res) {
-  const { query } = req.params;
-  const apiKey = process.env.GOOGLE_API_KEY;
-
-  if (!query) return res.status(400).json({ success: false, msg: "Query is required" });
-  if (!apiKey) return res.status(500).json({ success: false, msg: "Google API Key missing" });
-
-  try {
-    // Restrict results to (regions) to find cities/towns/localities
-    const url = `https://maps.googleapis.com/maps/api/place/autocomplete/json?input=${encodeURIComponent(query)}&types=(regions)&components=country:in&key=${apiKey}`;
-    
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-      console.error("Google Autocomplete Error:", data.status);
-      return res.json({ success: false, msg: "Google API Error" });
-    }
-
-    // Extract just the main name (e.g., "Gwalior", "Morar", "Lashkar")
-    const cities = data.predictions.map(p => p.structured_formatting.main_text);
-    
-    // Remove duplicates
-    const uniqueCities = [...new Set(cities)];
-
-    return res.json({ success: true, data: uniqueCities });
-
-  } catch (error) {
-    console.error("searchGoogleCities error:", error);
-    return res.status(500).json({ success: false, msg: "Server error" });
-  }
 }

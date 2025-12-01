@@ -1,4 +1,4 @@
-// src/routes/addressRoutes.js
+// routes/addressRoutes.js
 
 import express from "express";
 import {
@@ -13,54 +13,45 @@ import {
   updatePincode,
   deletePincode,
   createPincodesBatch,
-  reverseGeocodeController,
-  fetchGooglePincodes,
-  searchGoogleCities // 🟢 NEW IMPORT
+  reverseGeocodeController
 } from "../controllers/addressController.js";
-
-// Import cache middleware
+// 🟢 Import new cache key builder
 import { cache } from "../cacheMiddleware.js";
 import { makeUserAddressesKey } from "../cacheKeys.js";
 
 const router = express.Router();
 
-// --- User Address Management ---
-
-// GET user addresses (Cached)
+// 🟢 Caching the GET route for user addresses dynamically.
 router.get(
   "/user/:userId",
   cache((req) => makeUserAddressesKey(req.params.userId), 300),
   listAddresses
 );
 
-// POST create address
+// 🟢 Post route to create a new address.
+// Invalidation is handled inside the 'saveAddress' controller.
 router.post("/", saveAddress);
 
-// PUT update address
+// 🟢 Put route to update an existing address.
+// Invalidation is handled inside the 'updateAddress' controller.
 router.put("/:id", updateAddress);
 
-// DELETE address
+// 🟢 Delete route to soft delete an address.
+// Invalidation is handled inside the 'softDeleteAddress' controller.
 router.delete("/:id", softDeleteAddress);
 
-// PUT set default address
+// 🟢 Put route to set a default address.
+// Invalidation is handled inside the 'setDefaultAddress' controller.
 router.put("/:id/default", setDefaultAddress);
 
-
 // --- Admin Pincode Management ---
-
 router.get("/pincodes", listPincodes);
 router.post("/pincodes", createPincode);
 router.put("/pincodes/:pincode", updatePincode);
 router.delete("/pincodes/:pincode", deletePincode);
 router.post("/pincodes/batch", createPincodesBatch);
 
-// 🟢 NEW ROUTE: Fetch pincodes from Google Places API
-router.get("/google-fetch/:city", fetchGooglePincodes);
-// 🟢 NEW ROUTE: Search cities via Google
-router.get("/google-cities/:query", searchGoogleCities);
-
-// --- Customer Facing Tools ---
-
+// --- Customer Facing Pincode Check ---
 router.get("/pincode/:pincode", checkPincodeServiceability);
 router.get("/reverse-geocode", reverseGeocodeController);
 
