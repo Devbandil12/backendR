@@ -96,7 +96,7 @@ export const refundOrder = async (req, res) => {
             // Step 5: Call refund
             const refundInit = await razorpay.payments.refund(order.paymentId, {
                 amount: refundInPaise,
-                speed: 'normal',
+                speed: 'instant',
             });
 
             // Step 6: Fetch accurate refund status
