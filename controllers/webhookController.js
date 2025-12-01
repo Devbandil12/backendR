@@ -3,13 +3,15 @@
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
 import { ordersTable } from '../configs/schema.js';
-import { eq, or } from 'drizzle-orm'; // 🟢 ADDED 'or'
+import { eq, or } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
 import {
   makeAllOrdersKey,
   makeUserOrdersKey,
   makeOrderKey,
 } from '../cacheKeys.js';
+// 🟢 IMPORTED: Notification Manager
+import { createNotification } from '../helpers/notificationManager.js';
 
 const safeDate = (timestamp) => {
   return (timestamp && typeof timestamp === 'number')
@@ -25,6 +27,18 @@ const invalidateOrderCaches = async (order) => {
     { key: makeUserOrdersKey(order.userId) },
     { key: makeAllOrdersKey() },
   ]);
+};
+
+// 🟢 NEW HELPER: Generates the exact message used in UI
+const getRefundMessage = (amountInPaise, speed) => {
+  const amount = (amountInPaise / 100).toFixed(2);
+  
+  if (speed === 'instant') {
+    return `Refund is complete. ₹${amount} is credited in your account shortly.`;
+  }
+  
+  // Default / Normal speed message
+  return `Refund processed. ₹${amount} will be credited in your account within 5-7 working days.`;
 };
 
 const razorpayWebhookHandler = async (req, res) => {
@@ -61,8 +75,7 @@ const razorpayWebhookHandler = async (req, res) => {
   const now = new Date().toISOString();
 
   try {
-    // 🟢 FIX: Search by Refund ID OR Payment ID (Transaction ID)
-    // This fixes the race condition where refund_id isn't in DB yet.
+    // Search by Refund ID OR Payment ID (Transaction ID)
     const [existingOrder] = await db
       .select({
         id: ordersTable.id,
@@ -73,30 +86,26 @@ const razorpayWebhookHandler = async (req, res) => {
       .from(ordersTable)
       .where(or(
         eq(ordersTable.refund_id, entity.id),
-        eq(ordersTable.transactionId, entity.payment_id) // 👈 Fallback lookup
+        eq(ordersTable.transactionId, entity.payment_id)
       ));
 
     if (!existingOrder) {
       console.warn(`⚠️ Order not found for refund ID: ${entity.id}`);
-      // 🟢 Return 200 instead of 404 to stop Razorpay from retrying/disabling the webhook
       return res.status(200).send('Order not found (Ignored)');
     }
 
     let cacheNeedsInvalidation = false;
 
-    // 🟢 IMPORTANT: Use 'existingOrder.id' for updates, NOT 'refund_id'
-    // because refund_id might be null in the DB during the race condition.
-    
     switch (event) {
       case 'refund.created':
         if (existingOrder.refund_status !== 'in_progress') {
           await db.update(ordersTable).set({
             refund_status: 'in_progress',
-            refund_id: entity.id, // Ensure ID is saved if it was missing
+            refund_id: entity.id,
             refund_initiated_at: safeDate(entity.created_at),
             refund_speed: entity.speed_processed,
             updatedAt: now,
-          }).where(eq(ordersTable.id, existingOrder.id)); // 👈 Use Primary Key
+          }).where(eq(ordersTable.id, existingOrder.id));
           
           console.log(`🔄 refund.created → in_progress [${entity.id}]`);
           cacheNeedsInvalidation = true;
@@ -112,6 +121,14 @@ const razorpayWebhookHandler = async (req, res) => {
 
           console.log(`🔁 refund.speed_changed → ${entity.speed_processed}`);
           cacheNeedsInvalidation = true;
+
+          // 🟢 NOTIFICATION: Only if refund was ALREADY processed
+          // If status is 'processed' but speed changed (e.g. normal -> instant), notify user with the new message
+          if (existingOrder.refund_status === 'processed') {
+            const msg = getRefundMessage(entity.amount, entity.speed_processed);
+            await createNotification(existingOrder.userId, msg, '/myorder', 'order');
+            console.log(`📩 Notification sent for speed update: ${entity.speed_processed}`);
+          }
         }
         break;
 
@@ -127,6 +144,11 @@ const razorpayWebhookHandler = async (req, res) => {
 
           console.log(`✅ refund.processed → processed [${entity.id}]`);
           cacheNeedsInvalidation = true;
+
+          // 🟢 NOTIFICATION: Send when refund completes
+          const msg = getRefundMessage(entity.amount, entity.speed_processed);
+          await createNotification(existingOrder.userId, msg, '/myorder', 'order');
+          console.log(`📩 Notification sent for processed refund`);
         }
         break;
 
@@ -139,6 +161,14 @@ const razorpayWebhookHandler = async (req, res) => {
 
           console.log(`❌ refund.failed → failed [${entity.id}]`);
           cacheNeedsInvalidation = true;
+
+          // 🟢 NOTIFICATION: Optional failure message
+          await createNotification(
+            existingOrder.userId, 
+            `Refund for order #${existingOrder.id} failed. Please contact support.`, 
+            '/myorder', 
+            'order'
+          );
         }
         break;
     }
