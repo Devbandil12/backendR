@@ -61,7 +61,7 @@ router.get("/", cache(makeAllOrdersKey(), 600), async (req, res) => {
     }
 });
 
-// GET single order details (WITH AUTO-SYNC)
+// GET single order details (WITH AUTO-SYNC and TRANSACTION)
 router.get(
     "/:id",
     // Cache is removed to ensure "Refresh Status" works
@@ -98,31 +98,40 @@ router.get(
                 return res.status(404).json({ error: "Order not found" });
             }
 
-            // 🟢 2. AUTO-SYNC LOGIC (FIXED): Check Razorpay if refund is initiated but not yet confirmed 'processed' or 'failed'.
-            if (
-                order.refund_id &&
-                (
-                    (order.refund_status !== 'processed' && order.refund_status !== 'failed') ||
-                    (order.refund_status === 'processed' && !order.refund_completed_at)
-                )
-            ) {
+            // 🟢 2. AUTO-SYNC LOGIC: Check Razorpay if refund is initiated but not yet confirmed 'processed' or 'failed', OR if date is missing.
+            const isRefundActive = order.refund_id;
+            const isMissingData = 
+                (order.refund_status !== 'processed' && order.refund_status !== 'failed') ||
+                (order.refund_status === 'processed' && !order.refund_completed_at);
+
+            if (isRefundActive && isMissingData) {
                 try {
                     console.log(`🔄 Syncing refund status for ${order.refund_id}...`);
                     const refund = await razorpay.refunds.fetch(order.refund_id);
 
-                    // If status has changed in Razorpay but not in DB, update DB
-                    if (refund.status !== order.refund_status) {
+                    // If status has changed OR if status is processed but the date is missing
+                    if (refund.status !== order.refund_status || (refund.status === 'processed' && !order.refund_completed_at)) {
                         const completedAt = (refund.status === 'processed' && refund.processed_at)
-                            ? safeDate(refund.processed_at)
+                            ? safeDate(refund.processed_at) // Converts seconds to Date object
                             : null;
 
-                        await db.update(ordersTable).set({
-                            refund_status: refund.status,
-                            refund_speed: refund.speed_processed || order.refund_speed,
-                            refund_completed_at: completedAt, // Fills the missing date
-                            paymentStatus: refund.status === 'processed' ? 'refunded' : order.paymentStatus,
-                            updatedAt: new Date(),
-                        }).where(eq(ordersTable.id, orderId));
+                        // 🟢 WRAP DB UPDATE AND CACHE INVALIDATION IN A TRANSACTION
+                        await db.transaction(async (tx) => {
+                            await tx.update(ordersTable).set({
+                                refund_status: refund.status,
+                                refund_speed: refund.speed_processed || order.refund_speed,
+                                refund_completed_at: completedAt, // Fills the missing date
+                                paymentStatus: refund.status === 'processed' ? 'refunded' : order.paymentStatus,
+                                updatedAt: new Date(),
+                            }).where(eq(ordersTable.id, orderId));
+
+                            // Invalidate relevant caches only if DB update succeeds
+                            await invalidateMultiple([
+                                { key: makeOrderKey(order.id) },
+                                { key: makeUserOrdersKey(order.userId) },
+                                { key: makeAllOrdersKey() },
+                            ]);
+                        }); // Transaction commits here
 
                         // Update local object to return fresh data immediately
                         order.refund_status = refund.status;
@@ -130,17 +139,10 @@ router.get(
                         order.refund_completed_at = completedAt;
                         if (refund.status === 'processed') order.paymentStatus = 'refunded';
 
-                        // Invalidate relevant caches (since DB was updated)
-                        await invalidateMultiple([
-                            { key: makeOrderKey(order.id) },
-                            { key: makeUserOrdersKey(order.userId) },
-                            { key: makeAllOrdersKey() },
-                        ]);
-
                         console.log(`✅ Auto-synced refund status to: ${refund.status}`);
                     }
                 } catch (syncErr) {
-                    console.warn("⚠️ Failed to sync with Razorpay:", syncErr.message);
+                    console.warn("⚠️ Failed to sync with Razorpay or DB transaction failed:", syncErr.message);
                     // Continue serving existing data if sync fails
                 }
             }
