@@ -234,11 +234,6 @@ router.post("/merge", async (req, res) => {
    🕒 SAVED FOR LATER ROUTES (NEW)
 ========================================================= */
 
-// GET /api/cart/saved-for-later/:userId
-/* =========================================================
-   🕒 SAVED FOR LATER ROUTES
-========================================================= */
-
 // 🟢 GET /api/cart/saved-for-later/:userId
 router.get("/saved-for-later/:userId", async (req, res) => {
   try {
@@ -361,16 +356,7 @@ router.delete("/saved-for-later/:userId/:variantId", async (req, res) => {
   }
 });
 
-// 🔴 TEMPORARY ROUTE: Run once to fix your "All sizes showing" issue
-// Usage: Open browser to http://localhost:YOUR_PORT/api/cart/cleanup-saved/YOUR_USER_ID
-router.get("/cleanup-saved/:userId", async (req, res) => {
-  try {
-    await db.delete(savedForLaterTable).where(eq(savedForLaterTable.userId, req.params.userId));
-    res.json({ message: "SUCCESS: All saved items cleared. Please test 'Save for Later' again now." });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+
 
 /* =========================================================
    💖 WISHLIST ROUTES
