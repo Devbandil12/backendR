@@ -10,12 +10,12 @@ import {
   makeUserOrdersKey,
   makeOrderKey,
 } from '../cacheKeys.js';
-// 🟢 IMPORTED: Notification Manager
 import { createNotification } from '../helpers/notificationManager.js';
 
+// 🟢 FIX: Return a Date object, not a string. Drizzle handles the conversion.
 const safeDate = (timestamp) => {
   return (timestamp && typeof timestamp === 'number')
-    ? new Date(timestamp * 1000).toISOString()
+    ? new Date(timestamp * 1000)
     : null;
 };
 
@@ -29,7 +29,7 @@ const invalidateOrderCaches = async (order) => {
   ]);
 };
 
-// 🟢 NEW HELPER: Generates the exact message used in UI
+// Generates the exact message used in UI
 const getRefundMessage = (amountInPaise, speed) => {
   const amount = (amountInPaise / 100).toFixed(2);
   
@@ -72,7 +72,8 @@ const razorpayWebhookHandler = async (req, res) => {
     return res.status(200).send('Ignored event');
   }
 
-  const now = new Date().toISOString();
+  // 🟢 FIX: Use Date object for 'updatedAt', not a string
+  const now = new Date();
 
   try {
     // Search by Refund ID OR Payment ID (Transaction ID)
@@ -122,8 +123,7 @@ const razorpayWebhookHandler = async (req, res) => {
           console.log(`🔁 refund.speed_changed → ${entity.speed_processed}`);
           cacheNeedsInvalidation = true;
 
-          // 🟢 NOTIFICATION: Only if refund was ALREADY processed
-          // If status is 'processed' but speed changed (e.g. normal -> optimum), notify user with the new message
+          // Notification: Only if refund was ALREADY processed
           if (existingOrder.refund_status === 'processed') {
             const msg = getRefundMessage(entity.amount, entity.speed_processed);
             await createNotification(existingOrder.userId, msg, '/myorder', 'order');
@@ -145,7 +145,7 @@ const razorpayWebhookHandler = async (req, res) => {
           console.log(`✅ refund.processed → processed [${entity.id}]`);
           cacheNeedsInvalidation = true;
 
-          // 🟢 NOTIFICATION: Send when refund completes
+          // Notification: Send when refund completes
           const msg = getRefundMessage(entity.amount, entity.speed_processed);
           await createNotification(existingOrder.userId, msg, '/myorder', 'order');
           console.log(`📩 Notification sent for processed refund`);
@@ -162,7 +162,7 @@ const razorpayWebhookHandler = async (req, res) => {
           console.log(`❌ refund.failed → failed [${entity.id}]`);
           cacheNeedsInvalidation = true;
 
-          // 🟢 NOTIFICATION: Optional failure message
+          // Notification: Optional failure message
           await createNotification(
             existingOrder.userId, 
             `Refund for order #${existingOrder.id} failed. Please contact support.`, 
