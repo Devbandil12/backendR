@@ -1,18 +1,16 @@
 // file routes/orders.js
 
 import express from "express";
-import Razorpay from "razorpay"; // 🟢 IMPORT RAZORPAY
+import Razorpay from "razorpay";
 import { db } from "../configs/index.js";
 import {
     orderItemsTable,
     ordersTable,
     productsTable,
-    productVariantsTable, // 🟢 ADDED
+    productVariantsTable,
     usersTable,
-    // productBundlesTable, // 🔴 REMOVED (was only for cancel)
 } from "../configs/schema.js";
-import { eq, asc, sql } from "drizzle-orm"; // 🔴 REMOVED 'and'
-// 🟢 Import new cache helpers
+import { eq, asc, sql } from "drizzle-orm";
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import {
@@ -27,7 +25,7 @@ import { createNotification } from '../helpers/notificationManager.js';
 import { generateInvoicePDF } from "../services/invoice.service.js";
 const router = express.Router();
 
-// 🟢 Initialize Razorpay for Auto-Sync
+// Initialize Razorpay for Auto-Sync
 const razorpay = new Razorpay({
     key_id: process.env.RAZORPAY_ID_KEY,
     key_secret: process.env.RAZORPAY_SECRET_KEY,
@@ -39,7 +37,7 @@ const safeDate = (timestamp) => {
     return new Date(timestamp * 1000);
 };
 
-// 🟢 GET all orders for admin panel
+// GET all orders for admin panel
 router.get("/", cache(makeAllOrdersKey(), 600), async (req, res) => {
     try {
         const allOrders = await db
@@ -63,10 +61,10 @@ router.get("/", cache(makeAllOrdersKey(), 600), async (req, res) => {
     }
 });
 
-// 🟢 GET single order details (WITH AUTO-SYNC)
+// GET single order details (WITH AUTO-SYNC)
 router.get(
     "/:id",
-    // 🟢 REMOVED CACHE to ensure "Refresh Status" works and frontend doesn't show stale data
+    // Cache is removed to ensure "Refresh Status" works
     async (req, res) => {
         try {
             const orderId = req.params.id;
@@ -89,8 +87,8 @@ router.get(
                     },
                     orderItems: {
                         with: {
-                            product: true, // Gets the parent product (name, images)
-                            variant: true, // Gets the specific variant (size, price)
+                            product: true,
+                            variant: true,
                         },
                     },
                 },
@@ -100,8 +98,12 @@ router.get(
                 return res.status(404).json({ error: "Order not found" });
             }
 
-            // 🟢 2. AUTO-SYNC LOGIC: Check Razorpay if refund is 'in_progress'
-            if (order.refund_id && order.refund_status === 'in_progress') {
+            // 🟢 2. AUTO-SYNC LOGIC (FIXED): Check Razorpay if refund is initiated but not yet confirmed 'processed' or 'failed'.
+            if (
+                order.refund_id &&
+                order.refund_status !== 'processed' &&
+                order.refund_status !== 'failed'
+            ) {
                 try {
                     console.log(`🔄 Syncing refund status for ${order.refund_id}...`);
                     const refund = await razorpay.refunds.fetch(order.refund_id);
@@ -115,8 +117,7 @@ router.get(
                         await db.update(ordersTable).set({
                             refund_status: refund.status,
                             refund_speed: refund.speed_processed || order.refund_speed,
-                            refund_completed_at: completedAt,
-                            // Mark as refunded if processed
+                            refund_completed_at: completedAt, // Fills the missing date
                             paymentStatus: refund.status === 'processed' ? 'refunded' : order.paymentStatus,
                             updatedAt: new Date(),
                         }).where(eq(ordersTable.id, orderId));
@@ -126,6 +127,13 @@ router.get(
                         order.refund_speed = refund.speed_processed || order.refund_speed;
                         order.refund_completed_at = completedAt;
                         if (refund.status === 'processed') order.paymentStatus = 'refunded';
+                        
+                        // Invalidate relevant caches (since DB was updated)
+                        await invalidateMultiple([
+                            { key: makeOrderKey(order.id) },
+                            { key: makeUserOrdersKey(order.userId) },
+                            { key: makeAllOrdersKey() },
+                        ]);
 
                         console.log(`✅ Auto-synced refund status to: ${refund.status}`);
                     }
@@ -135,21 +143,19 @@ router.get(
                 }
             }
 
-            // 🟢 MODIFIED: Format order with variant data
+            // MODIFIED: Format order with variant data
             const formattedOrder = {
                 ...order,
                 userName: order.user?.name,
                 phone: order.user?.phone,
                 shippingAddress: order.address,
-                // 🟢 FIXED: Key name changed from 'products' to 'orderItems' to match frontend list expectation
                 orderItems: order.orderItems?.map((item) => ({
-                    ...item.product,  // Spread main product (name, desc, images)
-                    ...item.variant, // Spread variant (price, size, sku) - overrides any conflicts
-                    productName: item.product.name, // Ensure main product name is used
-                    variantName: item.variant.name, // e.g., "20ml"
+                    ...item.product,
+                    ...item.variant,
+                    productName: item.product.name,
+                    variantName: item.variant.name,
                     quantity: item.quantity,
-                    price: item.price, // Price at time of purchase
-                    // 🟢 ADDED: Explicit fields required by frontend list view
+                    price: item.price,
                     img: item.product?.imageurl?.[0] || '',
                     size: item.variant?.size || 'N/A',
                 })),
@@ -165,7 +171,7 @@ router.get(
     }
 );
 
-// 🟢 NEW ENDPOINT: Generate and Download Invoice
+// NEW ENDPOINT: Generate and Download Invoice
 router.get("/:id/invoice", async (req, res) => {
     try {
         const orderId = req.params.id;
@@ -212,8 +218,7 @@ router.get("/:id/invoice", async (req, res) => {
             totalPrice: item.price * item.quantity
         }));
 
-        // 🟢 FIX: Correctly access 'transactionId' from schema
-        // Also handling cases where it might be string "null" from DB default
+        // FIX: Correctly access 'transactionId' from schema
         let txnId = order.transactionId;
         if (!txnId || txnId === "null" || txnId === "undefined") {
             txnId = null;
@@ -252,7 +257,7 @@ router.get("/:id/invoice", async (req, res) => {
 });
 
 
-// 🟢 POST to get a user's orders
+// POST to get a user's orders
 router.post(
     "/get-my-orders",
     cache((req) => makeUserOrdersKey(req.body.userId), 300),
@@ -261,7 +266,7 @@ router.post(
             const { userId } = req.body;
             if (!userId) return res.status(400).json({ error: "User ID is required" });
 
-            // 🟢 MODIFIED: Updated relational query
+            // MODIFIED: Updated relational query
             const myOrders = await db.query.ordersTable.findMany({
                 where: eq(ordersTable.userId, userId),
                 with: {
@@ -283,7 +288,6 @@ router.post(
                     productName: item.product?.name || 'N/A',
                     img: item.product?.imageurl?.[0] || '',
                     size: item.variant?.size || 'N/A',
-                    // Keep item.price (price at purchase)
                 }))
             }));
 
@@ -295,7 +299,7 @@ router.post(
     }
 );
 
-// 🟢 PUT to update order status
+// PUT to update order status
 router.put("/:id/status", async (req, res) => {
     try {
         const { id } = req.params;
@@ -321,15 +325,15 @@ router.put("/:id/status", async (req, res) => {
             orderItems = await db
                 .select({
                     quantity: orderItemsTable.quantity,
-                    variantId: orderItemsTable.variantId, // 🟢 Get variantId
-                    productId: orderItemsTable.productId, // 🟢 Get productId
+                    variantId: orderItemsTable.variantId,
+                    productId: orderItemsTable.productId,
                 })
                 .from(orderItemsTable)
                 .where(eq(orderItemsTable.orderId, id));
 
             itemsToInvalidate.push({ key: makeAllProductsKey() });
             for (const item of orderItems) {
-                // 🟢 MODIFIED: Update sold count on productVariantsTable
+                // MODIFIED: Update sold count on productVariantsTable
                 await db
                     .update(productVariantsTable)
                     .set({ sold: sql`${productVariantsTable.sold} + ${item.quantity}` })
@@ -348,7 +352,7 @@ router.put("/:id/status", async (req, res) => {
 
         const [updatedOrder] = await db
             .update(ordersTable)
-            .set({ status: status, progressStep: newProgressStep }) // Schema uses integer
+            .set({ status: status, progressStep: newProgressStep })
             .where(eq(ordersTable.id, id))
             .returning();
 
@@ -365,18 +369,18 @@ router.put("/:id/status", async (req, res) => {
         await createNotification(
             updatedOrder.userId,
             message,
-            `/myorder`, // You can make this /myorder/${updatedOrder.id} if you build that page
+            `/myorder`,
             'order'
         );
 
 
-        // 🟢 Add order keys to invalidation list
+        // Add order keys to invalidation list
         itemsToInvalidate.push({ key: makeAllOrdersKey() });
         itemsToInvalidate.push({ key: makeOrderKey(updatedOrder.id) });
         itemsToInvalidate.push({ key: makeUserOrdersKey(updatedOrder.userId) });
-        itemsToInvalidate.push({ key: makeAdminOrdersReportKey() }); // Report data changed
+        itemsToInvalidate.push({ key: makeAdminOrdersReportKey() });
 
-        // 🟢 Invalidate all caches at once
+        // Invalidate all caches at once
         await invalidateMultiple(itemsToInvalidate);
 
         res
@@ -388,8 +392,7 @@ router.put("/:id/status", async (req, res) => {
     }
 });
 
-// 🟢 PUT to cancel an order (COD ONLY)
-// Note: Online orders are cancelled via refundController, this route is for COD or generic cancel
+// PUT to cancel an order (COD ONLY)
 router.put("/:id/cancel", async (req, res) => {
     try {
         const { id } = req.params;
@@ -398,7 +401,6 @@ router.put("/:id/cancel", async (req, res) => {
         const [canceledOrder] = await db
             .update(ordersTable)
             .set({ status: "Order Cancelled" })
-            // 🟢 FIXED: Changed "Order Placed" to "order placed" to match DB casing
             .where(eq(ordersTable.id, id))
             .returning();
 
@@ -407,25 +409,25 @@ router.put("/:id/cancel", async (req, res) => {
                 .status(404)
                 .json({ error: "Order not found or cannot be canceled" });
 
-        // 🟢 Build list of caches to invalidate
+        // Build list of caches to invalidate
         const itemsToInvalidate = [
             { key: makeAllOrdersKey() },
             { key: makeOrderKey(canceledOrder.id) },
             { key: makeUserOrdersKey(canceledOrder.userId) },
-            { key: makeAllProductsKey() }, // Stock is being restored
-            { key: makeAdminOrdersReportKey() }, // Report data changed
+            { key: makeAllProductsKey() },
+            { key: makeAdminOrdersReportKey() },
         ];
 
         const orderItems = await db
             .select({
                 quantity: orderItemsTable.quantity,
-                variantId: orderItemsTable.variantId, // 🟢 Get variantId
-                productId: orderItemsTable.productId, // 🟢 Get productId
+                variantId: orderItemsTable.variantId,
+                productId: orderItemsTable.productId,
             })
             .from(orderItemsTable)
             .where(eq(orderItemsTable.orderId, id));
 
-        // --- 🟢 START: MODIFIED STOCK LOGIC ---
+        // START: MODIFIED STOCK LOGIC
         for (const item of orderItems) {
             // 1. INCREASE STOCK OF THE COMBO WRAPPER (Your existing logic)
             await db
@@ -433,15 +435,12 @@ router.put("/:id/cancel", async (req, res) => {
                 .set({ stock: sql`${productVariantsTable.stock} + ${item.quantity}` })
                 .where(eq(productVariantsTable.id, item.variantId));
 
-            // 🟢 Add product-specific key for the combo itself
+            // Add product-specific key for the combo itself
             itemsToInvalidate.push({ key: makeProductKey(item.productId) });
-
-            // (Bundle logic removed here as it's handled in refundController for online, 
-            // but for COD this is sufficient if you aren't using complex bundles for COD)
         }
-        // --- 🟢 END: MODIFIED STOCK LOGIC ---
+        // END: MODIFIED STOCK LOGIC
 
-        // 🟢 Invalidate all caches at once
+        // Invalidate all caches at once
         await invalidateMultiple(itemsToInvalidate);
 
         res
@@ -453,34 +452,34 @@ router.put("/:id/cancel", async (req, res) => {
     }
 });
 
-// 🟢 GET /details/for-reports
+// GET /details/for-reports
 router.get(
     "/details/for-reports",
     cache(makeAdminOrdersReportKey(), 3600),
     async (req, res) => {
         try {
-            // 🟢 MODIFIED: Updated relational query
+            // MODIFIED: Updated relational query
             const detailedOrders = await db.query.ordersTable.findMany({
                 with: {
                     orderItems: {
                         with: {
-                            product: true, // Gets the parent product
-                            variant: true, // Gets the variant
+                            product: true,
+                            variant: true,
                         },
                     },
                 },
             });
 
-            // 🟢 MODIFIED: Reshape data for frontend
+            // MODIFIED: Reshape data for frontend
             const reportData = detailedOrders.map((order) => ({
                 ...order,
                 products: order.orderItems.map((item) => ({
-                    ...item.product, // Spread parent product (name, desc, category)
-                    ...item.variant, // Spread variant (costPrice, size, oprice)
-                    price: item.price, // Use the price from the order item (price at purchase)
+                    ...item.product,
+                    ...item.variant,
+                    price: item.price,
                     quantity: item.quantity,
                 })),
-                orderItems: undefined, // Clean up
+                orderItems: undefined,
             }));
 
             res.json(reportData);
