@@ -31,7 +31,7 @@ const razorpay = new Razorpay({
     key_secret: process.env.RAZORPAY_SECRET_KEY,
 });
 
-// Helper: Safely convert timestamp to Date object
+// Helper: Safely convert timestamp (seconds) to Date object
 const safeDate = (timestamp) => {
     if (!timestamp || isNaN(timestamp)) return null;
     return new Date(timestamp * 1000);
@@ -98,7 +98,7 @@ router.get(
                 return res.status(404).json({ error: "Order not found" });
             }
 
-            // 🟢 2. AUTO-SYNC LOGIC: Check Razorpay if refund is initiated but not yet confirmed 'processed' or 'failed', OR if date is missing.
+            // 🟢 2. AUTO-SYNC LOGIC: Trigger if refund is active AND (status is not terminal OR date is missing).
             const isRefundActive = order.refund_id;
             const isMissingData = 
                 (order.refund_status !== 'processed' && order.refund_status !== 'failed') ||
@@ -111,16 +111,28 @@ router.get(
 
                     // If status has changed OR if status is processed but the date is missing
                     if (refund.status !== order.refund_status || (refund.status === 'processed' && !order.refund_completed_at)) {
-                        const completedAt = (refund.status === 'processed' && refund.processed_at)
-                            ? safeDate(refund.processed_at) // Converts seconds to Date object
-                            : null;
+                        
+                        let completedAt;
+                        
+                        if (refund.status === 'processed') {
+                            // 1. PRIMARY: Use the official Razorpay timestamp
+                            if (refund.processed_at) {
+                                completedAt = safeDate(refund.processed_at); 
+                            } else {
+                                // 2. FALLBACK: Use the current server time if Razorpay misses the timestamp
+                                console.warn(`⚠️ Razorpay returned 'processed' but is missing processed_at for ${order.refund_id}. Using current time as fallback.`);
+                                completedAt = new Date(); 
+                            }
+                        } else {
+                             completedAt = null;
+                        }
 
                         // 🟢 WRAP DB UPDATE AND CACHE INVALIDATION IN A TRANSACTION
                         await db.transaction(async (tx) => {
                             await tx.update(ordersTable).set({
                                 refund_status: refund.status,
                                 refund_speed: refund.speed_processed || order.refund_speed,
-                                refund_completed_at: completedAt, // Fills the missing date
+                                refund_completed_at: completedAt, // Fills the missing date (Rzp date or server time)
                                 paymentStatus: refund.status === 'processed' ? 'refunded' : order.paymentStatus,
                                 updatedAt: new Date(),
                             }).where(eq(ordersTable.id, orderId));
