@@ -33,7 +33,7 @@ const invalidateOrderCaches = async (order) => {
 const getRefundMessage = (amountInPaise, speed) => {
   const amount = (amountInPaise / 100).toFixed(2);
   
-  if (speed === 'instant') {
+  if (speed === 'optimum') {
     return `Refund is complete. ₹${amount} is credited in your account shortly.`;
   }
   
@@ -123,7 +123,7 @@ const razorpayWebhookHandler = async (req, res) => {
           cacheNeedsInvalidation = true;
 
           // 🟢 NOTIFICATION: Only if refund was ALREADY processed
-          // If status is 'processed' but speed changed (e.g. normal -> instant), notify user with the new message
+          // If status is 'processed' but speed changed (e.g. normal -> optimum), notify user with the new message
           if (existingOrder.refund_status === 'processed') {
             const msg = getRefundMessage(entity.amount, entity.speed_processed);
             await createNotification(existingOrder.userId, msg, '/myorder', 'order');
