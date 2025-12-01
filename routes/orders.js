@@ -101,8 +101,10 @@ router.get(
             // 🟢 2. AUTO-SYNC LOGIC (FIXED): Check Razorpay if refund is initiated but not yet confirmed 'processed' or 'failed'.
             if (
                 order.refund_id &&
-                order.refund_status !== 'processed' &&
-                order.refund_status !== 'failed'
+                (
+                    (order.refund_status !== 'processed' && order.refund_status !== 'failed') ||
+                    (order.refund_status === 'processed' && !order.refund_completed_at)
+                )
             ) {
                 try {
                     console.log(`🔄 Syncing refund status for ${order.refund_id}...`);
@@ -127,7 +129,7 @@ router.get(
                         order.refund_speed = refund.speed_processed || order.refund_speed;
                         order.refund_completed_at = completedAt;
                         if (refund.status === 'processed') order.paymentStatus = 'refunded';
-                        
+
                         // Invalidate relevant caches (since DB was updated)
                         await invalidateMultiple([
                             { key: makeOrderKey(order.id) },
