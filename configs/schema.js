@@ -34,13 +34,6 @@ export const usersRelations = relations(usersTable, ({ many }) => ({
   savedItems: many(savedForLaterTable), 
 }));
 
-export const querytable = pgTable("query", {
-  name: text("name").notNull(),
-  email: text("email").notNull(),
-  phone: text("phone").notNull(),
-  message: text("message").notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow()
-});
 
 // 🟢 MODIFIED: This table now stores shared info
 export const productsTable = pgTable('products', {
@@ -387,5 +380,47 @@ export const notificationsRelations = relations(notificationsTable, ({ one }) =>
   user: one(usersTable, {
     fields: [notificationsTable.userId],
     references: [usersTable.id],
+  }),
+}));
+
+
+const generateTicketId = () => {
+  return `SUP-${Date.now()}`;
+};
+// 🟢 MODIFIED: Tickets Table with Readable ID
+export const ticketsTable = pgTable("tickets", {
+  id: text("id").primaryKey().$defaultFn(() => generateTicketId()), // Changed from UUID to Text with Generator
+  userId: uuid("user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  guestEmail: text("guest_email"), 
+  guestPhone: text("guest_phone"),
+  subject: text("subject").notNull().default("Support Query"),
+  status: varchar("status", { length: 20 }).default("open").notNull(), 
+  priority: varchar("priority", { length: 20 }).default("medium"),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+// 🟢 MODIFIED: Messages Table (ticketId type changed to text)
+export const ticketMessagesTable = pgTable("ticket_messages", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ticketId: text("ticket_id").notNull().references(() => ticketsTable.id, { onDelete: "cascade" }), // Must match ticketsTable.id type
+  senderRole: varchar("sender_role", { length: 20 }).notNull(),
+  message: text("message").notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+// Relations (Keep as is)
+export const ticketsRelations = relations(ticketsTable, ({ one, many }) => ({
+  user: one(usersTable, {
+    fields: [ticketsTable.userId],
+    references: [usersTable.id],
+  }),
+  messages: many(ticketMessagesTable),
+}));
+
+export const ticketMessagesRelations = relations(ticketMessagesTable, ({ one }) => ({
+  ticket: one(ticketsTable, {
+    fields: [ticketMessagesTable.ticketId],
+    references: [ticketsTable.id],
   }),
 }));
