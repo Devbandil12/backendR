@@ -1,0 +1,2 @@
+ALTER TABLE "activity_logs" ADD COLUMN "target_id" uuid;--> statement-breakpoint
+ALTER TABLE "activity_logs" ADD CONSTRAINT "activity_logs_target_id_users_id_fk" FOREIGN KEY ("target_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;

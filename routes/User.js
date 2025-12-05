@@ -1,4 +1,4 @@
-// ✅ file: routes/users.js
+// ✅ file: routes/User.js
 
 import express from "express";
 import { db } from "../configs/index.js";
@@ -8,10 +8,10 @@ import {
   orderItemsTable,
   productsTable,
   UserAddressTable,
+  activityLogsTable, 
 } from "../configs/schema.js";
-import { eq, asc, inArray, or } from "drizzle-orm";
-
-// 🟢 Import caching utilities
+import { eq, asc, desc, inArray, or } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeAllUsersKey, makeFindByClerkIdKey, makeUserAddressesKey, makeUserOrdersKey } from "../cacheKeys.js";
@@ -19,12 +19,63 @@ import { makeAllUsersKey, makeFindByClerkIdKey, makeUserAddressesKey, makeUserOr
 const router = express.Router();
 
 /* ======================================================
+   🟢 GET ALL ADMIN LOGS (Robust Join Version)
+====================================================== */
+router.get("/admin/all-activity-logs", async (req, res) => {
+  try {
+    const targetUserTable = alias(usersTable, "target_user");
+
+    const adminLogs = await db
+      .select({
+        id: activityLogsTable.id,
+        action: activityLogsTable.action,
+        description: activityLogsTable.description,
+        createdAt: activityLogsTable.createdAt,
+        performedBy: activityLogsTable.performedBy,
+        metadata: activityLogsTable.metadata,
+        
+        actorName: usersTable.name,
+        actorEmail: usersTable.email,
+        actorImage: usersTable.profileImage,
+
+        targetName: targetUserTable.name,
+        targetEmail: targetUserTable.email,
+      })
+      .from(activityLogsTable)
+      .leftJoin(usersTable, eq(activityLogsTable.userId, usersTable.id))
+      .leftJoin(targetUserTable, eq(activityLogsTable.targetId, targetUserTable.id))
+      .where(eq(activityLogsTable.performedBy, 'admin'))
+      .orderBy(desc(activityLogsTable.createdAt))
+      .limit(100);
+
+    const formattedLogs = adminLogs.map(log => ({
+        ...log,
+        actor: {
+            name: log.actorName || 'Unknown Admin',
+            email: log.actorEmail,
+            profileImage: log.actorImage
+        },
+        target: {
+            // 🟢 FIX 4: Remove "|| 'System'". Let it be null.
+            name: log.targetName, 
+            email: log.targetEmail
+        }
+    }));
+
+    res.json(formattedLogs);
+  } catch (error) {
+    console.error("❌ Error fetching admin logs:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+/* ======================================================
    🟢 GET ALL USERS (Admin)
-   Cache Key: users:all
-   TTL: 1 hour
 ====================================================== */
 router.get("/", cache(makeAllUsersKey(), 3600), async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store'); // Prevent browser caching
+
     const allUsers = await db.query.usersTable.findMany({
       with: {
         orders: { with: { orderItems: true } },
@@ -40,9 +91,7 @@ router.get("/", cache(makeAllUsersKey(), 3600), async (req, res) => {
 });
 
 /* ======================================================
-   🟢 GET USER BY CLERK ID
-   Cache Key: users:find-by-clerk-id:clerkId=<id>
-   TTL: 5 minutes
+   GET USER BY CLERK ID
 ====================================================== */
 router.get(
   "/find-by-clerk-id",
@@ -50,9 +99,7 @@ router.get(
   async (req, res) => {
     try {
       const { clerkId } = req.query;
-      if (!clerkId) {
-        return res.status(400).json({ error: "clerkId is required" });
-      }
+      if (!clerkId) return res.status(400).json({ error: "clerkId is required" });
 
       const user = await db.query.usersTable.findFirst({
         where: eq(usersTable.clerkId, clerkId),
@@ -75,7 +122,6 @@ router.get(
 
 /* ======================================================
    🟢 CREATE USER
-   Invalidates: users:all, users:find-by-clerk-id:<id>
 ====================================================== */
 router.post("/", async (req, res) => {
   try {
@@ -89,9 +135,17 @@ router.post("/", async (req, res) => {
 
     const [newUser] = await db.insert(usersTable).values({ name, email, clerkId }).returning();
 
+    // Log account creation (Self-action, so userId is new user)
+    await db.insert(activityLogsTable).values({
+      userId: newUser.id,
+      action: 'ACCOUNT_CREATED',
+      description: 'Account successfully created',
+      performedBy: 'user'
+    });
+
     await invalidateMultiple([
-      makeAllUsersKey(),
-      makeFindByClerkIdKey(clerkId),
+      { key: makeAllUsersKey() },
+      { key: makeFindByClerkIdKey(clerkId) },
     ]);
 
     res.status(201).json(newUser);
@@ -102,26 +156,33 @@ router.post("/", async (req, res) => {
 });
 
 /* ======================================================
-   🟢 UPDATE USER
-   Invalidates: users:all, users:find-by-clerk-id:<id>
+   🟢 UPDATE USER (Logs to ACTOR)
 ====================================================== */
 router.put("/:id", async (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; // Target User ID
 
   try {
+    // 🟢 FIX 1: Select 'email' and 'role' so they are not undefined in the log
     const userToUpdate = await db.query.usersTable.findFirst({
-      columns: { clerkId: true },
+      columns: { 
+          clerkId: true, 
+          email: true,  // 👈 Needed for "Updated user@email.com"
+          role: true,   // 👈 Needed for "Role (user -> admin)"
+          name: true 
+      },
       where: eq(usersTable.id, id),
     });
 
     if (!userToUpdate) return res.status(404).json({ message: "User not found" });
 
-    const { profileImage, dob, gender, ...rest } = req.body;
+    // 🟢 Extract 'actorId' (Who is doing the update?)
+    const { profileImage, dob, gender, role, actorId, ...rest } = req.body;
 
     const [updatedUser] = await db
       .update(usersTable)
       .set({
         ...rest,
+        ...(role !== undefined && { role }), 
         ...(profileImage !== undefined && { profileImage }),
         ...(dob !== undefined && { dob: new Date(dob) }),
         ...(gender !== undefined && { gender }),
@@ -129,9 +190,40 @@ router.put("/:id", async (req, res) => {
       .where(eq(usersTable.id, id))
       .returning();
 
+    // --- LOGGING LOGIC ---
+    const changes = [];
+    if (req.body.name && req.body.name !== userToUpdate.name) changes.push("Name");
+    if (req.body.phone && req.body.phone !== userToUpdate.phone) changes.push("Phone");
+    
+    // 🟢 FIX 2: Now 'userToUpdate.role' will have a real value (e.g., "user")
+    if (role && role !== userToUpdate.role) changes.push(`Role (${userToUpdate.role} → ${role})`);
+
+    if (changes.length > 0) {
+      const isRoleChange = changes.some(c => c.startsWith("Role"));
+      
+      const logUserId = actorId || id; 
+
+      await db.insert(activityLogsTable).values({
+        userId: logUserId, 
+        // 🟢 FIX 3: Explicitly save targetId to link the "Target User" for the UI
+        targetId: id,
+        
+        action: isRoleChange ? 'ADMIN_UPDATE' : 'PROFILE_UPDATE', 
+        
+        // 🟢 FIX 4: Now 'userToUpdate.email' will be correct
+        description: `Updated ${userToUpdate.email}: ${changes.join(', ')}`,
+        
+        performedBy: isRoleChange ? 'admin' : 'user', 
+        metadata: { 
+            changes,
+            targetUserId: id 
+        }
+      });
+    }
+
     await invalidateMultiple([
-      makeAllUsersKey(),
-      makeFindByClerkIdKey(userToUpdate.clerkId),
+      { key: makeAllUsersKey() }, 
+      { key: makeFindByClerkIdKey(userToUpdate.clerkId) }, 
     ]);
 
     res.json(updatedUser);
@@ -142,8 +234,7 @@ router.put("/:id", async (req, res) => {
 });
 
 /* ======================================================
-   🟢 DELETE USER
-   Invalidates: users:all, users:find-by-clerk-id:<id>
+   DELETE USER
 ====================================================== */
 router.delete("/:id", async (req, res) => {
   const { id } = req.params;
@@ -159,8 +250,8 @@ router.delete("/:id", async (req, res) => {
     await db.delete(usersTable).where(eq(usersTable.id, id));
 
     await invalidateMultiple([
-      makeAllUsersKey(),
-      makeFindByClerkIdKey(userToDelete.clerkId),
+      { key: makeAllUsersKey() },
+      { key: makeFindByClerkIdKey(userToDelete.clerkId) },
     ]);
 
     res.sendStatus(204);
@@ -171,9 +262,34 @@ router.delete("/:id", async (req, res) => {
 });
 
 /* ======================================================
-   🟢 GET USER ADDRESSES
-   Cache Key: users:addresses:userId=<id>
-   TTL: 5 minutes
+   GET LOGS (Optional: Fetch logs for specific actor)
+====================================================== */
+router.get("/:id/logs", async (req, res) => {
+    try {
+      const { id } = req.params;
+      
+      // 🟢 FIX: Fetch where User is the ACTOR (userId) OR the TARGET (targetId)
+      // This ensures they see "Admin changed my role" (Target) AND "I updated my profile" (Actor)
+      const logs = await db
+        .select()
+        .from(activityLogsTable)
+        .where(
+            or(
+                eq(activityLogsTable.userId, id),   // Actions I did
+                eq(activityLogsTable.targetId, id)  // Actions done to me
+            )
+        )
+        .orderBy(desc(activityLogsTable.createdAt)); // Newest first
+
+      res.json(logs);
+    } catch (error) {
+      console.error("❌ Error fetching logs:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+});
+
+/* ======================================================
+   GET USER ADDRESSES & ORDERS (Unchanged)
 ====================================================== */
 router.get(
   "/:id/addresses",
@@ -181,12 +297,7 @@ router.get(
   async (req, res) => {
     try {
       const { id } = req.params;
-
-      const addresses = await db
-        .select()
-        .from(UserAddressTable)
-        .where(eq(UserAddressTable.userId, id));
-
+      const addresses = await db.select().from(UserAddressTable).where(eq(UserAddressTable.userId, id));
       res.json(addresses);
     } catch (error) {
       console.error("❌ Error fetching user addresses:", error);
@@ -195,20 +306,13 @@ router.get(
   }
 );
 
-/* ======================================================
-   🟢 GET USER ORDERS
-   Cache Key: orders:user:userId=<id>
-   TTL: 5 minutes
-====================================================== */
 router.get(
   "/:userId/orders",
   cache((req) => makeUserOrdersKey(req.params.userId), 300),
   async (req, res) => {
     try {
       const { userId } = req.params;
-
-      const orderQuery = await db
-        .select({
+      const orderQuery = await db.select({
           phone: ordersTable.phone,
           orderId: ordersTable.id,
           userId: ordersTable.userId,
@@ -242,8 +346,7 @@ router.get(
 
       const orderIds = orderQuery.map((o) => o.orderId);
 
-      const productQuery = await db
-        .select({
+      const productQuery = await db.select({
           orderId: orderItemsTable.orderId,
           productId: orderItemsTable.productId,
           quantity: orderItemsTable.quantity,
@@ -266,15 +369,8 @@ router.get(
             amount: o.refundAmount,
             status: o.refundStatus,
             speedProcessed: o.refundSpeed,
-            created_at: o.refundInitiatedAt
-              ? new Date(o.refundInitiatedAt).getTime() / 1000
-              : null,
-            processed_at:
-              o.refundCompletedAt
-                ? Math.floor(new Date(o.refundCompletedAt).getTime() / 1000)
-                : o.refundStatus === "processed"
-                  ? Math.floor(Date.now() / 1000)
-                  : null,
+            created_at: o.refundInitiatedAt ? new Date(o.refundInitiatedAt).getTime() / 1000 : null,
+            processed_at: o.refundCompletedAt ? Math.floor(new Date(o.refundCompletedAt).getTime() / 1000) : o.refundStatus === "processed" ? Math.floor(Date.now() / 1000) : null,
           },
           items: [],
         });
@@ -292,5 +388,8 @@ router.get(
     }
   }
 );
+
+
+
 
 export default router;

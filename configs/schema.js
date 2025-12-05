@@ -424,3 +424,37 @@ export const ticketMessagesRelations = relations(ticketMessagesTable, ({ one }) 
     references: [ticketsTable.id],
   }),
 }));
+
+
+export const activityLogsTable = pgTable('activity_logs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  
+  // 🟢 CHANGE: This now represents the ACTOR (Who performed the action)
+  userId: uuid('user_id').references(() => usersTable.id, { onDelete: 'cascade' }),
+  
+  // 🟢 NEW: This represents the TARGET (Who was changed)
+  targetId: uuid('target_id').references(() => usersTable.id, { onDelete: 'set null' }),
+
+  action: varchar('action', { length: 50 }).notNull(),
+  description: text('description'),
+  metadata: jsonb('metadata'),
+  
+  // We can keep this for redundancy or remove it, but let's keep it for easy UI display
+  performedBy: varchar('performed_by', { length: 20 }).default('user'), 
+  
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+// Add relations
+export const activityLogsRelations = relations(activityLogsTable, ({ one }) => ({
+  actor: one(usersTable, {
+    fields: [activityLogsTable.userId],
+    references: [usersTable.id],
+    relationName: "actorLogs"
+  }),
+  target: one(usersTable, {
+    fields: [activityLogsTable.targetId],
+    references: [usersTable.id],
+    relationName: "targetLogs"
+  }),
+}));

@@ -9,6 +9,8 @@ import {
     productsTable,
     productVariantsTable,
     usersTable,
+    activityLogsTable, // 🟢 IMPORTED: Activity Logs
+    productBundlesTable // 🟢 IMPORTED: (Kept for bundle logic if needed)
 } from "../configs/schema.js";
 import { eq, asc, sql } from "drizzle-orm";
 import { cache } from "../cacheMiddleware.js";
@@ -315,19 +317,22 @@ router.post(
     }
 );
 
-// PUT to update order status
+// 🟢 PUT to update order status (Modified for Logging)
 router.put("/:id/status", async (req, res) => {
     try {
         const { id } = req.params;
-        const { status } = req.body;
+        const { status, actorId } = req.body; // 🟢 Extract actorId
 
         if (!id || !status)
             return res.status(400).json({ error: "Order ID and status are required" });
 
+        // Fetch current status for comparison
         const [currentOrder] = await db
             .select()
             .from(ordersTable)
             .where(eq(ordersTable.id, id));
+        
+        const oldStatus = currentOrder?.status;
 
         const itemsToInvalidate = [];
         let orderItems = [];
@@ -375,6 +380,17 @@ router.put("/:id/status", async (req, res) => {
         if (!updatedOrder)
             return res.status(404).json({ error: "Order not found" });
 
+        // 🟢 LOG ACTIVITY
+        if (actorId && oldStatus !== status) {
+            await db.insert(activityLogsTable).values({
+                userId: actorId, // Log under Admin ID
+                action: 'ORDER_STATUS_UPDATE',
+                description: `Updated Order #${id} status: ${oldStatus} → ${status}`,
+                performedBy: 'admin',
+                metadata: { orderId: id, oldStatus, newStatus: status }
+            });
+        }
+
         let message = `Your order #${updatedOrder.id} is now ${status}.`;
         if (status === 'Delivered') {
             message = `Your order #${updatedOrder.id} has been delivered! We hope you enjoy it.`;
@@ -408,10 +424,12 @@ router.put("/:id/status", async (req, res) => {
     }
 });
 
-// PUT to cancel an order (COD ONLY)
+// 🟢 PUT to cancel an order (Modified for Logging)
 router.put("/:id/cancel", async (req, res) => {
     try {
         const { id } = req.params;
+        const { actorId } = req.body; // 🟢 Extract actorId
+
         if (!id) return res.status(400).json({ error: "Order ID is required" });
 
         const [canceledOrder] = await db
@@ -424,6 +442,17 @@ router.put("/:id/cancel", async (req, res) => {
             return res
                 .status(404)
                 .json({ error: "Order not found or cannot be canceled" });
+
+        // 🟢 LOG ACTIVITY
+        if (actorId) {
+            await db.insert(activityLogsTable).values({
+                userId: actorId, // Log under Admin ID
+                action: 'ORDER_CANCEL',
+                description: `Cancelled Order #${id}`,
+                performedBy: 'admin',
+                metadata: { orderId: id }
+            });
+        }
 
         // Build list of caches to invalidate
         const itemsToInvalidate = [
@@ -443,18 +472,34 @@ router.put("/:id/cancel", async (req, res) => {
             .from(orderItemsTable)
             .where(eq(orderItemsTable.orderId, id));
 
-        // START: MODIFIED STOCK LOGIC
+        // 🟢 RESTORE STOCK LOGIC (Includes recursive bundle support)
         for (const item of orderItems) {
-            // 1. INCREASE STOCK OF THE COMBO WRAPPER (Your existing logic)
+            
+            // 1. Restore stock of the item itself
             await db
                 .update(productVariantsTable)
                 .set({ stock: sql`${productVariantsTable.stock} + ${item.quantity}` })
                 .where(eq(productVariantsTable.id, item.variantId));
 
-            // Add product-specific key for the combo itself
+            // 2. CHECK IF BUNDLE -> Restore inner components
+            const bundleContents = await db
+                .select()
+                .from(productBundlesTable)
+                .where(eq(productBundlesTable.bundleVariantId, item.variantId));
+
+            if (bundleContents.length > 0) {
+                for (const content of bundleContents) {
+                    const quantityToRestore = item.quantity * content.quantity;
+                    await db
+                        .update(productVariantsTable)
+                        .set({ stock: sql`${productVariantsTable.stock} + ${quantityToRestore}` })
+                        .where(eq(productVariantsTable.id, content.contentVariantId));
+                }
+            }
+
+            // Add product-specific key
             itemsToInvalidate.push({ key: makeProductKey(item.productId) });
         }
-        // END: MODIFIED STOCK LOGIC
 
         // Invalidate all caches at once
         await invalidateMultiple(itemsToInvalidate);

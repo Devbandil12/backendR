@@ -127,6 +127,20 @@
       "when": 1764683014742,
       "tag": "0017_brave_hairball",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1764871615222,
+      "tag": "0018_foamy_layla_miller",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1764872233608,
+      "tag": "0019_cold_hitman",
+      "breakpoints": true
     }
   ]
 }

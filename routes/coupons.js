@@ -1,7 +1,7 @@
 // routes/coupons.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { couponsTable, ordersTable } from "../configs/schema.js";
+import { couponsTable, ordersTable, activityLogsTable } from "../configs/schema.js"; // 🟢 Added activityLogsTable
 // 🟢 FIX: Added missing drizzle-orm functions
 import { eq, and, isNull, gte, lte, or, inArray } from "drizzle-orm"; 
 
@@ -26,12 +26,13 @@ router.get("/", cache(() => makeAllCouponsKey(), 3600), async (req, res) => {
 });
 
 /* -------------------------------------------------------
-   🟢 POST /api/coupons — (MODIFIED)
+   🟢 POST /api/coupons — (MODIFIED for Logging)
    Accepts all new fields for automatic promotions
 -------------------------------------------------------- */
 router.post("/", async (req, res) => {
   try {
-    const { body } = req;
+    const { actorId, ...body } = req.body; // 🟢 Extract actorId
+
     // 🟢 NEW: Full payload from the admin panel
     const payload = {
       code: body.code,
@@ -40,14 +41,14 @@ router.post("/", async (req, res) => {
       discountValue: body.discountValue,
       minOrderValue: body.minOrderValue,
       minItemCount: body.minItemCount,
-      maxDiscountAmount: body.maxDiscountAmount, // 🟢 Added
+      maxDiscountAmount: body.maxDiscountAmount, 
       validFrom: body.validFrom ? new Date(body.validFrom) : null,
       validUntil: body.validUntil ? new Date(body.validUntil) : null,
       firstOrderOnly: body.firstOrderOnly,
       maxUsagePerUser: body.maxUsagePerUser,
       isAutomatic: body.isAutomatic,
       cond_requiredCategory: body.cond_requiredCategory,
-      cond_requiredSize: body.cond_requiredSize, // 🟢 Added
+      cond_requiredSize: body.cond_requiredSize,
       action_targetSize: body.action_targetSize,
       action_targetMaxPrice: body.action_targetMaxPrice,
       action_buyX: body.action_buyX,
@@ -56,12 +57,23 @@ router.post("/", async (req, res) => {
 
     const [inserted] = await db.insert(couponsTable).values(payload).returning();
 
+    // 🟢 LOG ACTIVITY
+    if (actorId) {
+        await db.insert(activityLogsTable).values({
+            userId: actorId, // Admin ID
+            action: 'COUPON_CREATE',
+            description: `Created coupon: ${inserted.code}`,
+            performedBy: 'admin',
+            metadata: { couponId: inserted.id }
+        });
+    }
+
     // Invalidate all coupon caches
     await invalidateMultiple([
       { key: makeAllCouponsKey() },
       { key: "coupons:available", prefix: true },
       { key: "coupons:validate", prefix: true },
-      { key: "coupons:auto-offers" }, // 🟢 Invalidate new cache
+      { key: "coupons:auto-offers" }, 
       { key: "promos:latest-public" }
     ]);
 
@@ -197,13 +209,14 @@ router.get(
 );
 
 /* -------------------------------------------------------
-   PUT /api/coupons/:id — (MODIFIED)
+   PUT /api/coupons/:id — (MODIFIED for Logging)
    Accepts all new fields for automatic promotions
 -------------------------------------------------------- */
 router.put("/:id", async (req, res) => {
   const id = Number(req.params.id);
   try {
-    const { body } = req;
+    const { actorId, ...body } = req.body; // 🟢 Extract actorId
+
     const payload = {
       code: body.code,
       description: body.description,
@@ -211,14 +224,14 @@ router.put("/:id", async (req, res) => {
       discountValue: body.discountValue,
       minOrderValue: body.minOrderValue,
       minItemCount: body.minItemCount,
-      maxDiscountAmount: body.maxDiscountAmount, // 🟢 Added
+      maxDiscountAmount: body.maxDiscountAmount, 
       validFrom: body.validFrom ? new Date(body.validFrom) : null,
       validUntil: body.validUntil ? new Date(body.validUntil) : null,
       firstOrderOnly: body.firstOrderOnly,
       maxUsagePerUser: body.maxUsagePerUser,
       isAutomatic: body.isAutomatic,
       cond_requiredCategory: body.cond_requiredCategory,
-      cond_requiredSize: body.cond_requiredSize, // 🟢 Added
+      cond_requiredSize: body.cond_requiredSize, 
       action_targetSize: body.action_targetSize,
       action_targetMaxPrice: body.action_targetMaxPrice,
       action_buyX: body.action_buyX,
@@ -230,6 +243,17 @@ router.put("/:id", async (req, res) => {
       .set(payload)
       .where(eq(couponsTable.id, id))
       .returning();
+
+    // 🟢 LOG ACTIVITY
+    if (actorId) {
+        await db.insert(activityLogsTable).values({
+            userId: actorId, // Admin ID
+            action: 'COUPON_UPDATE',
+            description: `Updated coupon: ${updated.code}`,
+            performedBy: 'admin',
+            metadata: { couponId: id }
+        });
+    }
 
     await invalidateMultiple([
       { key: makeAllCouponsKey() },
@@ -247,12 +271,28 @@ router.put("/:id", async (req, res) => {
 });
 
 /* -------------------------------------------------------
-   DELETE /api/coupons/:id — (MODIFIED)
+   DELETE /api/coupons/:id — (MODIFIED for Logging)
 -------------------------------------------------------- */
 router.delete("/:id", async (req, res) => {
   const id = Number(req.params.id);
+  const { actorId } = req.body; // 🟢 Extract actorId
+
   try {
+    // 🟢 Fetch coupon details first for the log
+    const [coupon] = await db.select().from(couponsTable).where(eq(couponsTable.id, id));
+
     await db.delete(couponsTable).where(eq(couponsTable.id, id));
+
+    // 🟢 LOG ACTIVITY
+    if (actorId && coupon) {
+        await db.insert(activityLogsTable).values({
+            userId: actorId,
+            action: 'COUPON_DELETE',
+            description: `Deleted coupon: ${coupon.code}`,
+            performedBy: 'admin',
+            metadata: { couponId: id, code: coupon.code }
+        });
+    }
 
     await invalidateMultiple([
       { key: makeAllCouponsKey() },
