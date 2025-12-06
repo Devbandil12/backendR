@@ -21,7 +21,8 @@ export const usersTable = pgTable('users', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   notify_order_updates: boolean('notify_order_updates').default(true).notNull(),
   notify_promos: boolean('notify_promos').default(true).notNull(),
-  notify_pincode: boolean('notify_pincode').default(true).notNull()
+  notify_pincode: boolean('notify_pincode').default(true).notNull(),
+  pushSubscription: jsonb('push_subscription'),
 });
 
 export const usersRelations = relations(usersTable, ({ many }) => ({

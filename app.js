@@ -1,5 +1,5 @@
 // file app.js
-
+// In app.js
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -23,6 +23,7 @@ import bundleRoutes from "./routes/bundles.js";
 import contactRoutes from "./routes/contact.js";
 import notificationRoutes from './routes/notifications.js';
 import promoRoutes from './routes/promoNotifications.js';
+import { initCronJobs } from './services/cron.service.js'; // 🟢 Import this
 const app = express();
 const server = http.createServer(app);
 
@@ -139,6 +140,11 @@ app.get('/wake-up', (req, res) => {
   console.log('✅ Ping received! Keeping the service awake.'); 
   res.send('✅ DevidAura backend awake');
 });
+
+
+// ───── Initialize Cron Jobs ─────
+initCronJobs();
+
 
 // ───── Start Server ─────
 const PORT = process.env.PORT || 3000;
