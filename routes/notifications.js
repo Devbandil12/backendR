@@ -576,4 +576,69 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
   }
 };
 
+export const sendPromotionalEmail = async (userEmail, userName, couponCode, description, discountValue, discountType) => {
+  console.log(`📩 Sending Promo Email to: ${userEmail}`);
+  if (!userEmail) return;
+
+  const discountDisplay = discountType === 'percent' ? `${discountValue}% OFF` : 
+                          discountType === 'flat' ? `₹${discountValue} OFF` : 'Free Gift';
+
+  const theme = {
+    bg: "#f4f4f5", cardBg: "#ffffff", gold: "#D4AF37", black: "#0a0a0a", radius: "24px" 
+  };
+
+  const emailHtml = `
+    <!DOCTYPE html>
+    <html>
+    <body style="margin: 0; padding: 0; background-color: ${theme.bg}; font-family: 'Montserrat', sans-serif;">
+      <table width="100%" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+          <td align="center" style="padding: 40px 10px;">
+            <table width="600" border="0" cellspacing="0" cellpadding="0" style="background-color: ${theme.cardBg}; border-radius: ${theme.radius}; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.08);">
+              <tr>
+                <td style="background-color: ${theme.black}; padding: 45px 40px; text-align: center;">
+                  <h1 style="color: #fff; margin: 0; font-size: 28px; letter-spacing: 2px;">DEVIDAURA</h1>
+                  <p style="color: ${theme.gold}; margin: 5px 0 0; font-size: 10px; letter-spacing: 2px; text-transform: uppercase;">Exclusive Offer For You</p>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 40px 40px 30px; text-align: center;">
+                  <h2 style="color: ${theme.black}; margin: 0 0 15px; font-size: 24px;">Hello, ${userName}</h2>
+                  <p style="color: #666; font-size: 14px; line-height: 1.6;">We've created a special offer just for you.</p>
+                  
+                  <div style="background: #fdfbf7; border: 1px dashed ${theme.gold}; border-radius: 12px; padding: 20px; margin: 25px 0;">
+                    <p style="color: #888; font-size: 12px; text-transform: uppercase; margin: 0 0 5px;">Your Code</p>
+                    <p style="color: ${theme.black}; font-size: 32px; font-weight: bold; margin: 0; letter-spacing: 2px;">${couponCode}</p>
+                    <p style="color: ${theme.gold}; font-weight: 600; margin: 10px 0 0;">${discountDisplay}</p>
+                  </div>
+                  
+                  <p style="color: #666; font-size: 13px;">${description || "Use this code at checkout to redeem your reward."}</p>
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="padding: 0 40px 40px;">
+                  <a href="https://devidaura.com" style="background-color: ${theme.black}; color: #ffffff; padding: 15px 40px; text-decoration: none; border-radius: 50px; font-weight: 600; font-size: 13px;">Shop Now</a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
+  `;
+
+  try {
+    await transporter.sendMail({
+      from: `"DevidAura Rewards" <${process.env.EMAIL_USER}>`,
+      to: userEmail,
+      subject: `🎁 A special gift for you: ${discountDisplay}`,
+      html: emailHtml,
+    });
+    console.log(`✅ Promo Email sent to ${userEmail}`);
+  } catch (error) {
+    console.error("❌ Promo Email FAILED:", error.message);
+  }
+};
+
 export default router;

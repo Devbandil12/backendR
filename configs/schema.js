@@ -323,6 +323,8 @@ export const couponsTable = pgTable('coupons', {
   cond_requiredSize: integer('cond_required_size'),
   action_buyX: integer('action_buy_x'),
   action_getY: integer('action_get_y'),
+  targetUserId: uuid('target_user_id').references(() => usersTable.id, { onDelete: 'cascade' }), // Null = Public
+  targetCategory: varchar('target_category', { length: 50 }), // 🟢 NEW: 'new_user', 'vip', 'returning', 'inactive'
 });
 
 export const testimonials = pgTable("testimonials", {
