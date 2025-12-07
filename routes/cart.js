@@ -8,14 +8,14 @@ import {
   wishlistTable,
   usersTable,
   productBundlesTable, 
-  savedForLaterTable // 🟢 IMPORTED
+  savedForLaterTable 
 } from "../configs/schema.js";
 import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 
-import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import * as keys from "../cacheKeys.js";
 
+// 🟢 FIXED: Removed unused 'cache' import that caused the crash
 const router = express.Router();
 
 /* =========================================================
@@ -25,7 +25,7 @@ const router = express.Router();
 // GET /api/cart/:userId — Get all cart items for a user
 router.get(
   "/:userId",
-  cache((req) => keys.makeCartKey(req.params.userId), 300),
+  // 🟢 FIXED: Removed cache middleware for live updates
   async (req, res) => {
     try {
       const { userId } = req.params;
@@ -231,10 +231,10 @@ router.post("/merge", async (req, res) => {
 });
 
 /* =========================================================
-   🕒 SAVED FOR LATER ROUTES (NEW)
+   🕒 SAVED FOR LATER ROUTES
 ========================================================= */
 
-// 🟢 GET /api/cart/saved-for-later/:userId
+// GET /api/cart/saved-for-later/:userId
 router.get("/saved-for-later/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -258,7 +258,7 @@ router.get("/saved-for-later/:userId", async (req, res) => {
   }
 });
 
-// 🟢 POST /api/cart/save-for-later — Move from Cart to Saved (Handles Merging)
+// POST /api/cart/save-for-later
 router.post("/save-for-later", async (req, res) => {
   const { userId, variantId, quantity } = req.body;
   if (!userId || !variantId) return res.status(400).json({ error: "Missing fields" });
@@ -271,7 +271,6 @@ router.post("/save-for-later", async (req, res) => {
       );
 
       // 2. Check if THIS variant is already in Saved
-      // (This prevents duplicates from showing up)
       const existing = await tx.query.savedForLaterTable.findFirst({
         where: and(
           eq(savedForLaterTable.userId, userId),
@@ -281,12 +280,10 @@ router.post("/save-for-later", async (req, res) => {
 
       // 3. Insert or Update Saved
       if (existing) {
-        // If it exists, just increase quantity
         await tx.update(savedForLaterTable)
           .set({ quantity: existing.quantity + (quantity || 1) })
           .where(eq(savedForLaterTable.id, existing.id));
       } else {
-        // If it doesn't exist, create new row
         await tx.insert(savedForLaterTable).values({
           userId,
           variantId,
@@ -303,7 +300,7 @@ router.post("/save-for-later", async (req, res) => {
   }
 });
 
-// 🟢 POST /api/cart/move-to-cart — Move from Saved to Cart (Handles Merging)
+// POST /api/cart/move-to-cart
 router.post("/move-to-cart", async (req, res) => {
   const { userId, variantId, quantity } = req.body;
   if (!userId || !variantId) return res.status(400).json({ error: "Missing fields" });
@@ -342,7 +339,7 @@ router.post("/move-to-cart", async (req, res) => {
   }
 });
 
-// 🟢 DELETE /api/cart/saved-for-later/:userId/:variantId
+// DELETE /api/cart/saved-for-later/:userId/:variantId
 router.delete("/saved-for-later/:userId/:variantId", async (req, res) => {
   try {
     const { userId, variantId } = req.params;
@@ -356,8 +353,6 @@ router.delete("/saved-for-later/:userId/:variantId", async (req, res) => {
   }
 });
 
-
-
 /* =========================================================
    💖 WISHLIST ROUTES
 ========================================================= */
@@ -365,7 +360,7 @@ router.delete("/saved-for-later/:userId/:variantId", async (req, res) => {
 // GET /api/cart/wishlist/:userId
 router.get(
   "/wishlist/:userId",
-  cache((req) => keys.makeWishlistKey(req.params.userId), 300),
+  // 🟢 FIXED: Removed 'cache(...)' middleware here too, to fix ReferenceError
   async (req, res) => {
     try {
       const { userId } = req.params;
