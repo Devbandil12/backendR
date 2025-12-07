@@ -238,4 +238,34 @@ router.put("/:id/unarchive", async (req, res) => {
   }
 });
 
+
+// 🟢 NEW: Manual Cache Invalidation Endpoint
+router.post("/cache/invalidate", async (req, res) => {
+  try {
+    // Invalidate the main product list cache
+    await invalidateMultiple([
+      { key: makeAllProductsKey(), prefix: true }
+    ]);
+    res.json({ success: true, message: "Product cache invalidated." });
+  } catch (error) {
+    console.error("❌ Error invalidating cache:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ... [Keep existing GET routes with cache enabled] ...
+router.get("/", cache(makeAllProductsKey(), 3600), async (req, res) => {
+  // ... existing code ...
+  try {
+    const products = await db.query.productsTable.findMany({
+      where: eq(productsTable.isArchived, false),
+      with: { variants: { where: eq(productVariantsTable.isArchived, false) } },
+    });
+    res.json(products);
+  } catch (error) {
+    console.error("❌ Error fetching products:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 export default router;
