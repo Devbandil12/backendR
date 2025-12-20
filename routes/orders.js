@@ -51,6 +51,7 @@ router.get("/", cache(makeAllOrdersKey(), 600), async (req, res) => {
                 createdAt: ordersTable.createdAt,
                 userEmail: usersTable.email,
                 paymentMode: ordersTable.paymentMode,
+                paymentStatus: ordersTable.paymentStatus,
             })
             .from(ordersTable)
             .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
