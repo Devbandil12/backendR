@@ -15,7 +15,6 @@ import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import * as keys from "../cacheKeys.js";
 
-// 🟢 FIXED: Removed unused 'cache' import that caused the crash
 const router = express.Router();
 
 /* =========================================================
@@ -25,7 +24,6 @@ const router = express.Router();
 // GET /api/cart/:userId — Get all cart items for a user
 router.get(
   "/:userId",
-  // 🟢 FIXED: Removed cache middleware for live updates
   async (req, res) => {
     try {
       const { userId } = req.params;
@@ -235,6 +233,7 @@ router.post("/merge", async (req, res) => {
 ========================================================= */
 
 // GET /api/cart/saved-for-later/:userId
+// 🟢 FIXED: Added bundle lookup logic (same as Main Cart)
 router.get("/saved-for-later/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -244,11 +243,42 @@ router.get("/saved-for-later/:userId", async (req, res) => {
         variant: { with: { product: true } },
       },
     });
+
+    // 🟢 Step 1: Enrich items with bundle contents if applicable
+    const detailedSavedItems = await Promise.all(savedItems.map(async (item) => {
+        // Check if this variant is a bundle (has entries in productBundlesTable)
+        const bundleContents = await db.query.productBundlesTable.findMany({
+          where: eq(productBundlesTable.bundleVariantId, item.variantId),
+          with: {
+            content: { 
+              with: {
+                product: true 
+              }
+            }
+          }
+        });
+
+        if (bundleContents.length > 0) {
+          return {
+            ...item,
+            isBundle: true,
+            // 🟢 Flatten structure for easier frontend consumption
+            contents: bundleContents.map(c => ({
+              quantity: c.quantity,
+              name: c.content.product.name,
+              variantName: c.content.name
+            }))
+          };
+        }
+        
+        return { ...item, isBundle: false, contents: [] };
+    }));
     
-    // Transform to match frontend expectations
-    const formatted = savedItems.map(item => ({
+    // 🟢 Step 2: Transform to match frontend expectations
+    const formatted = detailedSavedItems.map(item => ({
       ...item,
-      product: item.variant.product,
+      product: item.variant.product, // Lift product up
+      // isBundle and contents are now included
     }));
 
     res.json(formatted);
