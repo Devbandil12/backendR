@@ -13,7 +13,7 @@ import {
 } from '../cacheKeys.js';
 import { createNotification } from '../helpers/notificationManager.js';
 // 🟢 UPDATED: Import the Email Helper
-import { sendOrderConfirmationEmail } from '../routes/notifications.js';
+import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
 
 // 🟢 FIX: Return a Date object, not a string. Drizzle handles the conversion.
 const safeDate = (timestamp) => {
@@ -166,6 +166,7 @@ const razorpayWebhookHandler = async (req, res) => {
                         
                         if (user && user.email) {
                            await sendOrderConfirmationEmail(user.email, existingOrder, items);
+                           await sendAdminOrderAlert(existingOrder, items);
                            console.log(`📧 Email sent to ${user.email} from webhook`);
                         }
                     } catch (emailErr) {

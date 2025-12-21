@@ -25,7 +25,7 @@ import {
 import { calculatePriceBreakdown } from '../helpers/priceEngine.js';
 import { createNotification } from '../helpers/notificationManager.js';
 // 🟢 Import Email Helper
-import { sendOrderConfirmationEmail } from '../routes/notifications.js';
+import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
 
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
@@ -243,6 +243,7 @@ export const createOrder = async (req, res) => {
         
       if (dbUser?.email) {
         await sendOrderConfirmationEmail(dbUser.email, insertedOrder[0], enrichedItems);
+        await sendAdminOrderAlert(insertedOrder[0], enrichedItems);
       }
 
       const variantIdsToClear = secureCartItems.map(item => item.variantId);
@@ -439,6 +440,7 @@ export const verifyPayment = async (req, res) => {
       if (dbUser?.email && orderItems.length > 0) {
         console.log(`📧 Sending Online Order Email to ${dbUser.email}`);
         await sendOrderConfirmationEmail(dbUser.email, updatedOrder, orderItems);
+        await sendAdminOrderAlert(updatedOrder, orderItems);
       }
     } catch (emailError) {
       console.error("⚠️ Manual email send failed in verifyPayment:", emailError);

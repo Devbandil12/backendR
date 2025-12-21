@@ -370,6 +370,41 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
   }
 };
 
+export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
+    const adminEmail = process.env.EMAIL_USER;
+    if (!adminEmail) return;
+
+    console.log(`👮 Sending Admin Alert for Order #${orderDetails.id}`);
+
+    const itemsList = orderItems.map(item => 
+        `<li>${item.productName} (${item.size}) x ${item.quantity} - ₹${item.totalPrice}</li>`
+    ).join('');
+
+    const html = `
+        <h3>🚀 New Order Received!</h3>
+        <p><strong>Order ID:</strong> ${orderDetails.id}</p>
+        <p><strong>Amount:</strong> ₹${orderDetails.totalAmount}</p>
+        <p><strong>Payment Mode:</strong> ${orderDetails.paymentMode}</p>
+        <p><strong>Customer ID:</strong> ${orderDetails.userId}</p>
+        <hr/>
+        <h4>Items:</h4>
+        <ul>${itemsList}</ul>
+        <hr/>
+        <p>Login to admin panel to view details.</p>
+    `;
+
+    try {
+        await transporter.sendMail({
+            from: `"DevidAura System" <${process.env.EMAIL_USER}>`,
+            to: adminEmail, // Sending TO the admin (same as sender)
+            subject: `[ADMIN] New Order #${orderDetails.id} - ₹${orderDetails.totalAmount}`,
+            html: html
+        });
+        console.log(`✅ Admin alert sent to ${adminEmail}`);
+    } catch (error) {
+        console.error("❌ Admin Alert FAILED:", error.message);
+    }
+};
 
 
 // ------------------------------------------------------------------
