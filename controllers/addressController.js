@@ -349,14 +349,27 @@ export async function createPincodesBatch(req, res) {
       return res.status(400).json({ success: false, msg: "Pincode data is missing or invalid." });
     }
 
-    const cleanPincodes = pincodes.map(p => ({
-      ...p,
-      city: p.city ? p.city.trim() : 'Unknown',
-      state: p.state ? p.state.trim() : 'Unknown'
-    }));
+    // 1. Deduplicate: Use a Map to ensure each pincode appears only once per batch
+    const uniquePincodesMap = new Map();
+    pincodes.forEach(p => {
+        if (p.pincode) {
+            // This overwrites duplicates, keeping the last "District/State" found for this pincode
+            uniquePincodesMap.set(p.pincode.toString(), {
+                ...p,
+                city: p.city ? p.city.trim() : 'Unknown',
+                state: p.state ? p.state.trim() : 'Unknown'
+            });
+        }
+    });
 
+    const cleanPincodes = Array.from(uniquePincodesMap.values());
+
+    if (cleanPincodes.length === 0) {
+        return res.json({ success: true, msg: "No valid unique pincodes found in this batch." });
+    }
+
+    // 2. Find existing users to notify (Optional Logic)
     const allPincodeStrings = cleanPincodes.map(p => p.pincode);
-
     const potentialUsers = await db.selectDistinct({ 
         userId: UserAddressTable.userId, 
         postalCode: UserAddressTable.postalCode 
@@ -364,6 +377,7 @@ export async function createPincodesBatch(req, res) {
       .from(UserAddressTable)
       .where(inArray(UserAddressTable.postalCode, allPincodeStrings));
 
+    // 3. Upsert (Insert or Update if exists)
     await db.insert(pincodeServiceabilityTable)
       .values(cleanPincodes)
       .onConflictDoUpdate({
@@ -377,6 +391,7 @@ export async function createPincodesBatch(req, res) {
         }
       });
     
+    // 4. Send Notifications (Fire and Forget)
     if (potentialUsers.length > 0) {
       let notificationPromises = [];
       const pincodeRules = new Map(cleanPincodes.map(p => [p.pincode, p]));
@@ -388,11 +403,6 @@ export async function createPincodesBatch(req, res) {
         if (rule.isServiceable) {
           notificationPromises.push(
             createNotification(user.userId, `We've got you covered! We are now delivering to your area in ${user.postalCode}.`, '/', 'system')
-          );
-        }
-        if (rule.codAvailable) {
-          notificationPromises.push(
-            createNotification(user.userId, `Good news! Cash on Delivery is now available for your address in ${user.postalCode}.`, '/cart', 'system')
           );
         }
       }
