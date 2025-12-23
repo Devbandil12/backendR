@@ -262,26 +262,46 @@ router.delete("/:id", async (req, res) => {
 });
 
 /* ======================================================
-   GET LOGS (Optional: Fetch logs for specific actor)
+   🟢 GET LOGS FOR SPECIFIC USER (Corrected with Joins)
 ====================================================== */
 router.get("/:id/logs", async (req, res) => {
     try {
       const { id } = req.params;
       
-      // 🟢 FIX: Fetch where User is the ACTOR (userId) OR the TARGET (targetId)
-      // This ensures they see "Admin changed my role" (Target) AND "I updated my profile" (Actor)
+      const targetUserTable = alias(usersTable, "target_user");
+
+      // 🟢 Fetch logs AND join with users table to get Names
       const logs = await db
-        .select()
+        .select({
+            id: activityLogsTable.id,
+            action: activityLogsTable.action,
+            description: activityLogsTable.description,
+            createdAt: activityLogsTable.createdAt,
+            performedBy: activityLogsTable.performedBy,
+            metadata: activityLogsTable.metadata,
+            
+            actorName: usersTable.name, // Name of person doing action
+            targetName: targetUserTable.name, // Name of person affected
+        })
         .from(activityLogsTable)
+        .leftJoin(usersTable, eq(activityLogsTable.userId, usersTable.id))
+        .leftJoin(targetUserTable, eq(activityLogsTable.targetId, targetUserTable.id))
         .where(
             or(
                 eq(activityLogsTable.userId, id),   // Actions I did
                 eq(activityLogsTable.targetId, id)  // Actions done to me
             )
         )
-        .orderBy(desc(activityLogsTable.createdAt)); // Newest first
+        .orderBy(desc(activityLogsTable.createdAt));
 
-      res.json(logs);
+      // 🟢 Format to match Frontend expectations
+      const formattedLogs = logs.map(log => ({
+          ...log,
+          actor: { name: log.actorName || (log.performedBy === 'admin' ? 'Admin' : 'Unknown') },
+          target: { name: log.targetName }
+      }));
+
+      res.json(formattedLogs);
     } catch (error) {
       console.error("❌ Error fetching logs:", error);
       res.status(500).json({ error: "Internal Server Error" });
@@ -388,8 +408,5 @@ router.get(
     }
   }
 );
-
-
-
 
 export default router;
