@@ -411,14 +411,14 @@ export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
 // 🟢 REUSABLE RECOVERY LOGIC (Exported for Cron)
 // ------------------------------------------------------------------
 export const executeRecoveryForUsers = async (userIds) => {
-    console.log(`🚀 Processing Recovery for ${userIds.length} users...`);
-    let successCount = 0;
+    console.log(`🚀 Processing Recovery for ${userIds.length} users in parallel...`);
 
-    for (const userId of userIds) {
+    // ✅ OPTIMIZED: Process all users simultaneously
+    const results = await Promise.all(userIds.map(async (userId) => {
         try {
             // 1. Fetch User
             const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
-            if (!user) continue;
+            if (!user) return 0; // Skip
 
             // 2. Fetch Cart Items
             const cartItems = await db.select({
@@ -433,7 +433,7 @@ export const executeRecoveryForUsers = async (userIds) => {
             .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
             .where(eq(addToCartTable.userId, userId));
 
-            if (cartItems.length === 0) continue;
+            if (cartItems.length === 0) return 0; // Skip if empty
 
             const formattedItems = cartItems.map(item => ({
                 ...item,
@@ -441,25 +441,37 @@ export const executeRecoveryForUsers = async (userIds) => {
                 totalPrice: item.price * item.quantity
             }));
 
-            // 3. Send Push
+            // 3. Send Notifications (Run Push & Email in parallel for this specific user too)
+            const tasks = [];
+
             if (user.pushSubscription) {
-                await sendPushNotification(user.pushSubscription, {
-                    title: "Still thinking about it? 🤔",
-                    body: "Your luxury items are waiting! Complete your order before they sell out.",
-                    url: "/cart"
-                });
+                tasks.push(
+                    sendPushNotification(user.pushSubscription, {
+                        title: "Still thinking about it? 🤔",
+                        body: "Your luxury items are waiting! Complete your order before they sell out.",
+                        url: "/cart"
+                    }).catch(err => console.error(`Push failed for ${user.email}`))
+                );
             }
 
-            // 4. Send Email
             if (user.email) {
-                await sendAbandonedCartEmail(user.email, user.name, formattedItems);
+                tasks.push(
+                    sendAbandonedCartEmail(user.email, user.name, formattedItems)
+                        .catch(err => console.error(`Email failed for ${user.email}`))
+                );
             }
 
-            successCount++;
+            await Promise.all(tasks); // Wait for both to finish sending
+            return 1; // Return 1 success count
+
         } catch (err) {
             console.error(`❌ Failed recovery for user ${userId}:`, err.message);
+            return 0; // Return 0 on failure
         }
-    }
+    }));
+
+    // Sum up all the 1s returned from the successful promises
+    const successCount = results.reduce((sum, count) => sum + count, 0);
     return successCount;
 };
 
@@ -470,9 +482,16 @@ router.post('/recover-abandoned', async (req, res) => {
         return res.status(400).json({ error: "No users provided" });
     }
     
-    const count = await executeRecoveryForUsers(userIds);
-    res.json({ success: true, message: `Recovery sent to ${count} users.` });
+    // 🚀 FIRE AND FORGET: 
+    // We do NOT use 'await'. We start the function and immediately reply to the user.
+    executeRecoveryForUsers(userIds)
+        .then(count => console.log(`✅ Background Process Finished: ${count} emails sent.`))
+        .catch(err => console.error("❌ Background Process Error:", err));
+
+    // Respond INSTANTLY to the frontend
+    res.json({ success: true, message: `Recovery initiated for ${userIds.length} users!` });
 });
+
 
 // 🟢 HELPER: Luxury Abandoned Cart Email
 export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => {
