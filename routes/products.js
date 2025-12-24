@@ -1,8 +1,8 @@
 // routes/products.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { productsTable, productVariantsTable, activityLogsTable } from "../configs/schema.js"; // 🟢 Added
-import { eq, and } from "drizzle-orm"; 
+import { productsTable, productVariantsTable, activityLogsTable, ordersTable, orderItemsTable, wishlistTable, } from "../configs/schema.js"; // 🟢 Added
+import { eq, inArray, notInArray, desc, sql, and, gt, ne } from "drizzle-orm";
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeAllProductsKey, makeProductKey } from "../cacheKeys.js";
@@ -45,7 +45,7 @@ router.get("/:id", cache((req) => makeProductKey(req.params.id), 1800), async (r
     });
 
     if (!product) return res.status(404).json({ error: "Product not found" });
-    if (typeof product.imageurl === "string") { try { product.imageurl = JSON.parse(product.imageurl); } catch {} }
+    if (typeof product.imageurl === "string") { try { product.imageurl = JSON.parse(product.imageurl); } catch { } }
     res.json(product);
   } catch (error) {
     console.error("❌ Error fetching product:", error);
@@ -66,14 +66,14 @@ router.post("/", async (req, res) => {
   try {
     const newProduct = await db.transaction(async (tx) => {
       const [product] = await tx.insert(productsTable).values({
-          name: productData.name,
-          description: productData.description,
-          composition: productData.composition,
-          fragrance: productData.fragrance,
-          fragranceNotes: productData.fragranceNotes,
-          category: productData.category,
-          imageurl: productData.imageurl,
-        }).returning();
+        name: productData.name,
+        description: productData.description,
+        composition: productData.composition,
+        fragrance: productData.fragrance,
+        fragranceNotes: productData.fragranceNotes,
+        category: productData.category,
+        imageurl: productData.imageurl,
+      }).returning();
 
       const variantsToInsert = variants.map((variant) => ({
         ...variant,
@@ -116,7 +116,7 @@ router.put("/:id", async (req, res) => {
   const {
     variants, oprice, discount, size, stock,
     costPrice, sold, sku, isArchived, actorId, // 🟢 Extract actorId
-    ...productData 
+    ...productData
   } = req.body;
 
   try {
@@ -124,7 +124,7 @@ router.put("/:id", async (req, res) => {
 
     const [updatedProduct] = await db
       .update(productsTable)
-      .set(productData) 
+      .set(productData)
       .where(eq(productsTable.id, id))
       .returning();
 
@@ -132,20 +132,20 @@ router.put("/:id", async (req, res) => {
 
     // 🟢 LOG CHANGES
     if (actorId && currentProduct) {
-        const changes = [];
-        if (productData.name && productData.name !== currentProduct.name) changes.push("Name");
-        if (productData.category && productData.category !== currentProduct.category) changes.push("Category");
-        // Add more field checks if needed
+      const changes = [];
+      if (productData.name && productData.name !== currentProduct.name) changes.push("Name");
+      if (productData.category && productData.category !== currentProduct.category) changes.push("Category");
+      // Add more field checks if needed
 
-        if (changes.length > 0 || variants) { 
-            await db.insert(activityLogsTable).values({
-                userId: actorId,
-                action: 'PRODUCT_UPDATE',
-                description: `Updated product ${updatedProduct.name}: ${changes.length > 0 ? changes.join(', ') : 'Variants updated'}`,
-                performedBy: 'admin',
-                metadata: { productId: id, changes }
-            });
-        }
+      if (changes.length > 0 || variants) {
+        await db.insert(activityLogsTable).values({
+          userId: actorId,
+          action: 'PRODUCT_UPDATE',
+          description: `Updated product ${updatedProduct.name}: ${changes.length > 0 ? changes.join(', ') : 'Variants updated'}`,
+          performedBy: 'admin',
+          metadata: { productId: id, changes }
+        });
+      }
     }
 
     await invalidateMultiple([
@@ -170,7 +170,7 @@ router.put("/:id/archive", async (req, res) => {
   try {
     const [archivedProduct] = await db
       .update(productsTable)
-      .set({ isArchived: true }) 
+      .set({ isArchived: true })
       .where(eq(productsTable.id, id))
       .returning();
 
@@ -178,13 +178,13 @@ router.put("/:id/archive", async (req, res) => {
 
     // 🟢 LOG ACTIVITY
     if (actorId) {
-        await db.insert(activityLogsTable).values({
-            userId: actorId,
-            action: 'PRODUCT_ARCHIVE',
-            description: `Archived product: ${archivedProduct.name}`,
-            performedBy: 'admin',
-            metadata: { productId: id }
-        });
+      await db.insert(activityLogsTable).values({
+        userId: actorId,
+        action: 'PRODUCT_ARCHIVE',
+        description: `Archived product: ${archivedProduct.name}`,
+        performedBy: 'admin',
+        metadata: { productId: id }
+      });
     }
 
     await invalidateMultiple([
@@ -209,7 +209,7 @@ router.put("/:id/unarchive", async (req, res) => {
   try {
     const [unarchivedProduct] = await db
       .update(productsTable)
-      .set({ isArchived: false }) 
+      .set({ isArchived: false })
       .where(eq(productsTable.id, id))
       .returning();
 
@@ -218,11 +218,11 @@ router.put("/:id/unarchive", async (req, res) => {
     // 🟢 LOG ACTIVITY
     if (actorId) {
       await db.insert(activityLogsTable).values({
-          userId: actorId,
-          action: 'PRODUCT_UNARCHIVE',
-          description: `Unarchived product: ${unarchivedProduct.name}`,
-          performedBy: 'admin',
-          metadata: { productId: id }
+        userId: actorId,
+        action: 'PRODUCT_UNARCHIVE',
+        description: `Unarchived product: ${unarchivedProduct.name}`,
+        performedBy: 'admin',
+        metadata: { productId: id }
       });
     }
 
@@ -265,6 +265,129 @@ router.get("/", cache(makeAllProductsKey(), 3600), async (req, res) => {
   } catch (error) {
     console.error("❌ Error fetching products:", error);
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+router.post('/recommendations', async (req, res) => {
+  const { excludeIds, userId } = req.body;
+
+  try {
+    // 1. SANITIZE INPUTS
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const safeExcludeIds = (excludeIds || []).filter(id => typeof id === 'string' && uuidRegex.test(id));
+    const safeUserId = (typeof userId === 'string' && uuidRegex.test(userId)) ? userId : null;
+
+    // 2. AGGREGATE USER HISTORY
+    let sourceProductIds = new Set(safeExcludeIds);
+
+    if (safeUserId) {
+      // Recent Orders
+      const recentOrders = await db.select({ productId: orderItemsTable.productId })
+        .from(orderItemsTable)
+        .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
+        .where(eq(ordersTable.userId, safeUserId))
+        .orderBy(desc(ordersTable.createdAt))
+        .limit(10);
+
+      recentOrders.forEach(o => sourceProductIds.add(o.productId));
+
+      // Wishlist
+      const wishlist = await db.select({ productId: productVariantsTable.productId })
+        .from(wishlistTable)
+        .innerJoin(productVariantsTable, eq(wishlistTable.variantId, productVariantsTable.id))
+        .where(eq(wishlistTable.userId, safeUserId));
+
+      wishlist.forEach(w => sourceProductIds.add(w.productId));
+    }
+
+    // 3. FETCH CANDIDATES
+    // Filter: Active products AND NOT 'Template' category
+    let whereClause = and(
+        eq(productsTable.isArchived, false),
+        ne(productsTable.category, 'Template') 
+    );
+
+    if (safeExcludeIds.length > 0) {
+      whereClause = and(
+        eq(productsTable.isArchived, false),
+        ne(productsTable.category, 'Template'),
+        notInArray(productsTable.id, safeExcludeIds)
+      );
+    }
+
+    let candidates = await db.query.productsTable.findMany({
+      where: whereClause,
+      with: {
+        variants: {
+          // 🟢 EXPLICITLY SELECT COLUMNS (Added 'name' here)
+          columns: {
+            id: true,
+            name: true,     // <--- ADDED: Fixes the "undefined" toast issue
+            size: true,
+            oprice: true,
+            discount: true,
+            stock: true,
+            isArchived: true
+          },
+          where: and(
+            eq(productVariantsTable.isArchived, false),
+            gt(productVariantsTable.stock, 0)
+          )
+        }
+      }
+    });
+
+    if (candidates.length === 0) return res.json([]);
+
+    // 4. SCORE & RETURN
+    const uniqueSourceIds = Array.from(sourceProductIds);
+    const safeSourceIds = uniqueSourceIds.filter(id => uuidRegex.test(id));
+
+    if (safeSourceIds.length === 0) {
+      return res.json([]);
+    }
+
+    // Fetch source products for matching
+    let sourceProducts = [];
+    if (safeSourceIds.length > 0) {
+      sourceProducts = await db.query.productsTable.findMany({
+        where: inArray(productsTable.id, safeSourceIds),
+      });
+    }
+
+    const profile = { compositions: new Set(), fragrances: new Set(), notes: new Set() };
+
+    sourceProducts.forEach(p => {
+      if (p.composition) profile.compositions.add(p.composition.toLowerCase().trim());
+      if (p.fragrance) profile.fragrances.add(p.fragrance.toLowerCase().trim());
+      if (p.fragranceNotes) p.fragranceNotes.split(',').forEach(n => profile.notes.add(n.toLowerCase().trim()));
+    });
+
+    const scoredCandidates = candidates.map(product => {
+      let score = 0;
+      let reasons = [];
+
+      if (product.composition && profile.compositions.has(product.composition.toLowerCase().trim())) score += 2;
+      if (product.fragrance && profile.fragrances.has(product.fragrance.toLowerCase().trim())) {
+        score += 3;
+        reasons.push(product.fragrance);
+      }
+
+      const matchReason = reasons.length > 0 ? reasons.join(" • ") : "Trending";
+      return { ...product, score, matchReason };
+    })
+    // Filter: Only keep items that match
+    .filter(product => product.score > 0);
+
+    // Sort by score
+    scoredCandidates.sort((a, b) => b.score - a.score);
+
+    res.json(scoredCandidates.slice(0, 4));
+
+  } catch (error) {
+    console.error("Recommend Error:", error);
+    res.json([]);
   }
 });
 
