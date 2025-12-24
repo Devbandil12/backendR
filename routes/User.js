@@ -19,7 +19,7 @@ import { makeAllUsersKey, makeFindByClerkIdKey, makeUserAddressesKey, makeUserOr
 const router = express.Router();
 
 /* ======================================================
-   🟢 GET ALL ADMIN LOGS (Robust Join Version)
+   🟢 GET ALL ADMIN LOGS (Strictly for Admin Panel)
 ====================================================== */
 router.get("/admin/all-activity-logs", async (req, res) => {
   try {
@@ -56,7 +56,6 @@ router.get("/admin/all-activity-logs", async (req, res) => {
             profileImage: log.actorImage
         },
         target: {
-            // 🟢 FIX 4: Remove "|| 'System'". Let it be null.
             name: log.targetName, 
             email: log.targetEmail
         }
@@ -162,12 +161,11 @@ router.put("/:id", async (req, res) => {
   const { id } = req.params; // Target User ID
 
   try {
-    // 🟢 FIX 1: Select 'email' and 'role' so they are not undefined in the log
     const userToUpdate = await db.query.usersTable.findFirst({
       columns: { 
           clerkId: true, 
-          email: true,  // 👈 Needed for "Updated user@email.com"
-          role: true,   // 👈 Needed for "Role (user -> admin)"
+          email: true,
+          role: true,
           name: true 
       },
       where: eq(usersTable.id, id),
@@ -175,7 +173,7 @@ router.put("/:id", async (req, res) => {
 
     if (!userToUpdate) return res.status(404).json({ message: "User not found" });
 
-    // 🟢 Extract 'actorId' (Who is doing the update?)
+    // Extract 'actorId' (Who is doing the update?)
     const { profileImage, dob, gender, role, actorId, ...rest } = req.body;
 
     const [updatedUser] = await db
@@ -194,8 +192,6 @@ router.put("/:id", async (req, res) => {
     const changes = [];
     if (req.body.name && req.body.name !== userToUpdate.name) changes.push("Name");
     if (req.body.phone && req.body.phone !== userToUpdate.phone) changes.push("Phone");
-    
-    // 🟢 FIX 2: Now 'userToUpdate.role' will have a real value (e.g., "user")
     if (role && role !== userToUpdate.role) changes.push(`Role (${userToUpdate.role} → ${role})`);
 
     if (changes.length > 0) {
@@ -205,12 +201,9 @@ router.put("/:id", async (req, res) => {
 
       await db.insert(activityLogsTable).values({
         userId: logUserId, 
-        // 🟢 FIX 3: Explicitly save targetId to link the "Target User" for the UI
         targetId: id,
         
         action: isRoleChange ? 'ADMIN_UPDATE' : 'PROFILE_UPDATE', 
-        
-        // 🟢 FIX 4: Now 'userToUpdate.email' will be correct
         description: `Updated ${userToUpdate.email}: ${changes.join(', ')}`,
         
         performedBy: isRoleChange ? 'admin' : 'user', 
@@ -262,7 +255,10 @@ router.delete("/:id", async (req, res) => {
 });
 
 /* ======================================================
-   🟢 GET LOGS FOR SPECIFIC USER (Corrected with Joins)
+   🟢 GET LOGS FOR SPECIFIC USER (Strictly My Actions)
+   - Only shows actions performed BY the user (userId = id).
+   - Removes actions performed ON the user by others (targetId = id).
+   - If User is Admin, shows their Admin actions too (Only Theirs).
 ====================================================== */
 router.get("/:id/logs", async (req, res) => {
     try {
@@ -270,7 +266,6 @@ router.get("/:id/logs", async (req, res) => {
       
       const targetUserTable = alias(usersTable, "target_user");
 
-      // 🟢 Fetch logs AND join with users table to get Names
       const logs = await db
         .select({
             id: activityLogsTable.id,
@@ -280,25 +275,33 @@ router.get("/:id/logs", async (req, res) => {
             performedBy: activityLogsTable.performedBy,
             metadata: activityLogsTable.metadata,
             
-            actorName: usersTable.name, // Name of person doing action
-            targetName: targetUserTable.name, // Name of person affected
+            actorName: usersTable.name,
+            actorImage: usersTable.profileImage,
+
+            targetName: targetUserTable.name,
         })
         .from(activityLogsTable)
         .leftJoin(usersTable, eq(activityLogsTable.userId, usersTable.id))
         .leftJoin(targetUserTable, eq(activityLogsTable.targetId, targetUserTable.id))
         .where(
-            or(
-                eq(activityLogsTable.userId, id),   // Actions I did
-                eq(activityLogsTable.targetId, id)  // Actions done to me
-            )
+            eq(activityLogsTable.userId, id) // 🟢 STRICT FILTER: Only actions I performed
         )
-        .orderBy(desc(activityLogsTable.createdAt));
+        .orderBy(desc(activityLogsTable.createdAt))
+        .limit(50); 
 
-      // 🟢 Format to match Frontend expectations
       const formattedLogs = logs.map(log => ({
-          ...log,
-          actor: { name: log.actorName || (log.performedBy === 'admin' ? 'Admin' : 'Unknown') },
-          target: { name: log.targetName }
+          id: log.id,
+          type: 'security',
+          action: log.action,
+          description: log.description,
+          createdAt: log.createdAt,
+          performedBy: log.performedBy,
+          actor: { 
+            name: log.actorName || 'You', 
+            profileImage: log.actorImage 
+          },
+          target: { name: log.targetName }, // Useful if I (Admin) updated someone else
+          metadata: log.metadata
       }));
 
       res.json(formattedLogs);
