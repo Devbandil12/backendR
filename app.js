@@ -23,7 +23,9 @@ import bundleRoutes from "./routes/bundles.js";
 import contactRoutes from "./routes/contact.js";
 import notificationRoutes from './routes/notifications.js';
 import promoRoutes from './routes/promoNotifications.js';
-import { initCronJobs } from './services/cron.service.js'; // 🟢 Import this
+import { initCronJobs } from './services/cron.service.js'; 
+import cmsRoutes from './routes/cms.js';
+
 const app = express();
 const server = http.createServer(app);
 
@@ -133,12 +135,13 @@ app.use("/api/bundles", bundleRoutes);
 app.use("/api/contact", contactRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/promos', promoRoutes);
+app.use('/api/cms', cmsRoutes);
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));
 app.get('/wake-up', (req, res) => {
   console.log('✅ Ping received! Keeping the service awake.'); 
-  res.send('✅ DevidAura backend awake');
+  res.send('✅ Devid Aura backend awake');
 });
 
 

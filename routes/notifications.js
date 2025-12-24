@@ -241,7 +241,7 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
                 <td style="background-color: ${theme.black}; padding: 45px 40px; text-align: center; position: relative;">
                   <div style="width: 100px; height: 100px; background: radial-gradient(circle, ${theme.gold} 0%, transparent 70%); opacity: 0.2; position: absolute; top: -20px; left: 50%; transform: translateX(-50%); border-radius: 50%;"></div>
                   
-                  <h1 style="font-family: 'Cormorant Garamond', serif; color: #fff; margin: 0; font-size: 32px; letter-spacing: 3px; font-weight: 400; text-transform: uppercase; position: relative; z-index: 10;">DEVIDAURA</h1>
+                  <h1 style="font-family: 'Cormorant Garamond', serif; color: #fff; margin: 0; font-size: 32px; letter-spacing: 3px; font-weight: 400; text-transform: uppercase; position: relative; z-index: 10;">DEVID AURA</h1>
                   <p style="font-family: 'Montserrat', sans-serif; color: ${theme.gold}; margin: 8px 0 0; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; font-weight: 500;">The Essence of Luxury</p>
                 </td>
               </tr>
@@ -341,7 +341,7 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
                   <p style="margin: 0; font-size: 11px; color: #999; font-family: 'Montserrat', sans-serif;">
                     Need help? <a href="mailto:support@devidaura.com" style="color: ${theme.black}; text-decoration: underline;">Contact Support</a>
                   </p>
-                  <p style="margin: 10px 0 0; font-size: 11px; color: #ccc; font-family: 'Montserrat', sans-serif;">&copy; ${new Date().getFullYear()} DevidAura. All rights reserved.</p>
+                  <p style="margin: 10px 0 0; font-size: 11px; color: #ccc; font-family: 'Montserrat', sans-serif;">&copy; ${new Date().getFullYear()} Devid Aura. All rights reserved.</p>
                 </td>
               </tr>
 
@@ -355,7 +355,7 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
   `;
 
   const mailOptions = {
-    from: `"DevidAura Luxury" <${process.env.EMAIL_USER}>`,
+    from: `"Devid Aura Luxury" <${process.env.EMAIL_USER}>`,
     to: userEmail,
     subject: `Order Confirmed: #${orderDetails.id}`,
     html: emailHtml,
@@ -395,7 +395,7 @@ export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
 
     try {
         await transporter.sendMail({
-            from: `"DevidAura System" <${process.env.EMAIL_USER}>`,
+            from: `"Devid Aura System" <${process.env.EMAIL_USER}>`,
             to: adminEmail, // Sending TO the admin (same as sender)
             subject: `[ADMIN] New Order #${orderDetails.id} - ₹${orderDetails.totalAmount}`,
             html: html
@@ -549,7 +549,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
               
               <tr>
                 <td style="background-color: ${theme.black}; padding: 45px 40px; text-align: center; position: relative;">
-                  <h1 style="font-family: 'Cormorant Garamond', serif; color: #fff; margin: 0; font-size: 32px; letter-spacing: 3px; font-weight: 400; text-transform: uppercase;">DEVIDAURA</h1>
+                  <h1 style="font-family: 'Cormorant Garamond', serif; color: #fff; margin: 0; font-size: 32px; letter-spacing: 3px; font-weight: 400; text-transform: uppercase;">DEVID AURA</h1>
                   <p style="font-family: 'Montserrat', sans-serif; color: ${theme.gold}; margin: 8px 0 0; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; font-weight: 500;">Don't let them go</p>
                 </td>
               </tr>
@@ -603,7 +603,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
 
               <tr>
                 <td style="background-color: #f9f9f9; padding: 20px; text-align: center; border-top: 1px solid #eee;">
-                  <p style="margin: 0; font-size: 11px; color: #999; font-family: 'Montserrat', sans-serif;">DevidAura • Luxury Fragrances</p>
+                  <p style="margin: 0; font-size: 11px; color: #999; font-family: 'Montserrat', sans-serif;">Devid Aura • Luxury Fragrances</p>
                 </td>
               </tr>
 
@@ -616,7 +616,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
   `;
 
   const mailOptions = {
-    from: `"DevidAura Concierge" <${process.env.EMAIL_USER}>`,
+    from: `"Devid Aura Concierge" <${process.env.EMAIL_USER}>`,
     to: userEmail,
     subject: `Items waiting in your cart 🛒`,
     html: emailHtml,
@@ -651,7 +651,7 @@ export const sendPromotionalEmail = async (userEmail, userName, couponCode, desc
             <table width="600" border="0" cellspacing="0" cellpadding="0" style="background-color: ${theme.cardBg}; border-radius: ${theme.radius}; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.08);">
               <tr>
                 <td style="background-color: ${theme.black}; padding: 45px 40px; text-align: center;">
-                  <h1 style="color: #fff; margin: 0; font-size: 28px; letter-spacing: 2px;">DEVIDAURA</h1>
+                  <h1 style="color: #fff; margin: 0; font-size: 28px; letter-spacing: 2px;">DEVID AURA</h1>
                   <p style="color: ${theme.gold}; margin: 5px 0 0; font-size: 10px; letter-spacing: 2px; text-transform: uppercase;">Exclusive Offer For You</p>
                 </td>
               </tr>
@@ -684,7 +684,7 @@ export const sendPromotionalEmail = async (userEmail, userName, couponCode, desc
 
   try {
     await transporter.sendMail({
-      from: `"DevidAura Rewards" <${process.env.EMAIL_USER}>`,
+      from: `"Devid Aura Rewards" <${process.env.EMAIL_USER}>`,
       to: userEmail,
       subject: `🎁 A special gift for you: ${discountDisplay}`,
       html: emailHtml,

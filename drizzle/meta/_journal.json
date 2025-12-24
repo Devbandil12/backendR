@@ -162,6 +162,34 @@
       "when": 1765049834401,
       "tag": "0022_mushy_malice",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1766514342868,
+      "tag": "0023_overjoyed_falcon",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1766516502061,
+      "tag": "0024_amusing_aaron_stack",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1766518256649,
+      "tag": "0025_perfect_shatterstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1766519373506,
+      "tag": "0026_cool_bloodaxe",
+      "breakpoints": true
     }
   ]
 }

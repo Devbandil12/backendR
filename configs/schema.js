@@ -461,3 +461,69 @@ export const activityLogsRelations = relations(activityLogsTable, ({ one }) => (
     relationName: "targetLogs"
   }),
 }));
+
+export const bannersTable = pgTable('banners', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  title: text('title').notNull(),
+  subtitle: text('subtitle'),
+  imageUrl: text('image_url').notNull(), // The Cloudinary URL
+  imageLayer1: text('image_layer_1'), // Back Layer
+  imageLayer2: text('image_layer_2'), // Front Layer
+
+  // 🟢 NEW: Extra Text Fields
+  poeticLine: text('poetic_line'), // "Build A Legacy"
+  description: text('description'), // "Standard perfume is for the crowd..."
+  link: text('link').default('/products'),
+  buttonText: text('button_text').default('Shop Now'),
+  
+  // 🟢 CRITICAL NEW COLUMNS
+  type: text('type').default('hero'),        // 'hero' OR 'mid_section'
+  layout: text('layout').default('split'),   // 'split' (Change Bottle) OR 'full' (Big Banner)
+  
+  isActive: boolean('is_active').default(true),
+  order: integer('order').default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+
+// ... existing imports ...
+
+// 🟢 ADD THIS NEW TABLE
+export const aboutUsTable = pgTable('about_us', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  
+  // Hero Section
+  heroTitle: text('hero_title').default('DEVID AURA'),
+  heroSubtitle: text('hero_subtitle').default('Est. 2023'),
+  heroImage: text('hero_image').notNull(),
+
+  // Pillar 1 (Ingredients)
+  pillar1Title: text('pillar_1_title').default('Unrefined Nature.'),
+  pillar1Desc: text('pillar_1_desc'),
+  pillar1Image: text('pillar_1_image'),
+
+  // Pillar 2 (Alchemy)
+  pillar2Title: text('pillar_2_title').default('Liquid Patience.'),
+  pillar2Desc: text('pillar_2_desc'),
+  pillar2Image: text('pillar_2_image'),
+
+  // Pillar 3 (Identity)
+  pillar3Title: text('pillar_3_title').default('The Human Canvas.'),
+  pillar3Desc: text('pillar_3_desc'),
+  pillar3Image: text('pillar_3_image'),
+
+  // Founders Section
+  foundersTitle: text('founders_title').default('Architects of Memory.'),
+  foundersQuote: text('founders_quote'),
+  foundersDesc: text('founders_desc'),
+  foundersImage: text('founders_image'),
+  founder1Name: text('founder_1_name').default('Harsh'),
+  founder1Role: text('founder_1_role').default('The Nose'),
+  founder2Name: text('founder_2_name').default('Yomesh'),
+  founder2Role: text('founder_2_role').default('The Eye'),
+
+  // Footer Section
+  footerTitle: text('footer_title').default('Define Your Presence.'),
+  footerImageDesktop: text('footer_image_desktop'),
+  footerImageMobile: text('footer_image_mobile'),
+});
