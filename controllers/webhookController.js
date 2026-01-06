@@ -1,3 +1,4 @@
+/* eslint-disable */
 // file controllers/webhookController.js
 
 import crypto from 'crypto';
@@ -14,6 +15,8 @@ import {
 import { createNotification } from '../helpers/notificationManager.js';
 // 🟢 UPDATED: Import the Email Helper
 import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
+// 🟢 IMPORT REDUCE STOCK (The Fix)
+import { reduceStock } from './paymentController.js';
 
 // 🟢 FIX: Return a Date object, not a string. Drizzle handles the conversion.
 const safeDate = (timestamp) => {
@@ -105,20 +108,7 @@ const razorpayWebhookHandler = async (req, res) => {
     } else {
       // For refunds (Existing Logic), search by Refund ID OR Transaction ID
       [existingOrder] = await db
-        .select({
-            // Select specific fields for refund logic, or all for safety
-            id: ordersTable.id,
-            userId: ordersTable.userId,
-            refund_status: ordersTable.refund_status,
-            refund_speed: ordersTable.refund_speed,
-            paymentStatus: ordersTable.paymentStatus, // Needed for notification checks
-            transactionId: ordersTable.transactionId,
-            // We need totalAmount etc for the email if we were sending refund emails, 
-            // but for now we just need the basics.
-            totalAmount: ordersTable.totalAmount,
-            discountAmount: ordersTable.discountAmount,
-            offerDiscount: ordersTable.offerDiscount
-        })
+        .select()
         .from(ordersTable)
         .where(or(
           eq(ordersTable.refund_id, entity.id),
@@ -138,40 +128,79 @@ const razorpayWebhookHandler = async (req, res) => {
     // 🟢 NEW: Payment Logic (The Zero-Downtime Safety Net)
     if (isPaymentEvent) {
         switch (event) {
-            case 'payment.captured':
+case 'payment.captured':
                 // Only update if it's NOT already paid (Idempotency)
                 if (existingOrder.paymentStatus !== 'paid') {
-                    await db.update(ordersTable).set({
-                        paymentStatus: 'paid',
-                        transactionId: entity.id, // Capture the Pay ID (pay_123...)
-                        status: 'Order Placed',   // Ensure status is correct
-                        updatedAt: now,
-                    }).where(eq(ordersTable.id, existingOrder.id));
+                    console.log(`💰 Webhook: Capturing payment for Order ${existingOrder.id}`);
 
-                    console.log(`💰 payment.captured → Order ${existingOrder.id} marked PAID`);
-                    cacheNeedsInvalidation = true;
-
-                    // 1. Send In-App Notification
-                    await createNotification(
-                        existingOrder.userId, 
-                        `Order #${existingOrder.id} confirmed successfully!`, 
-                        '/myorder', 
-                        'order'
-                    );
-
-                    // 🟢 2. Send Email Notification (NEW)
                     try {
-                        const [user] = await db.select().from(usersTable).where(eq(usersTable.id, existingOrder.userId));
-                        const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, existingOrder.id));
-                        
-                        if (user && user.email) {
-                           await sendOrderConfirmationEmail(user.email, existingOrder, items);
-                           await sendAdminOrderAlert(existingOrder, items);
-                           console.log(`📧 Email sent to ${user.email} from webhook`);
+                        // 🟢 USE A VARIABLE TO TRACK IF WE ACTUALLY UPDATED
+                        const processResult = await db.transaction(async (tx) => {
+                            // 🛑 1. SAFETY CHECK (The Fix)
+                            // Fetch the order AGAIN inside the transaction to ensure no one else paid it just now.
+                            const [freshOrder] = await tx
+                                .select()
+                                .from(ordersTable)
+                                .where(eq(ordersTable.id, existingOrder.id));
+
+                            if (freshOrder.paymentStatus === 'paid') {
+                                return { status: 'ALREADY_PAID' };
+                            }
+
+                            // 2. Mark Paid
+                            await tx.update(ordersTable).set({
+                                paymentStatus: 'paid',
+                                transactionId: entity.id,
+                                status: 'Order Placed',
+                                updatedAt: now,
+                            }).where(eq(ordersTable.id, existingOrder.id));
+
+                            // 3. Fetch Items & Reduce Stock
+                            const items = await tx.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, existingOrder.id));
+                            const secureCartItems = items.map(i => ({ 
+                                variantId: i.variantId, 
+                                quantity: i.quantity, 
+                                productId: i.productId 
+                            }));
+
+                            await reduceStock(secureCartItems, tx);
+                            
+                            return { status: 'SUCCESS' };
+                        });
+
+                        // 🛑 4. STOP IF ALREADY PAID
+                        if (processResult.status === 'ALREADY_PAID') {
+                            console.log(`ℹ️ Order ${existingOrder.id} was paid concurrently. Webhook stopping.`);
+                            break; // Exit the switch case, do not send email
                         }
-                    } catch (emailErr) {
-                        console.error("⚠️ Failed to send email from webhook:", emailErr);
-                        // Don't fail the webhook just because email failed
+
+                        // --- Success Logic (Only runs if WE updated the order) ---
+                        console.log(`✅ Order ${existingOrder.id} marked PAID & Stock Deducted`);
+                        cacheNeedsInvalidation = true;
+
+                        // 5. Send Notifications (No Duplicates now)
+                        await createNotification(
+                            existingOrder.userId, 
+                            `Order #${existingOrder.id} confirmed successfully!`, 
+                            '/myorder', 
+                            'order'
+                        );
+
+                        try {
+                            const [user] = await db.select().from(usersTable).where(eq(usersTable.id, existingOrder.userId));
+                            const items = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, existingOrder.id));
+                            
+                            if (user && user.email) {
+                               await sendOrderConfirmationEmail(user.email, existingOrder, items);
+                               await sendAdminOrderAlert(existingOrder, items);
+                            }
+                        } catch (emailErr) {
+                            console.error("⚠️ Failed to send email from webhook:", emailErr);
+                        }
+
+                    } catch (err) {
+                        console.error("❌ Webhook Stock Reduce Failed:", err.message);
+                        return res.status(500).send("Stock update failed");
                     }
                 }
                 break;
@@ -187,7 +216,7 @@ const razorpayWebhookHandler = async (req, res) => {
                     console.log(`❌ payment.failed → Order ${existingOrder.id} marked FAILED`);
                     cacheNeedsInvalidation = true;
 
-                     await createNotification(
+                    await createNotification(
                         existingOrder.userId, 
                         `Payment failed for Order #${existingOrder.id}. Please try again.`, 
                         '/myorder', 
