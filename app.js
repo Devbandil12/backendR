@@ -1,6 +1,7 @@
 // file app.js
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
+import net from 'net'; // Built-in Node module
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -144,6 +145,55 @@ app.get('/', (req, res) => res.send('🛠️ Payment API running'));
 app.get('/wake-up', (req, res) => {
   console.log('✅ Ping received! Keeping the service awake.'); 
   res.send('✅ Devid Aura backend awake');
+});
+
+app.get('/api/debug-network', async (req, res) => {
+  try {
+    // 1. Get Public IP
+    const ipRes = await fetch('https://api.ipify.org?format=json');
+    const ipData = await ipRes.json();
+    
+    // 2. Test Connection to Gmail
+    const host = 'smtp.gmail.com';
+    const port = 465;
+    
+    let connectionLog = [];
+    const start = Date.now();
+
+    const result = await new Promise((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(5000); // 5 second timeout
+
+      connectionLog.push(`Attempting to connect to ${host}:${port}...`);
+
+      socket.connect(port, host, () => {
+        connectionLog.push('✅ Connection Established! (Network is OK)');
+        socket.end();
+        resolve('SUCCESS');
+      });
+
+      socket.on('timeout', () => {
+        connectionLog.push('❌ Connection TIMED OUT (Blocked by Firewall/Gmail)');
+        socket.destroy();
+        resolve('TIMEOUT');
+      });
+
+      socket.on('error', (err) => {
+        connectionLog.push(`❌ Connection Error: ${err.message}`);
+        resolve('ERROR');
+      });
+    });
+
+    res.json({
+      server_ip: ipData.ip,
+      connection_status: result,
+      logs: connectionLog,
+      duration: `${Date.now() - start}ms`
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 
