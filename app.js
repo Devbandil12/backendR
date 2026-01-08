@@ -25,6 +25,7 @@ import notificationRoutes from './routes/notifications.js';
 import promoRoutes from './routes/promoNotifications.js';
 import { initCronJobs } from './services/cron.service.js'; 
 import cmsRoutes from './routes/cms.js';
+import { startEmailWorker } from './services/emailQueue.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -147,7 +148,7 @@ app.get('/wake-up', (req, res) => {
 
 // ───── Initialize Cron Jobs ─────
 initCronJobs();
-
+startEmailWorker();
 
 // ───── Start Server ─────
 const PORT = process.env.PORT || 3000;

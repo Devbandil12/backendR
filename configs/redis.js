@@ -1,6 +1,27 @@
 // configs/redis.js
 import Redis from "ioredis";
+import 'dotenv/config'; // Ensure env vars are loaded
 
-export const redis = new Redis(process.env.REDIS_URL, {
-  tls: {}, // Upstash requires secure (rediss://)
-});
+const redisUrl = process.env.REDIS_URL;
+
+if (!redisUrl) {
+  throw new Error("❌ REDIS_URL is missing in .env");
+}
+
+// Helper to determine TLS settings
+export const getRedisConfig = () => {
+    const isSecure = redisUrl.startsWith("rediss://");
+    return {
+        url: redisUrl,
+        options: {
+            tls: isSecure ? { rejectUnauthorized: false } : undefined, // Auto-enable TLS for Upstash
+            maxRetriesPerRequest: null, // Required for Blocking connections
+        }
+    };
+};
+
+const config = getRedisConfig();
+export const redis = new Redis(config.url, config.options);
+
+redis.on("connect", () => console.log("🔌 Shared Redis: Connected"));
+redis.on("error", (err) => console.error("❌ Shared Redis Error:", err.message));

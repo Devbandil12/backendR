@@ -25,6 +25,7 @@ import {
 import { calculatePriceBreakdown } from '../helpers/priceEngine.js';
 import { createNotification } from '../helpers/notificationManager.js';
 import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
+import { addToEmailQueue } from '../services/emailQueue.js';
 
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
@@ -54,15 +55,15 @@ export async function checkStockAvailability(cartItems) {
       .where(eq(productBundlesTable.bundleVariantId, item.variantId));
 
     for (const content of bundleContents) {
-       const requiredQty = content.quantity * item.quantity;
-       const [childVariant] = await db
-         .select({ stock: productVariantsTable.stock, name: productVariantsTable.name })
-         .from(productVariantsTable)
-         .where(eq(productVariantsTable.id, content.contentVariantId));
-       
-       if (!childVariant || childVariant.stock < requiredQty) {
-          throw new Error(`Parts of the combo (${variant?.name}) are out of stock.`);
-       }
+      const requiredQty = content.quantity * item.quantity;
+      const [childVariant] = await db
+        .select({ stock: productVariantsTable.stock, name: productVariantsTable.name })
+        .from(productVariantsTable)
+        .where(eq(productVariantsTable.id, content.contentVariantId));
+
+      if (!childVariant || childVariant.stock < requiredQty) {
+        throw new Error(`Parts of the combo (${variant?.name}) are out of stock.`);
+      }
     }
   }
 }
@@ -73,7 +74,7 @@ export async function checkStockAvailability(cartItems) {
 // 🟢 2. ATOMIC REDUCE HELPER (Write)
 export async function reduceStock(cartItems, tx) {
   const affectedProductIds = new Set();
-  
+
   // Sort items to prevent Deadlocks
   const sortedItems = [...cartItems].sort((a, b) => a.variantId.localeCompare(b.variantId));
 
@@ -88,7 +89,7 @@ export async function reduceStock(cartItems, tx) {
 
     if (bundleContents.length > 0) {
       // --- Bundle Logic ---
-      
+
       // A. Reduce Bundle Parent
       const [updatedBundle] = await tx.update(productVariantsTable)
         .set({
@@ -121,7 +122,7 @@ export async function reduceStock(cartItems, tx) {
           .returning({ productId: productVariantsTable.productId });
 
         if (!updatedChild) { // 🟢 Fixed Check
-           throw new Error(`Stock updated while you were paying. Refund initiated.`);
+          throw new Error(`Stock updated while you were paying. Refund initiated.`);
         }
         affectedProductIds.add(updatedChild.productId); // 🟢 REMOVED [0]
       }
@@ -169,9 +170,9 @@ export const createOrder = async (req, res) => {
 
     // 🛑 PRE-PAYMENT CHECK
     const secureCartItems = cartItems.map(item => ({
-        variantId: item.variant?.id || item.variantId,
-        quantity: item.quantity,
-        productId: item.product?.id || item.productId
+      variantId: item.variant?.id || item.variantId,
+      quantity: item.quantity,
+      productId: item.product?.id || item.productId
     }));
     await checkStockAvailability(secureCartItems);
 
@@ -179,7 +180,7 @@ export const createOrder = async (req, res) => {
       .select()
       .from(UserAddressTable)
       .where(eq(UserAddressTable.id, userAddressId));
-      
+
     if (!address) {
       return res.status(404).json({ success: false, msg: "Address not found." });
     }
@@ -194,9 +195,9 @@ export const createOrder = async (req, res) => {
     const offerCodes = appliedOffers.map(o => o.title);
 
     if (paymentMode === 'cod' && !codAvailable) {
-      return res.status(400).json({ 
-        success: false, 
-        msg: "Cash on Delivery is not available for this address." 
+      return res.status(400).json({
+        success: false,
+        msg: "Cash on Delivery is not available for this address."
       });
     }
 
@@ -205,19 +206,19 @@ export const createOrder = async (req, res) => {
 
     for (const item of cartItems) {
       const [variant] = await db
-        .select({ 
-          size: productVariantsTable.size, 
-          oprice: productVariantsTable.oprice, 
-          discount: productVariantsTable.discount, 
-          name: productVariantsTable.name 
+        .select({
+          size: productVariantsTable.size,
+          oprice: productVariantsTable.oprice,
+          discount: productVariantsTable.discount,
+          name: productVariantsTable.name
         })
         .from(productVariantsTable)
         .where(eq(productVariantsTable.id, item.variant.id));
 
       const [product] = await db
-        .select({ 
-          name: productsTable.name, 
-          imageurl: productsTable.imageurl 
+        .select({
+          name: productsTable.name,
+          imageurl: productsTable.imageurl
         })
         .from(productsTable)
         .where(eq(productsTable.id, item.product.id));
@@ -245,40 +246,40 @@ export const createOrder = async (req, res) => {
       let transactionResult;
       try {
         transactionResult = await db.transaction(async (tx) => {
-            // A. Insert Order
-            const [insertedOrder] = await tx.insert(ordersTable).values({
-                id: orderId,
-                userId: user.id,
-                userAddressId,
-                razorpay_order_id: null,
-                totalAmount: total,
-                status: 'Order Placed',
-                paymentMode: 'cod',
-                transactionId: null,
-                paymentStatus: 'pending',
-                phone,
-                couponCode: couponCode,
-                discountAmount: discountAmount,
-                offerDiscount: offerDiscount,
-                offerCodes: offerCodes,
-                progressStep: 1,
-            }).returning();
+          // A. Insert Order
+          const [insertedOrder] = await tx.insert(ordersTable).values({
+            id: orderId,
+            userId: user.id,
+            userAddressId,
+            razorpay_order_id: null,
+            totalAmount: total,
+            status: 'Order Placed',
+            paymentMode: 'cod',
+            transactionId: null,
+            paymentStatus: 'pending',
+            phone,
+            couponCode: couponCode,
+            discountAmount: discountAmount,
+            offerDiscount: offerDiscount,
+            offerCodes: offerCodes,
+            progressStep: 1,
+          }).returning();
 
-            // B. Insert Items
-            await tx.insert(orderItemsTable).values(enrichedItems);
+          // B. Insert Items
+          await tx.insert(orderItemsTable).values(enrichedItems);
 
-            // C. Atomic Reduce
-            const affectedProductIds = await reduceStock(secureCartItems, tx);
+          // C. Atomic Reduce
+          const affectedProductIds = await reduceStock(secureCartItems, tx);
 
-            // D. Clear Cart
-            const variantIdsToClear = secureCartItems.map(item => item.variantId);
-            await tx.delete(addToCartTable)
-              .where(and(
-                eq(addToCartTable.userId, user.id), 
-                inArray(addToCartTable.variantId, variantIdsToClear)
-              ));
+          // D. Clear Cart
+          const variantIdsToClear = secureCartItems.map(item => item.variantId);
+          await tx.delete(addToCartTable)
+            .where(and(
+              eq(addToCartTable.userId, user.id),
+              inArray(addToCartTable.variantId, variantIdsToClear)
+            ));
 
-            return { insertedOrder, affectedProductIds };
+          return { insertedOrder, affectedProductIds };
         });
       } catch (err) {
         console.error("COD Order Failed (Stock/DB):", err.message);
@@ -288,7 +289,7 @@ export const createOrder = async (req, res) => {
       const { insertedOrder, affectedProductIds } = transactionResult;
 
       // ⚡ FAST COD RESPONSE: Everything below runs in the background
-      
+
       // 1. Notification (Background)
       createNotification(
         user.id,
@@ -297,15 +298,18 @@ export const createOrder = async (req, res) => {
         'order'
       ).catch(err => console.error("Notification fail:", err));
 
-      // 2. Emails (Background)
-      // We don't wait for this DB call, we fire it off
+      // 2. Emails (Via Redis Queue)
       db.select().from(usersTable).where(eq(usersTable.id, user.id))
         .then(([dbUser]) => {
             if (dbUser?.email) {
-                sendOrderConfirmationEmail(dbUser.email, insertedOrder, enrichedItems).catch(e => console.error("Email Error:", e));
-                sendAdminOrderAlert(insertedOrder, enrichedItems).catch(e => console.error("Admin Email Error:", e));
+                addToEmailQueue({
+                    userEmail: dbUser.email,
+                    orderDetails: insertedOrder,
+                    orderItems: enrichedItems, // ✅ We already have full items in memory here!
+                    paymentDetails: { method: 'COD' }
+                });
             }
-        }).catch(err => console.error("User fetch for email failed:", err));
+        }).catch(err => console.error("Queue error:", err));
 
       // 3. Cache Invalidation (Background)
       const itemsToInvalidate = [
@@ -315,17 +319,17 @@ export const createOrder = async (req, res) => {
         { key: makeCartKey(user.id) },
         { key: makeCartCountKey(user.id) },
       ];
-      affectedProductIds.forEach(pid => 
+      affectedProductIds.forEach(pid =>
         itemsToInvalidate.push({ key: makeProductKey(pid), prefix: true })
       );
-      
+
       invalidateMultiple(itemsToInvalidate).catch(err => console.error("Cache invalidate fail:", err));
 
       // 🚀 IMMEDIATE RESPONSE
-      return res.json({ 
-        success: true, 
-        orderId, 
-        message: "COD order placed successfully" 
+      return res.json({
+        success: true,
+        orderId,
+        message: "COD order placed successfully"
       });
     }
 
@@ -414,27 +418,27 @@ export const verifyPayment = async (req, res) => {
       .from(UserAddressTable)
       .where(eq(UserAddressTable.id, userAddressId));
 
-    const secureCartItems = cartItems.map(item => ({ 
-      variantId: item.variant.id, 
-      quantity: item.quantity, 
-      productId: item.product.id 
+    const secureCartItems = cartItems.map(item => ({
+      variantId: item.variant.id,
+      quantity: item.quantity,
+      productId: item.product.id
     }));
-    
+
     const breakdown = await calculatePriceBreakdown(
-      secureCartItems, 
-      couponCode, 
+      secureCartItems,
+      couponCode,
       address.postalCode
     );
 
     const payment = await razorpay.payments.fetch(razorpay_payment_id);
     if (payment.amount !== breakdown.total * 100) {
       await razorpay.payments.refund(
-        razorpay_payment_id, 
+        razorpay_payment_id,
         { amount: payment.amount, speed: 'optimum' }
       );
-      return res.status(400).json({ 
-        success: false, 
-        error: "Payment amount mismatch. Refund initiated." 
+      return res.status(400).json({
+        success: false,
+        error: "Payment amount mismatch. Refund initiated."
       });
     }
 
@@ -455,38 +459,38 @@ export const verifyPayment = async (req, res) => {
         const variantIdsToClear = secureCartItems.map(item => item.variantId);
         await tx.delete(addToCartTable)
           .where(and(
-            eq(addToCartTable.userId, user.id), 
+            eq(addToCartTable.userId, user.id),
             inArray(addToCartTable.variantId, variantIdsToClear)
           ));
 
         return { updatedOrder, affectedProductIds };
       });
     } catch (error) {
-    console.error("verify error:", error);
+      console.error("verify error:", error);
 
-    if (error.message.includes("Out of stock")) {
-       try {
-         await razorpay.payments.refund(req.body.razorpay_payment_id, {
-           speed: 'optimum',
-           notes: { reason: 'Out of stock after payment' }
-         });
-         
-         return res.status(400).json({ 
-           success: false, 
-           error: "Item went out of stock just now. Your payment has been auto-refunded." 
-         });
+      if (error.message.includes("Out of stock")) {
+        try {
+          await razorpay.payments.refund(req.body.razorpay_payment_id, {
+            speed: 'optimum',
+            notes: { reason: 'Out of stock after payment' }
+          });
 
-       } catch (refundError) {
-         console.error("Refund failed:", refundError);
-         return res.status(500).json({ 
-           success: false, 
-           error: "Out of stock. Payment deducted but refund failed. Please contact support." 
-         });
-       }
+          return res.status(400).json({
+            success: false,
+            error: "Item went out of stock just now. Your payment has been auto-refunded."
+          });
+
+        } catch (refundError) {
+          console.error("Refund failed:", refundError);
+          return res.status(500).json({
+            success: false,
+            error: "Out of stock. Payment deducted but refund failed. Please contact support."
+          });
+        }
+      }
+
+      return res.status(500).json({ success: false, error: error.message || "Server error" });
     }
-
-    return res.status(500).json({ success: false, error: error.message || "Server error" });
-  }
 
     const { updatedOrder, affectedProductIds } = transactionResult;
 
@@ -500,7 +504,7 @@ export const verifyPayment = async (req, res) => {
       { key: makeCartKey(user.id) },
       { key: makeCartCountKey(user.id) },
     ];
-    affectedProductIds.forEach(pid => 
+    affectedProductIds.forEach(pid =>
       itemsToInvalidate.push({ key: makeProductKey(pid), prefix: true })
     );
     invalidateMultiple(itemsToInvalidate).catch(err => console.error("Cache invalidate fail:", err));
@@ -515,28 +519,28 @@ export const verifyPayment = async (req, res) => {
 
     // 3. Emails (Background)
     // Manually fetching items and user to send email without blocking response
-    (async () => {
-        try {
-            const [dbUser] = await db.select().from(usersTable).where(eq(usersTable.id, user.id));
-            const orderItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, existingOrder.id));
-
-            if (dbUser?.email && orderItems.length > 0) {
-                sendOrderConfirmationEmail(dbUser.email, updatedOrder, orderItems).catch(e => console.error("Email Error:", e));
-                sendAdminOrderAlert(updatedOrder, orderItems).catch(e => console.error("Admin Email Error:", e));
-            }
-        } catch (bgError) {
-            console.error("Background email task failed:", bgError);
-        }
-    })();
+    Promise.all([
+      db.select().from(usersTable).where(eq(usersTable.id, user.id)),
+      db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, existingOrder.id))
+    ]).then(([[dbUser], dbOrderItems]) => {
+      if (dbUser?.email && dbOrderItems.length > 0) {
+        addToEmailQueue({
+          userEmail: dbUser.email,
+          orderDetails: updatedOrder,
+          orderItems: dbOrderItems, // ✅ Passes full items (Images, Names, Prices)
+          paymentDetails: req.body
+        });
+      }
+    }).catch(e => console.error("Queue error:", e));
 
     // 🚀 IMMEDIATE RESPONSE
     return res.json({ success: true, message: "Payment verified & order placed." });
 
   } catch (error) {
     console.error("verify error:", error);
-    return res.status(500).json({ 
-      success: false, 
-      error: error.message || "Server error during verification." 
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Server error during verification."
     });
   }
 };
