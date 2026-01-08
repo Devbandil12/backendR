@@ -1,4 +1,3 @@
-// configs/redis.js
 import Redis from "ioredis";
 import 'dotenv/config'; 
 
@@ -14,7 +13,9 @@ export const getRedisConfig = () => {
         url: redisUrl,
         options: {
             tls: isSecure ? { rejectUnauthorized: false } : undefined,
-            // ❌ REMOVED: maxRetriesPerRequest: null (Keep default for caching safety)
+            // 👇 ADD THIS: Keep the connection alive
+            keepAlive: 10000, // Ping every 10 seconds
+            family: 4,        // Force IPv4 (Good for Render reliability)
         }
     };
 };
