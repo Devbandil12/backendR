@@ -1,4 +1,4 @@
-import 'dotenv/config'; 
+import 'dotenv/config';
 import express from 'express';
 import { db } from '../configs/index.js';
 import { notificationsTable, usersTable, UserAddressTable, addToCartTable, productVariantsTable, productsTable } from '../configs/schema.js';
@@ -10,26 +10,25 @@ const router = express.Router();
 
 // 🟢 1. Email Config
 if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    console.error("❌ CRITICAL: EMAIL_USER or EMAIL_PASS is missing in .env!");
+  console.error("❌ CRITICAL: EMAIL_USER or EMAIL_PASS is missing in .env!");
 }
 
 const transporter = nodemailer.createTransport({
   host: "smtp.gmail.com",
-  port: 587,
-  secure: false, // Use SSL
+  port: 465,       // 👈 CHANGE THIS from 587 to 465
+  secure: true,    // 👈 CHANGE THIS from false to true (required for port 465)
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  // 👇 CRITICAL: Force IPv4. 
-  // Node.js 18+ on Render tries IPv6 by default which gets blocked/timed out by Gmail.
-  family: 4, 
+  family: 4,       // ✅ Keep this (Forces IPv4)
+  connectionTimeout: 10000, // 👈 Add this safety timeout (10 seconds)
 });
 
 // 🟢 2. Notification Routes (Keep existing)
 router.get('/user/:userId', async (req, res) => {
   const { userId } = req.params;
-  
+
   if (!userId) {
     return res.status(400).json({ error: 'User ID is required' });
   }
@@ -42,9 +41,9 @@ router.get('/user/:userId', async (req, res) => {
     });
 
     // 2. Get the count of *only* unread notifications
-    const unreadResult = await db.select({ 
-        count: sql`count(*)::int` 
-      })
+    const unreadResult = await db.select({
+      count: sql`count(*)::int`
+    })
       .from(notificationsTable)
       .where(and(
         eq(notificationsTable.userId, userId),
@@ -69,7 +68,7 @@ router.put('/mark-read/user/:userId', async (req, res) => {
   if (!userId) {
     return res.status(400).json({ error: 'User ID is required' });
   }
-  
+
   try {
     await db.update(notificationsTable)
       .set({ isRead: true })
@@ -77,7 +76,7 @@ router.put('/mark-read/user/:userId', async (req, res) => {
         eq(notificationsTable.userId, userId),
         eq(notificationsTable.isRead, false)
       ));
-    
+
     res.json({ success: true });
   } catch (error) {
     console.error('Error marking notifications as read:', error);
@@ -91,12 +90,12 @@ router.delete('/user/:userId', async (req, res) => {
   if (!userId) {
     return res.status(400).json({ error: 'User ID is required' });
   }
-  
+
   try {
     // This deletes all rows for the user
     await db.delete(notificationsTable)
       .where(eq(notificationsTable.userId, userId));
-    
+
     res.json({ success: true, message: "All notifications cleared." });
   } catch (error) {
     console.error('Error clearing notifications:', error);
@@ -108,9 +107,9 @@ router.delete('/user/:userId', async (req, res) => {
 const publicVapidKey = process.env.VAPID_PUBLIC_KEY;
 const privateVapidKey = process.env.VAPID_PRIVATE_KEY;
 if (publicVapidKey && privateVapidKey) {
-    try {
-        webpush.setVapidDetails('mailto:devidauraofficial@gmail.com', publicVapidKey, privateVapidKey);
-    } catch (err) { console.error("WebPush Error", err.message); }
+  try {
+    webpush.setVapidDetails('mailto:devidauraofficial@gmail.com', publicVapidKey, privateVapidKey);
+  } catch (err) { console.error("WebPush Error", err.message); }
 }
 
 router.post('/subscribe', async (req, res) => {
@@ -118,8 +117,8 @@ router.post('/subscribe', async (req, res) => {
   const { userId } = req.query;
   if (!userId || !subscription) return res.status(400).json({ error: "Missing data" });
   try {
-      await db.update(usersTable).set({ pushSubscription: subscription }).where(eq(usersTable.id, userId));
-      res.status(201).json({ success: true });
+    await db.update(usersTable).set({ pushSubscription: subscription }).where(eq(usersTable.id, userId));
+    res.status(201).json({ success: true });
   } catch (err) { res.status(500).json({ error: "Failed" }); }
 });
 
@@ -140,10 +139,10 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
   let userName = "Valued Customer";
   try {
     if (orderDetails.userAddressId) {
-        const [addr] = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, orderDetails.userAddressId));
-        if (addr) {
-            userName = addr.name.split(' ')[0]; 
-            addressHtml = `
+      const [addr] = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, orderDetails.userAddressId));
+      if (addr) {
+        userName = addr.name.split(' ')[0];
+        addressHtml = `
                 <div style="font-family: 'Montserrat', sans-serif; font-weight: 600; color: #111; font-size: 14px; margin-bottom: 4px;">${addr.name}</div>
                 <div style="font-family: 'Montserrat', sans-serif; color: #666; font-size: 13px; line-height: 1.5;">
                     ${addr.address}<br>
@@ -153,7 +152,7 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
                     📱 ${addr.phone}
                 </div>
             `;
-        }
+      }
     }
   } catch (err) { console.error("Address Error", err); }
 
@@ -180,12 +179,12 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
 
   // C. Styles & Dates
   const theme = {
-    bg: "#f4f4f5", 
-    cardBg: "#ffffff", 
-    gold: "#D4AF37", 
-    black: "#0a0a0a", 
-    shadow: "0 10px 40px rgba(0,0,0,0.08)", 
-    radius: "24px" 
+    bg: "#f4f4f5",
+    cardBg: "#ffffff",
+    gold: "#D4AF37",
+    black: "#0a0a0a",
+    shadow: "0 10px 40px rgba(0,0,0,0.08)",
+    radius: "24px"
   };
 
   // 🟢 Update: Date AND Time
@@ -201,25 +200,25 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
 
   // 🟢 Update: Payment Method Logic
   let paymentDisplay = "Online Payment";
-  
+
   if (orderDetails.paymentMode === 'cod') {
-      paymentDisplay = "Cash on Delivery";
+    paymentDisplay = "Cash on Delivery";
   } else if (paymentDetails) {
-      // Logic to show detailed info from Razorpay object
-      const method = paymentDetails.method; // 'upi', 'card', 'netbanking', 'wallet'
-      
-      if (method === 'upi') {
-          paymentDisplay = `UPI (${paymentDetails.vpa || 'App'})`;
-      } else if (method === 'card') {
-          const cardInfo = paymentDetails.card || {};
-          paymentDisplay = `Card (${cardInfo.network || ''} ending ${cardInfo.last4 || '****'})`;
-      } else if (method === 'netbanking') {
-          paymentDisplay = `Netbanking (${paymentDetails.bank || ''})`;
-      } else if (method === 'wallet') {
-          paymentDisplay = `Wallet (${paymentDetails.wallet || ''})`;
-      } else {
-          paymentDisplay = `Online (${method})`;
-      }
+    // Logic to show detailed info from Razorpay object
+    const method = paymentDetails.method; // 'upi', 'card', 'netbanking', 'wallet'
+
+    if (method === 'upi') {
+      paymentDisplay = `UPI (${paymentDetails.vpa || 'App'})`;
+    } else if (method === 'card') {
+      const cardInfo = paymentDetails.card || {};
+      paymentDisplay = `Card (${cardInfo.network || ''} ending ${cardInfo.last4 || '****'})`;
+    } else if (method === 'netbanking') {
+      paymentDisplay = `Netbanking (${paymentDetails.bank || ''})`;
+    } else if (method === 'wallet') {
+      paymentDisplay = `Wallet (${paymentDetails.wallet || ''})`;
+    } else {
+      paymentDisplay = `Online (${method})`;
+    }
   }
 
   // D. Full HTML Template
@@ -377,16 +376,16 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
 };
 
 export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
-    const adminEmail = process.env.EMAIL_USER;
-    if (!adminEmail) return;
+  const adminEmail = process.env.EMAIL_USER;
+  if (!adminEmail) return;
 
-    console.log(`👮 Sending Admin Alert for Order #${orderDetails.id}`);
+  console.log(`👮 Sending Admin Alert for Order #${orderDetails.id}`);
 
-    const itemsList = orderItems.map(item => 
-        `<li>${item.productName} (${item.size}) x ${item.quantity} - ₹${item.totalPrice}</li>`
-    ).join('');
+  const itemsList = orderItems.map(item =>
+    `<li>${item.productName} (${item.size}) x ${item.quantity} - ₹${item.totalPrice}</li>`
+  ).join('');
 
-    const html = `
+  const html = `
         <h3>🚀 New Order Received!</h3>
         <p><strong>Order ID:</strong> ${orderDetails.id}</p>
         <p><strong>Amount:</strong> ₹${orderDetails.totalAmount}</p>
@@ -399,17 +398,17 @@ export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
         <p>Login to admin panel to view details.</p>
     `;
 
-    try {
-        await transporter.sendMail({
-            from: `"Devid Aura System" <${process.env.EMAIL_USER}>`,
-            to: adminEmail, // Sending TO the admin (same as sender)
-            subject: `[ADMIN] New Order #${orderDetails.id} - ₹${orderDetails.totalAmount}`,
-            html: html
-        });
-        console.log(`✅ Admin alert sent to ${adminEmail}`);
-    } catch (error) {
-        console.error("❌ Admin Alert FAILED:", error.message);
-    }
+  try {
+    await transporter.sendMail({
+      from: `"Devid Aura System" <${process.env.EMAIL_USER}>`,
+      to: adminEmail, // Sending TO the admin (same as sender)
+      subject: `[ADMIN] New Order #${orderDetails.id} - ₹${orderDetails.totalAmount}`,
+      html: html
+    });
+    console.log(`✅ Admin alert sent to ${adminEmail}`);
+  } catch (error) {
+    console.error("❌ Admin Alert FAILED:", error.message);
+  }
 };
 
 
@@ -417,85 +416,85 @@ export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
 // 🟢 REUSABLE RECOVERY LOGIC (Exported for Cron)
 // ------------------------------------------------------------------
 export const executeRecoveryForUsers = async (userIds) => {
-    console.log(`🚀 Processing Recovery for ${userIds.length} users in parallel...`);
+  console.log(`🚀 Processing Recovery for ${userIds.length} users in parallel...`);
 
-    // ✅ OPTIMIZED: Process all users simultaneously
-    const results = await Promise.all(userIds.map(async (userId) => {
-        try {
-            // 1. Fetch User
-            const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
-            if (!user) return 0; // Skip
+  // ✅ OPTIMIZED: Process all users simultaneously
+  const results = await Promise.all(userIds.map(async (userId) => {
+    try {
+      // 1. Fetch User
+      const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
+      if (!user) return 0; // Skip
 
-            // 2. Fetch Cart Items
-            const cartItems = await db.select({
-                productName: productsTable.name,
-                img: productsTable.imageurl,
-                size: productVariantsTable.size,
-                price: productVariantsTable.oprice,
-                quantity: addToCartTable.quantity
-            })
-            .from(addToCartTable)
-            .innerJoin(productVariantsTable, eq(addToCartTable.variantId, productVariantsTable.id))
-            .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
-            .where(eq(addToCartTable.userId, userId));
+      // 2. Fetch Cart Items
+      const cartItems = await db.select({
+        productName: productsTable.name,
+        img: productsTable.imageurl,
+        size: productVariantsTable.size,
+        price: productVariantsTable.oprice,
+        quantity: addToCartTable.quantity
+      })
+        .from(addToCartTable)
+        .innerJoin(productVariantsTable, eq(addToCartTable.variantId, productVariantsTable.id))
+        .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
+        .where(eq(addToCartTable.userId, userId));
 
-            if (cartItems.length === 0) return 0; // Skip if empty
+      if (cartItems.length === 0) return 0; // Skip if empty
 
-            const formattedItems = cartItems.map(item => ({
-                ...item,
-                img: Array.isArray(item.img) ? item.img[0] : item.img,
-                totalPrice: item.price * item.quantity
-            }));
+      const formattedItems = cartItems.map(item => ({
+        ...item,
+        img: Array.isArray(item.img) ? item.img[0] : item.img,
+        totalPrice: item.price * item.quantity
+      }));
 
-            // 3. Send Notifications (Run Push & Email in parallel for this specific user too)
-            const tasks = [];
+      // 3. Send Notifications (Run Push & Email in parallel for this specific user too)
+      const tasks = [];
 
-            if (user.pushSubscription) {
-                tasks.push(
-                    sendPushNotification(user.pushSubscription, {
-                        title: "Still thinking about it? 🤔",
-                        body: "Your luxury items are waiting! Complete your order before they sell out.",
-                        url: "/cart"
-                    }).catch(err => console.error(`Push failed for ${user.email}`))
-                );
-            }
+      if (user.pushSubscription) {
+        tasks.push(
+          sendPushNotification(user.pushSubscription, {
+            title: "Still thinking about it? 🤔",
+            body: "Your luxury items are waiting! Complete your order before they sell out.",
+            url: "/cart"
+          }).catch(err => console.error(`Push failed for ${user.email}`))
+        );
+      }
 
-            if (user.email) {
-                tasks.push(
-                    sendAbandonedCartEmail(user.email, user.name, formattedItems)
-                        .catch(err => console.error(`Email failed for ${user.email}`))
-                );
-            }
+      if (user.email) {
+        tasks.push(
+          sendAbandonedCartEmail(user.email, user.name, formattedItems)
+            .catch(err => console.error(`Email failed for ${user.email}`))
+        );
+      }
 
-            await Promise.all(tasks); // Wait for both to finish sending
-            return 1; // Return 1 success count
+      await Promise.all(tasks); // Wait for both to finish sending
+      return 1; // Return 1 success count
 
-        } catch (err) {
-            console.error(`❌ Failed recovery for user ${userId}:`, err.message);
-            return 0; // Return 0 on failure
-        }
-    }));
+    } catch (err) {
+      console.error(`❌ Failed recovery for user ${userId}:`, err.message);
+      return 0; // Return 0 on failure
+    }
+  }));
 
-    // Sum up all the 1s returned from the successful promises
-    const successCount = results.reduce((sum, count) => sum + count, 0);
-    return successCount;
+  // Sum up all the 1s returned from the successful promises
+  const successCount = results.reduce((sum, count) => sum + count, 0);
+  return successCount;
 };
 
 // 🟢 ROUTE: Manual Trigger (Admin Button)
 router.post('/recover-abandoned', async (req, res) => {
-    const { userIds } = req.body;
-    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-        return res.status(400).json({ error: "No users provided" });
-    }
-    
-    // 🚀 FIRE AND FORGET: 
-    // We do NOT use 'await'. We start the function and immediately reply to the user.
-    executeRecoveryForUsers(userIds)
-        .then(count => console.log(`✅ Background Process Finished: ${count} emails sent.`))
-        .catch(err => console.error("❌ Background Process Error:", err));
+  const { userIds } = req.body;
+  if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+    return res.status(400).json({ error: "No users provided" });
+  }
 
-    // Respond INSTANTLY to the frontend
-    res.json({ success: true, message: `Recovery initiated for ${userIds.length} users!` });
+  // 🚀 FIRE AND FORGET: 
+  // We do NOT use 'await'. We start the function and immediately reply to the user.
+  executeRecoveryForUsers(userIds)
+    .then(count => console.log(`✅ Background Process Finished: ${count} emails sent.`))
+    .catch(err => console.error("❌ Background Process Error:", err));
+
+  // Respond INSTANTLY to the frontend
+  res.json({ success: true, message: `Recovery initiated for ${userIds.length} users!` });
 });
 
 
@@ -528,12 +527,12 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
 
   // Styles
   const theme = {
-    bg: "#f4f4f5", 
-    cardBg: "#ffffff", 
-    gold: "#D4AF37", 
-    black: "#0a0a0a", 
-    shadow: "0 10px 40px rgba(0,0,0,0.08)", 
-    radius: "24px" 
+    bg: "#f4f4f5",
+    cardBg: "#ffffff",
+    gold: "#D4AF37",
+    black: "#0a0a0a",
+    shadow: "0 10px 40px rgba(0,0,0,0.08)",
+    radius: "24px"
   };
 
   const emailHtml = `
@@ -640,11 +639,11 @@ export const sendPromotionalEmail = async (userEmail, userName, couponCode, desc
   console.log(`📩 Sending Promo Email to: ${userEmail}`);
   if (!userEmail) return;
 
-  const discountDisplay = discountType === 'percent' ? `${discountValue}% OFF` : 
-                          discountType === 'flat' ? `₹${discountValue} OFF` : 'Free Gift';
+  const discountDisplay = discountType === 'percent' ? `${discountValue}% OFF` :
+    discountType === 'flat' ? `₹${discountValue} OFF` : 'Free Gift';
 
   const theme = {
-    bg: "#f4f4f5", cardBg: "#ffffff", gold: "#D4AF37", black: "#0a0a0a", radius: "24px" 
+    bg: "#f4f4f5", cardBg: "#ffffff", gold: "#D4AF37", black: "#0a0a0a", radius: "24px"
   };
 
   const emailHtml = `
