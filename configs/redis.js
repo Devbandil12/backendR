@@ -1,6 +1,6 @@
 // configs/redis.js
 import Redis from "ioredis";
-import 'dotenv/config'; // Ensure env vars are loaded
+import 'dotenv/config'; 
 
 const redisUrl = process.env.REDIS_URL;
 
@@ -8,14 +8,13 @@ if (!redisUrl) {
   throw new Error("❌ REDIS_URL is missing in .env");
 }
 
-// Helper to determine TLS settings
 export const getRedisConfig = () => {
     const isSecure = redisUrl.startsWith("rediss://");
     return {
         url: redisUrl,
         options: {
-            tls: isSecure ? { rejectUnauthorized: false } : undefined, // Auto-enable TLS for Upstash
-            maxRetriesPerRequest: null, // Required for Blocking connections
+            tls: isSecure ? { rejectUnauthorized: false } : undefined,
+            // ❌ REMOVED: maxRetriesPerRequest: null (Keep default for caching safety)
         }
     };
 };

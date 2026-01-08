@@ -14,11 +14,16 @@ if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
 }
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true, // Use SSL
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  // 👇 CRITICAL: Force IPv4. 
+  // Node.js 18+ on Render tries IPv6 by default which gets blocked/timed out by Gmail.
+  family: 4, 
 });
 
 // 🟢 2. Notification Routes (Keep existing)

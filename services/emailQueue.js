@@ -9,7 +9,10 @@ import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notif
 const QUEUE_NAME = process.env.QUEUE_NAME || 'email_queue'; 
 
 const config = getRedisConfig();
-const workerClient = new Redis(config.url, config.options);
+const workerClient = new Redis(config.url, {
+    ...config.options,
+    maxRetriesPerRequest: null 
+});
 
 workerClient.on("connect", () => console.log("👷 Email Worker: Connected to Redis"));
 workerClient.on("ready", () => console.log(`👷 Email Worker: Listening on '${QUEUE_NAME}'`));
