@@ -4,45 +4,27 @@ import { db } from '../configs/index.js';
 import { notificationsTable, usersTable, UserAddressTable, addToCartTable, productVariantsTable, productsTable } from '../configs/schema.js';
 import { eq, and, sql, desc } from 'drizzle-orm';
 import webpush from 'web-push';
-import nodemailer from 'nodemailer';
+// 🔴 REMOVED: Nodemailer
+// import nodemailer from 'nodemailer';
+// 🟢 ADDED: Resend
+import { Resend } from 'resend';
 
 const router = express.Router();
 
-// 🟢 1. Email Config
-if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-  console.error("❌ CRITICAL: EMAIL_USER or EMAIL_PASS is missing in .env!");
+// 🟢 1. Email Config (Resend)
+if (!process.env.RESEND_API_KEY) {
+  console.error("❌ CRITICAL: RESEND_API_KEY is missing in .env!");
 }
 
-// ✅ ROBUST CONFIGURATION: Pooled Connection
-const transporter = nodemailer.createTransport({
-  pool: true,            // 👈 Use Pooled Connections (More reliable on Cloud)
-  maxConnections: 1,     // 👈 Force 1 connection at a time to prevent blocking
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,          // SSL
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  tls: {
-    rejectUnauthorized: false, // Helps with certificate hiccups
-  },
-  family: 4,             // Forces IPv4
-  connectionTimeout: 60000, // 👈 Increased to 60 seconds
-  greetingTimeout: 30000,   // 30 seconds wait for greeting
-  socketTimeout: 60000,     // 60 seconds active socket
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Verify connection on startup
-transporter.verify(function (error, success) {
-  if (error) {
-    console.error("❌ SMTP Connection Error:", error.message);
-  } else {
-    console.log("✅ SMTP Server is Ready");
-  }
-});
+// Helper to get the sender address
+// Note: If you haven't verified a domain on Resend, you MUST use 'onboarding@resend.dev'
+const getSender = () => {
+    return process.env.RESEND_FROM_EMAIL || 'Devid Aura Luxury <onboarding@resend.dev>';
+};
 
-// 🟢 2. Notification Routes (Keep existing)
+// 🟢 2. Notification Routes (KEPT EXACTLY THE SAME)
 router.get('/user/:userId', async (req, res) => {
   const { userId } = req.params;
 
@@ -57,7 +39,6 @@ router.get('/user/:userId', async (req, res) => {
       limit: 20,
     });
 
-    // 2. Get the count of *only* unread notifications
     const unreadResult = await db.select({
       count: sql`count(*)::int`
     })
@@ -77,8 +58,6 @@ router.get('/user/:userId', async (req, res) => {
   }
 });
 
-// PUT /api/notifications/mark-read/user/:userId
-// Marks all notifications for a user as read
 router.put('/mark-read/user/:userId', async (req, res) => {
   const { userId } = req.params;
 
@@ -109,7 +88,6 @@ router.delete('/user/:userId', async (req, res) => {
   }
 
   try {
-    // This deletes all rows for the user
     await db.delete(notificationsTable)
       .where(eq(notificationsTable.userId, userId));
 
@@ -120,7 +98,6 @@ router.delete('/user/:userId', async (req, res) => {
   }
 });
 
-// VAPID & Subscribe
 const publicVapidKey = process.env.VAPID_PUBLIC_KEY;
 const privateVapidKey = process.env.VAPID_PRIVATE_KEY;
 if (publicVapidKey && privateVapidKey) {
@@ -144,8 +121,9 @@ export const sendPushNotification = async (subscriptionFromDb, payload) => {
   try { await webpush.sendNotification(subscriptionFromDb, JSON.stringify(payload)); } catch (err) { console.error("Push failed:", err.message); }
 };
 
-// 🟢 3. UPDATED: Luxury Invoice with Detailed Payment Info
-// Added `paymentDetails` parameter to accept Razorpay data
+
+// 🟢 3. UPDATED EMAIL FUNCTIONS (Using Resend)
+
 export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderItems, paymentDetails = null) => {
   console.log(`📩 Generating Premium Email for: ${userEmail}`);
 
@@ -204,7 +182,6 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
     radius: "24px"
   };
 
-  // 🟢 Update: Date AND Time
   const orderDateObj = orderDetails.createdAt ? new Date(orderDetails.createdAt) : new Date();
   const orderDateString = orderDateObj.toLocaleString("en-IN", {
     year: 'numeric', month: 'short', day: 'numeric',
@@ -215,14 +192,12 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
   deliveryDate.setDate(deliveryDate.getDate() + 7);
   const deliveryString = deliveryDate.toLocaleDateString("en-IN", { weekday: 'short', day: 'numeric', month: 'short' });
 
-  // 🟢 Update: Payment Method Logic
   let paymentDisplay = "Online Payment";
 
   if (orderDetails.paymentMode === 'cod') {
     paymentDisplay = "Cash on Delivery";
   } else if (paymentDetails) {
-    // Logic to show detailed info from Razorpay object
-    const method = paymentDetails.method; // 'upi', 'card', 'netbanking', 'wallet'
+    const method = paymentDetails.method; 
 
     if (method === 'upi') {
       paymentDisplay = `UPI (${paymentDetails.vpa || 'App'})`;
@@ -375,17 +350,22 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
     </html>
   `;
 
-  const mailOptions = {
-    from: `"Devid Aura Luxury" <${process.env.EMAIL_USER}>`,
-    to: userEmail,
-    subject: `Order Confirmed: #${orderDetails.id}`,
-    html: emailHtml,
-  };
-
   try {
-    console.log("📨 Sending Luxury Invoice...");
-    await transporter.sendMail(mailOptions);
-    console.log(`✅ Invoice sent to ${userEmail}`);
+    console.log("📨 Sending Luxury Invoice (Resend)...");
+    
+    // 🟢 RESEND IMPLEMENTATION
+    const { data, error } = await resend.emails.send({
+        from: getSender(),
+        to: [userEmail],
+        subject: `Order Confirmed: #${orderDetails.id}`,
+        html: emailHtml,
+    });
+
+    if (error) {
+        throw new Error(error.message);
+    }
+
+    console.log(`✅ Invoice sent to ${userEmail} (ID: ${data.id})`);
   } catch (error) {
     console.error("❌ Email FAILED:", error.message);
     // 🛑 RE-THROW ERROR so the Worker knows it failed!
@@ -394,7 +374,7 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
 };
 
 export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
-  const adminEmail = process.env.EMAIL_USER;
+  const adminEmail = process.env.EMAIL_USER; // You can keep using this env var for the destination
   if (!adminEmail) return;
 
   console.log(`👮 Sending Admin Alert for Order #${orderDetails.id}`);
@@ -417,13 +397,16 @@ export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
     `;
 
   try {
-    await transporter.sendMail({
-      from: `"Devid Aura System" <${process.env.EMAIL_USER}>`,
-      to: adminEmail, // Sending TO the admin (same as sender)
+    const { data, error } = await resend.emails.send({
+      from: getSender(),
+      to: [adminEmail],
       subject: `[ADMIN] New Order #${orderDetails.id} - ₹${orderDetails.totalAmount}`,
       html: html
     });
-    console.log(`✅ Admin alert sent to ${adminEmail}`);
+
+    if (error) throw new Error(error.message);
+
+    console.log(`✅ Admin alert sent to ${adminEmail} (ID: ${data.id})`);
   } catch (error) {
     console.error("❌ Admin Alert FAILED:", error.message);
     // 🛑 RE-THROW ERROR so the Worker knows it failed!
@@ -640,16 +623,17 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
     </html>
   `;
 
-  const mailOptions = {
-    from: `"Devid Aura Concierge" <${process.env.EMAIL_USER}>`,
-    to: userEmail,
-    subject: `Items waiting in your cart 🛒`,
-    html: emailHtml,
-  };
-
   try {
-    await transporter.sendMail(mailOptions);
-    console.log(`✅ Abandoned Cart Email sent to ${userEmail}`);
+    const { data, error } = await resend.emails.send({
+        from: getSender(),
+        to: [userEmail],
+        subject: `Items waiting in your cart 🛒`,
+        html: emailHtml,
+    });
+
+    if (error) throw new Error(error.message);
+    
+    console.log(`✅ Abandoned Cart Email sent to ${userEmail} (ID: ${data.id})`);
   } catch (error) {
     console.error("❌ Email FAILED:", error.message);
   }
@@ -708,13 +692,16 @@ export const sendPromotionalEmail = async (userEmail, userName, couponCode, desc
   `;
 
   try {
-    await transporter.sendMail({
-      from: `"Devid Aura Rewards" <${process.env.EMAIL_USER}>`,
-      to: userEmail,
+    const { data, error } = await resend.emails.send({
+      from: getSender(),
+      to: [userEmail],
       subject: `🎁 A special gift for you: ${discountDisplay}`,
       html: emailHtml,
     });
-    console.log(`✅ Promo Email sent to ${userEmail}`);
+
+    if (error) throw new Error(error.message);
+
+    console.log(`✅ Promo Email sent to ${userEmail} (ID: ${data.id})`);
   } catch (error) {
     console.error("❌ Promo Email FAILED:", error.message);
   }
