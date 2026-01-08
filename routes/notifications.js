@@ -13,16 +13,33 @@ if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
   console.error("❌ CRITICAL: EMAIL_USER or EMAIL_PASS is missing in .env!");
 }
 
+// ✅ ROBUST CONFIGURATION: Pooled Connection
 const transporter = nodemailer.createTransport({
+  pool: true,            // 👈 Use Pooled Connections (More reliable on Cloud)
+  maxConnections: 1,     // 👈 Force 1 connection at a time to prevent blocking
   host: "smtp.gmail.com",
-  port: 465,       // 👈 CHANGE THIS from 587 to 465
-  secure: true,    // 👈 CHANGE THIS from false to true (required for port 465)
+  port: 465,
+  secure: true,          // SSL
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  family: 4,       // ✅ Keep this (Forces IPv4)
-  connectionTimeout: 10000, // 👈 Add this safety timeout (10 seconds)
+  tls: {
+    rejectUnauthorized: false, // Helps with certificate hiccups
+  },
+  family: 4,             // Forces IPv4
+  connectionTimeout: 60000, // 👈 Increased to 60 seconds
+  greetingTimeout: 30000,   // 30 seconds wait for greeting
+  socketTimeout: 60000,     // 60 seconds active socket
+});
+
+// Verify connection on startup
+transporter.verify(function (error, success) {
+  if (error) {
+    console.error("❌ SMTP Connection Error:", error.message);
+  } else {
+    console.log("✅ SMTP Server is Ready");
+  }
 });
 
 // 🟢 2. Notification Routes (Keep existing)
@@ -371,6 +388,7 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
     console.log(`✅ Invoice sent to ${userEmail}`);
   } catch (error) {
     console.error("❌ Email FAILED:", error.message);
+    // 🛑 RE-THROW ERROR so the Worker knows it failed!
     throw error;
   }
 };
@@ -408,6 +426,8 @@ export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
     console.log(`✅ Admin alert sent to ${adminEmail}`);
   } catch (error) {
     console.error("❌ Admin Alert FAILED:", error.message);
+    // 🛑 RE-THROW ERROR so the Worker knows it failed!
+    throw error;
   }
 };
 
