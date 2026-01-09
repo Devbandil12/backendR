@@ -2,32 +2,32 @@ import 'dotenv/config';
 import express from 'express';
 import { db } from '../configs/index.js';
 import { notificationsTable, usersTable, UserAddressTable, addToCartTable, productVariantsTable, productsTable } from '../configs/schema.js';
-import { eq, and, sql, desc } from 'drizzle-orm';
+import { eq, and, sql, desc, inArray } from 'drizzle-orm';
 import webpush from 'web-push';
-// 🔴 REMOVED: Nodemailer
-// import nodemailer from 'nodemailer';
-// 🟢 ADDED: Resend
 import { Resend } from 'resend';
 
 const router = express.Router();
 
-// 🟢 1. Email Config (Resend)
+// ------------------------------------------------------------------
+// 1. CONFIGURATION
+// ------------------------------------------------------------------
+
 if (!process.env.RESEND_API_KEY) {
   console.error("❌ CRITICAL: RESEND_API_KEY is missing in .env!");
 }
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Helper to get the sender address
-// Note: If you haven't verified a domain on Resend, you MUST use 'onboarding@resend.dev'
 const getSender = () => {
-    return process.env.RESEND_FROM_EMAIL || 'Devid Aura Luxury <onboarding@resend.dev>';
+  return process.env.RESEND_FROM_EMAIL || 'Devid Aura Luxury <onboarding@resend.dev>';
 };
 
-// 🟢 2. Notification Routes (KEPT EXACTLY THE SAME)
+// ------------------------------------------------------------------
+// 2. NOTIFICATION ROUTES (Standard)
+// ------------------------------------------------------------------
+
 router.get('/user/:userId', async (req, res) => {
   const { userId } = req.params;
-
   if (!userId) {
     return res.status(400).json({ error: 'User ID is required' });
   }
@@ -60,11 +60,6 @@ router.get('/user/:userId', async (req, res) => {
 
 router.put('/mark-read/user/:userId', async (req, res) => {
   const { userId } = req.params;
-
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID is required' });
-  }
-
   try {
     await db.update(notificationsTable)
       .set({ isRead: true })
@@ -72,7 +67,6 @@ router.put('/mark-read/user/:userId', async (req, res) => {
         eq(notificationsTable.userId, userId),
         eq(notificationsTable.isRead, false)
       ));
-
     res.json({ success: true });
   } catch (error) {
     console.error('Error marking notifications as read:', error);
@@ -82,15 +76,9 @@ router.put('/mark-read/user/:userId', async (req, res) => {
 
 router.delete('/user/:userId', async (req, res) => {
   const { userId } = req.params;
-
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID is required' });
-  }
-
   try {
     await db.delete(notificationsTable)
       .where(eq(notificationsTable.userId, userId));
-
     res.json({ success: true, message: "All notifications cleared." });
   } catch (error) {
     console.error('Error clearing notifications:', error);
@@ -98,6 +86,7 @@ router.delete('/user/:userId', async (req, res) => {
   }
 });
 
+// --- Push Notification Setup ---
 const publicVapidKey = process.env.VAPID_PUBLIC_KEY;
 const privateVapidKey = process.env.VAPID_PRIVATE_KEY;
 if (publicVapidKey && privateVapidKey) {
@@ -122,44 +111,103 @@ export const sendPushNotification = async (subscriptionFromDb, payload) => {
 };
 
 
-// 🟢 3. UPDATED EMAIL FUNCTIONS (Using Resend)
+// ------------------------------------------------------------------
+// 3. EMAIL FUNCTIONS (Refined Logic & Original Design)
+// ------------------------------------------------------------------
 
 export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderItems, paymentDetails = null) => {
   console.log(`📩 Generating Premium Email for: ${userEmail}`);
 
   if (!userEmail) return;
 
-  // A. Fetch Address
+  // --- A. Address & User Info ---
   let addressHtml = "<span style='color: #999;'>Address not available</span>";
   let userName = "Valued Customer";
+  
   try {
     if (orderDetails.userAddressId) {
       const [addr] = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, orderDetails.userAddressId));
       if (addr) {
         userName = addr.name.split(' ')[0];
         addressHtml = `
-                <div style="font-family: 'Montserrat', sans-serif; font-weight: 600; color: #111; font-size: 14px; margin-bottom: 4px;">${addr.name}</div>
-                <div style="font-family: 'Montserrat', sans-serif; color: #666; font-size: 13px; line-height: 1.5;">
-                    ${addr.address}<br>
-                    ${addr.city}, ${addr.state} - ${addr.postalCode}
-                </div>
-                <div style="font-family: 'Montserrat', sans-serif; margin-top: 8px; font-size: 12px; color: #888;">
-                    📱 ${addr.phone}
-                </div>
-            `;
+            <div style="font-family: 'Manrope', sans-serif; font-weight: 700; color: #111; font-size: 14px; margin-bottom: 6px;">${addr.name}</div>
+            <div style="font-family: 'Manrope', sans-serif; color: #666; font-size: 13px; line-height: 1.6;">
+                ${addr.address}<br>
+                ${addr.city}, ${addr.state} - ${addr.postalCode}
+            </div>
+            <div style="font-family: 'Manrope', sans-serif; margin-top: 10px; font-size: 12px; color: #555; background: #f0f0f0; display: inline-block; padding: 4px 8px; border-radius: 4px;">
+                📞 ${addr.phone}
+            </div>
+        `;
       }
     }
   } catch (err) { console.error("Address Error", err); }
 
-  // B. Product Rows
-  const itemsHtml = orderItems.map(item => `
+  // --- B. FINANCIAL CALCULATIONS (With Real Product Discount) ---
+  const formatMoney = (amount) => `₹${Number(amount).toLocaleString('en-IN')}`;
+  
+  // 1. Fetch MRP (Original Price) from DB to calculate exact savings
+  // The 'orderItems' array usually only has the sold price. We need 'oprice' from 'productVariantsTable'.
+  let mrpTotal = 0;
+  const variantIds = orderItems.map(i => i.variantId).filter(Boolean);
+  
+  if (variantIds.length > 0) {
+    try {
+        const variants = await db
+            .select({ id: productVariantsTable.id, oprice: productVariantsTable.oprice })
+            .from(productVariantsTable)
+            .where(inArray(productVariantsTable.id, variantIds));
+        
+        // Calculate Total MRP
+        mrpTotal = orderItems.reduce((sum, item) => {
+            const variant = variants.find(v => v.id === item.variantId);
+            // Use DB oprice if available, otherwise fallback to sold price (assume no discount)
+            const oprice = (variant && Number(variant.oprice)) ? Number(variant.oprice) : (Number(item.totalPrice) / item.quantity);
+            return sum + (oprice * item.quantity);
+        }, 0);
+    } catch (e) {
+        console.error("Error fetching MRPs:", e);
+        // Fallback: If DB fail, assume MRP = Sold Price
+        mrpTotal = orderItems.reduce((acc, item) => acc + (parseFloat(item.totalPrice) || 0), 0);
+    }
+  }
+
+  // 2. Sold Total (What user actually pays for items before extra coupons)
+  const itemSoldTotal = orderItems.reduce((acc, item) => acc + (parseFloat(item.totalPrice) || 0), 0);
+
+  // 3. Product Savings (MRP - Sold Price)
+  const productSavings = Math.max(0, mrpTotal - itemSoldTotal);
+
+  // 4. Coupon Discount (Extra code applied at checkout)
+  const couponDiscount = parseFloat(orderDetails.discountAmount) || 0;
+
+  // 5. Final Paid Amount
+  const finalTotal = parseFloat(orderDetails.totalAmount) || 0;
+
+  // 6. Delivery (Derived)
+  // Formula: Final = (Sold - Coupon) + Delivery  =>  Delivery = Final - (Sold - Coupon)
+  const calculatedDelivery = finalTotal - (itemSoldTotal - couponDiscount);
+  const deliveryCharge = calculatedDelivery > 1 ? calculatedDelivery : 0;
+
+
+  // --- C. Items List HTML ---
+  const itemsHtml = orderItems.map(item => {
+    // Check if item is free (price 0)
+    const isFree = item.totalPrice <= 0;
+    const priceDisplay = isFree 
+        ? `<span style="color: #D4AF37; font-weight: 800; font-size: 11px; letter-spacing: 1px; border: 1px solid #D4AF37; padding: 3px 8px; border-radius: 4px; text-transform: uppercase;">Free Gift</span>` 
+        : `<span style="font-family: 'Manrope', sans-serif; font-weight: 600; color: #111;">${formatMoney(item.totalPrice)}</span>`;
+
+    return `
     <tr>
-      <td style="padding: 16px 0; border-bottom: 1px dashed #eaeaea;">
-        <div style="display: flex; align-items: center;">
-            <img src="${item.img}" alt="Product" style="width: 64px; height: 64px; border-radius: 12px; object-fit: cover; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
-            <div style="margin-left: 16px;">
-                <p style="margin: 0; font-family: 'Cormorant Garamond', serif; font-size: 18px; font-weight: 700; color: #111;">${item.productName}</p>
-                <p style="margin: 4px 0 0; font-family: 'Montserrat', sans-serif; font-size: 11px; color: #888; background: #f7f7f7; padding: 2px 8px; border-radius: 4px; display: inline-block;">Size: ${item.size}</p>
+      <td style="padding: 20px 0; border-bottom: 1px solid #f0f0f0;">
+        <div style="display: flex; align-items: flex-start;">
+            <div style="position: relative;">
+              <img src="${item.img}" alt="Product" style="width: 70px; height: 70px; border-radius: 8px; object-fit: cover; border: 1px solid #eaeaea;">
+            </div>
+            <div style="margin-left: 16px; padding-top: 2px;">
+                <p style="margin: 0; font-family: 'Cormorant Garamond', serif; font-size: 18px; font-weight: 700; color: #111; line-height: 1.2;">${item.productName}</p>
+                <p style="margin: 4px 0 0; font-family: 'Manrope', sans-serif; font-size: 12px; color: #666;">Size: ${item.size}ml</p>
             </div>
         </div>
       </td>
@@ -167,13 +215,12 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
         x${item.quantity}
       </td>
       <td style="padding: 16px 0; border-bottom: 1px dashed #eaeaea; text-align: right; font-family: 'Cormorant Garamond', serif; font-weight: 600; color: #111; font-size: 18px;">
-        ₹${item.totalPrice}
+        ${priceDisplay}
       </td>
     </tr>
-  `).join('');
+  `}).join('');
 
-  // C. Styles & Dates
-  const theme = {
+const theme = {
     bg: "#f4f4f5",
     cardBg: "#ffffff",
     gold: "#D4AF37",
@@ -182,38 +229,24 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
     radius: "24px"
   };
 
-  const orderDateObj = orderDetails.createdAt ? new Date(orderDetails.createdAt) : new Date();
-  const orderDateString = orderDateObj.toLocaleString("en-IN", {
-    year: 'numeric', month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: true
+  // --- D. Meta Data & Logic ---
+  const orderDateString = (orderDetails.createdAt ? new Date(orderDetails.createdAt) : new Date()).toLocaleString("en-IN", {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
   });
-
+  
   const deliveryDate = new Date();
   deliveryDate.setDate(deliveryDate.getDate() + 7);
   const deliveryString = deliveryDate.toLocaleDateString("en-IN", { weekday: 'short', day: 'numeric', month: 'short' });
 
+  // Payment Display
   let paymentDisplay = "Online Payment";
+  if (orderDetails.paymentMode === 'cod') paymentDisplay = "Cash on Delivery";
+  else if (paymentDetails?.method) paymentDisplay = `Online (${paymentDetails.method})`;
 
-  if (orderDetails.paymentMode === 'cod') {
-    paymentDisplay = "Cash on Delivery";
-  } else if (paymentDetails) {
-    const method = paymentDetails.method; 
+  // 🟢 Logic: Only show Transaction ID if it exists and NOT COD
+  const showTransactionId = orderDetails.paymentMode !== 'cod' && orderDetails.razorpay_order_id;
 
-    if (method === 'upi') {
-      paymentDisplay = `UPI (${paymentDetails.vpa || 'App'})`;
-    } else if (method === 'card') {
-      const cardInfo = paymentDetails.card || {};
-      paymentDisplay = `Card (${cardInfo.network || ''} ending ${cardInfo.last4 || '****'})`;
-    } else if (method === 'netbanking') {
-      paymentDisplay = `Netbanking (${paymentDetails.bank || ''})`;
-    } else if (method === 'wallet') {
-      paymentDisplay = `Wallet (${paymentDetails.wallet || ''})`;
-    } else {
-      paymentDisplay = `Online (${method})`;
-    }
-  }
-
-  // D. Full HTML Template
+  // --- E. HTML Email Construction ---
   const emailHtml = `
     <!DOCTYPE html>
     <html>
@@ -221,8 +254,8 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Montserrat:wght@400;500;600&display=swap');
-        body { font-family: 'Montserrat', sans-serif; }
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+        body { font-family: 'Manrope', sans-serif; -webkit-font-smoothing: antialiased; background-color: #f4f4f5; margin: 0; padding: 0; }
       </style>
     </head>
     <body style="margin: 0; padding: 0; background-color: ${theme.bg};">
@@ -238,54 +271,54 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
                   <div style="width: 100px; height: 100px; background: radial-gradient(circle, ${theme.gold} 0%, transparent 70%); opacity: 0.2; position: absolute; top: -20px; left: 50%; transform: translateX(-50%); border-radius: 50%;"></div>
                   
                   <h1 style="font-family: 'Cormorant Garamond', serif; color: #fff; margin: 0; font-size: 32px; letter-spacing: 3px; font-weight: 400; text-transform: uppercase; position: relative; z-index: 10;">DEVID AURA</h1>
-                  <p style="font-family: 'Montserrat', sans-serif; color: ${theme.gold}; margin: 8px 0 0; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; font-weight: 500;">The Essence of Luxury</p>
+                  <p style="font-family: 'Manrope', sans-serif; color: ${theme.gold}; margin: 8px 0 0; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; font-weight: 500;">The Essence of Luxury</p>
                 </td>
               </tr>
 
               <tr>
-                <td align="center" style="transform: translateY(-20px);">
-                  <table border="0" cellspacing="0" cellpadding="0" style="background: #fff; border-radius: 50px; padding: 10px 30px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
-                    <tr>
-                      <td>
-                        <span style="font-size: 18px;">✨</span> 
-                        <span style="font-family: 'Montserrat', sans-serif; font-weight: 700; color: ${theme.black}; font-size: 12px; margin-left: 8px; letter-spacing: 1px; text-transform: uppercase;">Order Confirmed</span>
-                      </td>
-                    </tr>
-                  </table>
-                </td>
-              </tr>
-
-              <tr>
-                <td style="padding: 10px 40px 30px;">
-                  <h2 style="font-family: 'Cormorant Garamond', serif; margin: 0; font-size: 28px; color: ${theme.black}; font-weight: 600;">Hello, ${userName}.</h2>
-                  <p style="font-family: 'Montserrat', sans-serif; color: #666; font-size: 14px; margin: 8px 0 25px; line-height: 1.6;">
-                    You've got excellent taste. We have received your order <strong style="color: ${theme.black};">#${orderDetails.id}</strong> and are preparing it with care.
+                <td align="center" style="padding: 40px 40px 20px;">
+                  <div style="background: #fcfbf8; border: 1px solid #f0e6d2; color: #8a6d3b; padding: 10px 24px; display: inline-block; border-radius: 50px; margin-bottom: 25px;">
+                    <span style="font-size: 14px;">✨</span> 
+                    <span style="font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.5px; margin-left: 6px; text-transform: uppercase; color: #000;">Order Confirmed</span>
+                  </div>
+                  <h2 align="left" style="font-family: 'Cormorant Garamond', serif; font-size: 28px; font-weight: 600; color: #111; margin: 0 0 10px; line-height: 1.1;">Hello, ${userName}</h2>
+                  <p align="left" style="font-family: 'Manrope', sans-serif; font-size: 14px; color: #666; margin: 0; line-height: 1.6;">
+                    We are getting your order <strong style="color: ${theme.black};">#${orderDetails.id}</strong> ready. We will notify you once it ships.
                   </p>
+                </td>
+              </tr>
 
-                  <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background: #fdfbf7; border-radius: 16px; padding: 20px; border: 1px solid #f0e6d2;">
+              <tr>
+                <td style="padding: 20px 40px;">
+                  <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background: #fafafa; border-radius: 12px; padding: 20px;">
                     <tr>
-                      <td width="50%" style="border-right: 1px solid #e5e5e5; padding-right: 15px;">
-                        <p style="font-family: 'Montserrat', sans-serif; font-size: 10px; text-transform: uppercase; color: #888; font-weight: 600; margin: 0 0 5px; letter-spacing: 1px;">Razorpay ID</p>
-                        <p style="font-family: 'Montserrat', sans-serif; margin: 0; font-size: 13px; font-weight: 600; color: ${theme.black}; word-break: break-all;">${orderDetails.razorpay_order_id || 'N/A'}</p>
-                        
-                        <p style="font-family: 'Montserrat', sans-serif; font-size: 10px; text-transform: uppercase; color: #888; font-weight: 600; margin: 10px 0 5px; letter-spacing: 1px;">Order Date</p>
-                        <p style="font-family: 'Montserrat', sans-serif; margin: 0; font-size: 13px; font-weight: 600; color: ${theme.black};">${orderDateString}</p>
+                      <td width="50%" style="padding-bottom: 15px; border-right: 1px solid #eaeaea; padding-right: 15px;">
+                        <p style="font-size: 10px; text-transform: uppercase; color: #999; margin: 0 0 4px; font-weight: 700; letter-spacing: 0.5px;">Order Date</p>
+                        <p style="font-size: 13px; color: #111; margin: 0; font-weight: 600;">${orderDateString}</p>
                       </td>
-                      <td width="50%" style="padding-left: 20px; vertical-align: top;">
-                        <p style="font-family: 'Montserrat', sans-serif; font-size: 10px; text-transform: uppercase; color: #888; font-weight: 600; margin: 0 0 5px; letter-spacing: 1px;">Payment Mode</p>
-                        <p style="font-family: 'Cormorant Garamond', serif; margin: 0; font-size: 16px; font-weight: 700; color: ${theme.black}; line-height: 1.2;">${paymentDisplay}</p>
-                        
-                        <p style="font-family: 'Montserrat', sans-serif; font-size: 10px; text-transform: uppercase; color: #888; font-weight: 600; margin: 10px 0 5px; letter-spacing: 1px;">Expected By</p>
-                        <p style="font-family: 'Montserrat', sans-serif; margin: 0; font-size: 13px; font-weight: 600; color: ${theme.black};">${deliveryString}</p>
+                      <td width="50%" style="padding-bottom: 15px; padding-left: 20px;">
+                        <p style="font-size: 10px; text-transform: uppercase; color: #999; margin: 0 0 4px; font-weight: 700; letter-spacing: 0.5px;">Estimated Delivery</p>
+                        <p style="font-size: 13px; color: #111; margin: 0; font-weight: 600;">${deliveryString}</p>
                       </td>
+                    </tr>
+                    <tr>
+                      <td ${showTransactionId ? 'width="50%"' : 'colspan="2"'} style="padding-top: 15px; ${showTransactionId ? 'border-right: 1px solid #eaeaea; padding-right: 15px;' : ''} border-top: 1px solid #eaeaea;">
+                        <p style="font-size: 10px; text-transform: uppercase; color: #999; margin: 0 0 4px; font-weight: 700; letter-spacing: 0.5px;">Payment Method</p>
+                        <p style="font-size: 13px; color: #111; margin: 0; font-weight: 600;">${paymentDisplay}</p>
+                      </td>
+                      ${showTransactionId ? `
+                      <td width="50%" style="padding-top: 15px; padding-left: 20px; border-top: 1px solid #eaeaea;">
+                        <p style="font-size: 10px; text-transform: uppercase; color: #999; margin: 0 0 4px; font-weight: 700; letter-spacing: 0.5px;">Transaction ID</p>
+                        <p style="font-size: 13px; color: #111; margin: 0; font-weight: 500; font-family: monospace;">${orderDetails.razorpay_order_id}</p>
+                      </td>` : ''}
                     </tr>
                   </table>
                 </td>
               </tr>
 
               <tr>
-                <td style="padding: 0 40px;">
-                  <p style="font-family: 'Montserrat', sans-serif; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #999; margin-bottom: 15px; border-bottom: 2px solid #f0f0f0; padding-bottom: 10px;">Your Collection</p>
+                <td style="padding: 10px 40px;">
+                  <p style="font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #111; margin-bottom: 10px; border-bottom: 1px solid #ddd; display: inline-block; padding-bottom: 5px;">Your Selection</p>
                   <table width="100%" border="0" cellspacing="0" cellpadding="0">
                     ${itemsHtml}
                   </table>
@@ -293,31 +326,52 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
               </tr>
 
               <tr>
-                <td style="padding: 30px 40px;">
+                <td style="padding: 30px 40px 50px;">
                   <table width="100%" border="0" cellspacing="0" cellpadding="0">
                     <tr>
-                      <td width="55%" valign="top" style="padding-right: 20px;">
-                        <p style="font-family: 'Montserrat', sans-serif; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #999; margin-bottom: 15px;">Shipping To</p>
-                        <div style="background: #fafafa; border-radius: 12px; padding: 15px; border: 1px solid #eee;">
-                            ${addressHtml}
-                        </div>
+                      <td width="50%" valign="top" style="padding-right: 20px;">
+                        <p style="font-family: 'Manrope', sans-serif; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #999; margin-bottom: 15px;">Shipping To</p>
+                        ${addressHtml}
                       </td>
-
-                      <td width="45%" valign="top">
-                        <p style="font-family: 'Montserrat', sans-serif; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #999; margin-bottom: 15px; text-align: right;">Summary</p>
+                      <td width="50%" valign="top">
                         <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                          
                           <tr>
-                            <td style="padding: 5px 0; color: #666; font-size: 13px; font-family: 'Montserrat', sans-serif;">Subtotal</td>
-                            <td style="padding: 5px 0; color: #111; font-size: 13px; text-align: right; font-weight: 600; font-family: 'Montserrat', sans-serif;">₹${(orderDetails.totalAmount || 0) + (orderDetails.discountAmount || 0) + (orderDetails.offerDiscount || 0)}</td>
+                            <td style="padding: 5px 0; color: #666; font-size: 13px;">MRP Subtotal</td>
+                            <td style="padding: 5px 0; color: #111; font-size: 13px; text-align: right; font-weight: 600;">${formatMoney(mrpTotal)}</td>
                           </tr>
-                          ${orderDetails.discountAmount ? `
+
+                          ${productSavings > 0 ? `
                           <tr>
-                            <td style="padding: 5px 0; color: #2e7d32; font-size: 13px; font-family: 'Montserrat', sans-serif;">Savings</td>
-                            <td style="padding: 5px 0; color: #2e7d32; font-size: 13px; text-align: right; font-family: 'Montserrat', sans-serif;">-₹${orderDetails.discountAmount}</td>
+                            <td style="padding: 5px 0; color: #2e7d32; font-size: 13px;">Product Discount</td>
+                            <td style="padding: 5px 0; color: #2e7d32; font-size: 13px; text-align: right; font-weight: 600;">-${formatMoney(productSavings)}</td>
                           </tr>` : ''}
+
+                          ${couponDiscount > 0 ? `
                           <tr>
-                            <td style="padding: 12px 0 0; font-size: 20px; font-weight: 700; color: ${theme.black}; font-family: 'Cormorant Garamond', serif;">Total</td>
-                            <td style="padding: 12px 0 0; font-size: 20px; font-weight: 700; color: ${theme.black}; text-align: right; font-family: 'Cormorant Garamond', serif;">₹${orderDetails.totalAmount}</td>
+                            <td style="padding: 5px 0; color: #2e7d32; font-size: 13px;">
+                                Coupon ${orderDetails.couponCode ? `<span style="font-size:10px; color:#555; background:#eee; padding:2px 5px; border-radius:3px; margin-left:4px;">${orderDetails.couponCode}</span>` : ''}
+                            </td>
+                            <td style="padding: 5px 0; color: #2e7d32; font-size: 13px; text-align: right; font-weight: 600;">-${formatMoney(couponDiscount)}</td>
+                          </tr>` : ''}
+
+                          <tr>
+                            <td style="padding: 5px 0; color: #666; font-size: 13px;">Delivery</td>
+                            <td style="padding: 5px 0; color: #111; font-size: 13px; text-align: right; font-weight: 600;">
+                                ${deliveryCharge === 0 ? '<span style="color: #2e7d32;">Free</span>' : formatMoney(deliveryCharge)}
+                            </td>
+                          </tr>
+
+                          <tr>
+                            <td style="padding-top: 12px; border-top: 1px dashed #eaeaea;">
+                                <span style="font-family: 'Cormorant Garamond', serif; font-size: 18px; font-weight: 700; color: ${theme.black};">Grand Total</span>
+                            </td>
+                            <td style="padding-top: 12px; border-top: 1px dashed #eaeaea; text-align: right;">
+                                <span style="font-family: 'Cormorant Garamond', serif; font-size: 22px; font-weight: 700; color: ${theme.black};">${formatMoney(finalTotal)}</span>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td colspan="2" style="font-size: 10px; color: #999; text-align: right; padding-top: 4px;">Inc. of all taxes</td>
                           </tr>
                         </table>
                       </td>
@@ -342,7 +396,6 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
               </tr>
 
             </table>
-            
           </td>
         </tr>
       </table>
@@ -355,10 +408,10 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
     
     // 🟢 RESEND IMPLEMENTATION
     const { data, error } = await resend.emails.send({
-        from: getSender(),
-        to: [userEmail],
-        subject: `Order Confirmed: #${orderDetails.id}`,
-        html: emailHtml,
+      from: getSender(),
+      to: [userEmail],
+      subject: `Order Confirmed: #${orderDetails.id}`,
+      html: emailHtml,
     });
 
     if (error) {
@@ -368,13 +421,12 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
     console.log(`✅ Invoice sent to ${userEmail} (ID: ${data.id})`);
   } catch (error) {
     console.error("❌ Email FAILED:", error.message);
-    // 🛑 RE-THROW ERROR so the Worker knows it failed!
     throw error;
   }
 };
 
 export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
-  const adminEmail = process.env.EMAIL_USER; // You can keep using this env var for the destination
+  const adminEmail = process.env.EMAIL_USER;
   if (!adminEmail) return;
 
   console.log(`👮 Sending Admin Alert for Order #${orderDetails.id}`);
@@ -405,30 +457,25 @@ export const sendAdminOrderAlert = async (orderDetails, orderItems) => {
     });
 
     if (error) throw new Error(error.message);
-
-    console.log(`✅ Admin alert sent to ${adminEmail} (ID: ${data.id})`);
   } catch (error) {
     console.error("❌ Admin Alert FAILED:", error.message);
-    // 🛑 RE-THROW ERROR so the Worker knows it failed!
     throw error;
   }
 };
 
 
 // ------------------------------------------------------------------
-// 🟢 REUSABLE RECOVERY LOGIC (Exported for Cron)
+// 4. RECOVERY & ABANDONED CART LOGIC
 // ------------------------------------------------------------------
+
 export const executeRecoveryForUsers = async (userIds) => {
   console.log(`🚀 Processing Recovery for ${userIds.length} users in parallel...`);
 
-  // ✅ OPTIMIZED: Process all users simultaneously
   const results = await Promise.all(userIds.map(async (userId) => {
     try {
-      // 1. Fetch User
       const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
-      if (!user) return 0; // Skip
+      if (!user) return 0;
 
-      // 2. Fetch Cart Items
       const cartItems = await db.select({
         productName: productsTable.name,
         img: productsTable.imageurl,
@@ -441,7 +488,7 @@ export const executeRecoveryForUsers = async (userIds) => {
         .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
         .where(eq(addToCartTable.userId, userId));
 
-      if (cartItems.length === 0) return 0; // Skip if empty
+      if (cartItems.length === 0) return 0;
 
       const formattedItems = cartItems.map(item => ({
         ...item,
@@ -449,7 +496,6 @@ export const executeRecoveryForUsers = async (userIds) => {
         totalPrice: item.price * item.quantity
       }));
 
-      // 3. Send Notifications (Run Push & Email in parallel for this specific user too)
       const tasks = [];
 
       if (user.pushSubscription) {
@@ -469,48 +515,39 @@ export const executeRecoveryForUsers = async (userIds) => {
         );
       }
 
-      await Promise.all(tasks); // Wait for both to finish sending
-      return 1; // Return 1 success count
+      await Promise.all(tasks);
+      return 1;
 
     } catch (err) {
       console.error(`❌ Failed recovery for user ${userId}:`, err.message);
-      return 0; // Return 0 on failure
+      return 0;
     }
   }));
 
-  // Sum up all the 1s returned from the successful promises
   const successCount = results.reduce((sum, count) => sum + count, 0);
   return successCount;
 };
 
-// 🟢 ROUTE: Manual Trigger (Admin Button)
 router.post('/recover-abandoned', async (req, res) => {
   const { userIds } = req.body;
   if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
     return res.status(400).json({ error: "No users provided" });
   }
 
-  // 🚀 FIRE AND FORGET: 
-  // We do NOT use 'await'. We start the function and immediately reply to the user.
   executeRecoveryForUsers(userIds)
     .then(count => console.log(`✅ Background Process Finished: ${count} emails sent.`))
     .catch(err => console.error("❌ Background Process Error:", err));
 
-  // Respond INSTANTLY to the frontend
   res.json({ success: true, message: `Recovery initiated for ${userIds.length} users!` });
 });
 
-
-// 🟢 HELPER: Luxury Abandoned Cart Email
 export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => {
   console.log(`📩 Sending Abandoned Cart Email to: ${userEmail}`);
 
   if (!userEmail) return;
 
-  // Calculate Total
   const cartTotal = cartItems.reduce((acc, item) => acc + item.totalPrice, 0);
 
-  // Generate Product Rows
   const itemsHtml = cartItems.map(item => `
     <tr>
       <td style="padding: 16px 0; border-bottom: 1px dashed #eaeaea;">
@@ -518,7 +555,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
             <img src="${item.img}" alt="Product" style="width: 64px; height: 64px; border-radius: 12px; object-fit: cover; box-shadow: 0 4px 10px rgba(0,0,0,0.05);">
             <div style="margin-left: 16px;">
                 <p style="margin: 0; font-family: 'Cormorant Garamond', serif; font-size: 18px; font-weight: 700; color: #111;">${item.productName}</p>
-                <p style="margin: 4px 0 0; font-family: 'Montserrat', sans-serif; font-size: 11px; color: #888; background: #f7f7f7; padding: 2px 8px; border-radius: 4px; display: inline-block;">Size: ${item.size}</p>
+                <p style="margin: 4px 0 0; font-family: 'Manrope', sans-serif; font-size: 11px; color: #888; background: #f7f7f7; padding: 2px 8px; border-radius: 4px; display: inline-block;">Size: ${item.size}</p>
             </div>
         </div>
       </td>
@@ -545,8 +582,8 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Montserrat:wght@400;500;600&display=swap');
-        body { font-family: 'Montserrat', sans-serif; }
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Manrope:wght@400;500;600&display=swap');
+        body { font-family: 'Manrope', sans-serif; }
       </style>
     </head>
     <body style="margin: 0; padding: 0; background-color: ${theme.bg};">
@@ -558,7 +595,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
               <tr>
                 <td style="background-color: ${theme.black}; padding: 45px 40px; text-align: center; position: relative;">
                   <h1 style="font-family: 'Cormorant Garamond', serif; color: #fff; margin: 0; font-size: 32px; letter-spacing: 3px; font-weight: 400; text-transform: uppercase;">DEVID AURA</h1>
-                  <p style="font-family: 'Montserrat', sans-serif; color: ${theme.gold}; margin: 8px 0 0; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; font-weight: 500;">Don't let them go</p>
+                  <p style="font-family: 'Manrope', sans-serif; color: ${theme.gold}; margin: 8px 0 0; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; font-weight: 500;">Don't let them go</p>
                 </td>
               </tr>
 
@@ -568,7 +605,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
                     <tr>
                       <td>
                         <span style="font-size: 18px;">🛒</span> 
-                        <span style="font-family: 'Montserrat', sans-serif; font-weight: 700; color: ${theme.black}; font-size: 12px; margin-left: 8px; letter-spacing: 1px; text-transform: uppercase;">Items Reserved</span>
+                        <span style="font-family: 'Manrope', sans-serif; font-weight: 700; color: ${theme.black}; font-size: 12px; margin-left: 8px; letter-spacing: 1px; text-transform: uppercase;">Items Reserved</span>
                       </td>
                     </tr>
                   </table>
@@ -578,7 +615,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
               <tr>
                 <td style="padding: 20px 50px 10px; text-align: center;">
                   <h2 style="font-family: 'Cormorant Garamond', serif; margin: 0; font-size: 28px; color: ${theme.black}; font-weight: 600;">You forgot something...</h2>
-                  <p style="font-family: 'Montserrat', sans-serif; color: #666; font-size: 14px; margin: 15px 0 20px; line-height: 1.6;">
+                  <p style="font-family: 'Manrope', sans-serif; color: #666; font-size: 14px; margin: 15px 0 20px; line-height: 1.6;">
                     Hi ${userName.split(' ')[0]}, we noticed you left some luxury items in your cart. We have saved them for you, but they are selling out fast.
                   </p>
                 </td>
@@ -596,7 +633,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
                 <td style="padding: 20px 40px;">
                    <table width="100%" border="0" cellspacing="0" cellpadding="0">
                       <tr>
-                        <td align="right" style="font-family: 'Montserrat', sans-serif; font-size: 12px; color: #888; padding-right: 15px;">Cart Total</td>
+                        <td align="right" style="font-family: 'Manrope', sans-serif; font-size: 12px; color: #888; padding-right: 15px;">Cart Total</td>
                         <td align="right" style="font-family: 'Cormorant Garamond', serif; font-size: 22px; font-weight: 700; color: ${theme.black};">₹${cartTotal}</td>
                       </tr>
                    </table>
@@ -611,7 +648,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
 
               <tr>
                 <td style="background-color: #f9f9f9; padding: 20px; text-align: center; border-top: 1px solid #eee;">
-                  <p style="margin: 0; font-size: 11px; color: #999; font-family: 'Montserrat', sans-serif;">Devid Aura • Luxury Fragrances</p>
+                  <p style="margin: 0; font-size: 11px; color: #999; font-family: 'Manrope', sans-serif;">Devid Aura • Luxury Fragrances</p>
                 </td>
               </tr>
 
@@ -625,10 +662,10 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
 
   try {
     const { data, error } = await resend.emails.send({
-        from: getSender(),
-        to: [userEmail],
-        subject: `Items waiting in your cart 🛒`,
-        html: emailHtml,
+      from: getSender(),
+      to: [userEmail],
+      subject: `Items waiting in your cart 🛒`,
+      html: emailHtml,
     });
 
     if (error) throw new Error(error.message);
@@ -653,7 +690,7 @@ export const sendPromotionalEmail = async (userEmail, userName, couponCode, desc
   const emailHtml = `
     <!DOCTYPE html>
     <html>
-    <body style="margin: 0; padding: 0; background-color: ${theme.bg}; font-family: 'Montserrat', sans-serif;">
+    <body style="margin: 0; padding: 0; background-color: ${theme.bg}; font-family: 'Manrope', sans-serif;">
       <table width="100%" border="0" cellspacing="0" cellpadding="0">
         <tr>
           <td align="center" style="padding: 40px 10px;">
