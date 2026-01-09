@@ -267,8 +267,8 @@ const theme = {
             <table width="600" border="0" cellspacing="0" cellpadding="0" style="background-color: ${theme.cardBg}; border-radius: ${theme.radius}; overflow: hidden; box-shadow: ${theme.shadow};">
               
               <tr>
-                <td style="background-color: ${theme.black}; padding: 45px 40px; text-align: center; position: relative;">
-                  <div style="width: 100px; height: 100px; background: radial-gradient(circle, ${theme.gold} 0%, transparent 70%); opacity: 0.2; position: absolute; top: -20px; left: 50%; transform: translateX(-50%); border-radius: 50%;"></div>
+                <td style="background-color: ${theme.black}; padding: 5px 35px 40px; text-align: center; position: relative;">
+                  <div style="width: 100px; height: 50px; background: radial-gradient(circle, ${theme.gold} 0%, transparent 70%); opacity: 0.2; position: absolute; top: -20px; left: 50%; transform: translateX(-50%); border-radius: 50%;"></div>
                   
                   <h1 style="font-family: 'Cormorant Garamond', serif; color: #fff; margin: 0; font-size: 32px; letter-spacing: 3px; font-weight: 400; text-transform: uppercase; position: relative; z-index: 10;">DEVID AURA</h1>
                   <p style="font-family: 'Manrope', sans-serif; color: ${theme.gold}; margin: 8px 0 0; font-size: 10px; letter-spacing: 3px; text-transform: uppercase; font-weight: 500;">The Essence of Luxury</p>
@@ -276,7 +276,7 @@ const theme = {
               </tr>
 
               <tr>
-                <td align="center" style="padding: 40px 40px 20px;">
+                <td align="center" style="padding: 20px 40px;">
                   <div style="background: #fcfbf8; border: 1px solid #f0e6d2; color: #8a6d3b; padding: 10px 24px; display: inline-block; border-radius: 50px; margin-bottom: 25px;">
                     <span style="font-size: 14px;">✨</span> 
                     <span style="font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 12px; letter-spacing: 0.5px; margin-left: 6px; text-transform: uppercase; color: #000;">Order Confirmed</span>
