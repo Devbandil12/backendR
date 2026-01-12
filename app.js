@@ -10,6 +10,10 @@ import { SourceMapConsumer } from 'source-map'; // 👈 added
 import fs from 'fs';
 import path from 'path';
 
+// ⚡ PERFORMANCE & SECURITY PACKAGES
+import compression from 'compression'; // Compress JSON response (Huge speedup)
+import helmet from 'helmet'; // Security headers (Fixes CSP/HSTS issues)
+
 import paymentRoutes from './routes/paymentRoute.js';
 import couponsRouter from './routes/coupons.js';
 import addressRoutes from './routes/addressRoutes.js';
@@ -31,6 +35,14 @@ import { startEmailWorker } from './services/emailQueue.js';
 
 const app = express();
 const server = http.createServer(app);
+
+// ⚡ 1. ENABLE GZIP COMPRESSION (Must be top level)
+app.use(compression());
+
+// ⚡ 2. ENABLE SECURITY HEADERS
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow images to load
+}));
 
 // ───── CORS ─────
 app.use(cors({
