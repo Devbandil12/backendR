@@ -9,6 +9,48 @@ import { makeAllProductsKey, makeProductKey } from "../cacheKeys.js";
 
 const router = express.Router();
 
+// ------------------------------------------------------------------
+// 🧠 FRAGRANCE INTELLIGENCE ENGINE (Knowledge Base)
+// ------------------------------------------------------------------
+// This maps abstract human concepts to specific perfumery ingredients.
+const SCENT_INTELLIGENCE = {
+  // --- OCCASIONS ---
+  occasions: {
+    "night": { // Date Night, Intimate, Evening
+      notes: ["vanilla", "amber", "musk", "oud", "rose", "patchouli", "sandalwood", "tobacco", "leather", "tonka", "cinnamon", "cardamom", "jasmine", "black orchid", "cocoa"],
+      preferredFamilies: ["oriental", "gourmand", "woody", "spicy"]
+    },
+    "office": { // Boardroom, Professional, Work
+      notes: ["bergamot", "vetiver", "cedar", "neroli", "lemon", "white musk", "iris", "green tea", "grapefruit", "ginger", "mint", "bamboo", "lavender"],
+      preferredFamilies: ["citrus", "fresh", "green", "aromatic"]
+    },
+    "gala": { // Celebration, Luxury, Party
+      notes: ["oud", "saffron", "tuberose", "champagne", "gold amber", "black currant", "ylang-ylang", "rose", "incense", "myrrh", "truffle"],
+      preferredFamilies: ["floral", "oriental", "chypre"]
+    },
+    "day": { // Casual, Everyday, Brunch
+      notes: ["sea salt", "aqua", "apple", "pear", "peach", "lavender", "sage", "white tea", "cotton", "peony", "freesia", "lily", "citrus"],
+      preferredFamilies: ["aquatic", "fruity", "floral", "fresh"]
+    }
+  },
+
+  // --- VIBES ---
+  vibes: {
+    "powerful": { // Commanding, Bold
+      notes: ["oud", "leather", "tobacco", "black pepper", "cedarwood", "oakmoss", "patchouli", "dark musk", "civet", "birch"],
+    },
+    "mysterious": { // Complex, Dark, Enigma
+      notes: ["incense", "myrrh", "violet", "labdanum", "guaiac wood", "dark chocolate", "plum", "black orchid", "smoke", "resins"],
+    },
+    "playful": { // Radiant, Energetic, Sweet
+      notes: ["citrus", "raspberry", "strawberry", "honey", "caramel", "coconut", "mint", "pink pepper", "orange blossom", "vanilla"],
+    },
+    "serene": { // Grounded, Calm, Nature
+      notes: ["bamboo", "green tea", "eucalyptus", "sandalwood", "chamomile", "white woods", "lotus", "fig", "matcha", "cashmere"],
+    }
+  }
+};
+
 // ... [GET Routes Unchanged] ...
 router.get("/", cache(makeAllProductsKey(), 3600), async (req, res) => {
   try {
@@ -268,6 +310,146 @@ router.get("/", cache(makeAllProductsKey(), 3600), async (req, res) => {
   }
 });
 
+// 🟢 NEW: Powerful Aura Match Endpoint
+router.post('/aura-match', async (req, res) => {
+  const { occasion, vibe } = req.body;
+  // occasion: { label: "Date Night", keywords: [...] }
+  // vibe: { label: "Powerful", keywords: [...] }
+
+  try {
+    // 1. Fetch Candidates
+    const candidates = await db.query.productsTable.findMany({
+      where: and(
+        eq(productsTable.isArchived, false),
+        ne(productsTable.category, 'Template')
+      ),
+      with: {
+        variants: {
+           where: and(
+            eq(productVariantsTable.isArchived, false),
+            gt(productVariantsTable.stock, 0)
+          )
+        }
+      }
+    });
+
+    if (!candidates.length) return res.status(404).json({ error: "No products available" });
+
+    // 2. EXPAND KNOWLEDGE (Build the Target Note Profile)
+    // We analyze the text labels to determine the internal 'key' for our intelligence engine
+    
+    // --- Determine Occasion Key ---
+    const occLabel = (occasion?.label || "").toLowerCase();
+    let occasionKey = "day"; // default
+    if (occLabel.includes("night") || occLabel.includes("intimate") || occLabel.includes("date")) occasionKey = "night";
+    else if (occLabel.includes("office") || occLabel.includes("boardroom") || occLabel.includes("work")) occasionKey = "office";
+    else if (occLabel.includes("gala") || occLabel.includes("celebration") || occLabel.includes("luxury")) occasionKey = "gala";
+    
+    // --- Determine Vibe Key ---
+    const vibeLabel = (vibe?.label || "").toLowerCase();
+    let vibeKey = "serene"; // default
+    if (vibeLabel.includes("powerful") || vibeLabel.includes("commanding") || vibeLabel.includes("bold")) vibeKey = "powerful";
+    else if (vibeLabel.includes("mysterious") || vibeLabel.includes("dark") || vibeLabel.includes("complex")) vibeKey = "mysterious";
+    else if (vibeLabel.includes("playful") || vibeLabel.includes("joy") || vibeLabel.includes("radiant")) vibeKey = "playful";
+
+    // 3. COMPILE TARGET NOTES
+    const occasionProfile = SCENT_INTELLIGENCE.occasions[occasionKey] || SCENT_INTELLIGENCE.occasions["day"];
+    const vibeProfile = SCENT_INTELLIGENCE.vibes[vibeKey] || SCENT_INTELLIGENCE.vibes["serene"];
+
+    const targetOccasionNotes = new Set(occasionProfile.notes);
+    const targetVibeNotes = new Set(vibeProfile.notes);
+    
+    // Also include any raw keywords sent from frontend as fallback/supplement
+    const frontendKeywords = [...(occasion?.keywords || []), ...(vibe?.keywords || [])].map(k => k.toLowerCase());
+
+    // 4. SCORING ALGORITHM
+    const scoredProducts = candidates.map(product => {
+      let score = 0;
+      let matchedNotes = [];
+
+      // Extract product DNA (normalize to lower case)
+      // composition = Top Notes
+      // fragrance = Heart/Middle Notes (and Family)
+      // fragranceNotes = Base Notes
+      const topNotes = (product.composition || "").toLowerCase();
+      const heartNotes = (product.fragrance || "").toLowerCase();
+      const baseNotes = (product.fragranceNotes || "").toLowerCase();
+      const fullDesc = (product.description || "").toLowerCase();
+
+      // --- A. INTELLIGENT NOTE MATCHING ---
+      
+      // Function to check notes against a target set
+      const checkNotes = (sourceText, noteSet, multiplier) => {
+        let localScore = 0;
+        noteSet.forEach(note => {
+          if (sourceText.includes(note)) {
+            localScore += (1 * multiplier);
+            if (!matchedNotes.includes(note)) matchedNotes.push(note);
+          }
+        });
+        return localScore;
+      };
+
+      // Base Notes (Highest Weight - The "Aura")
+      score += checkNotes(baseNotes, targetOccasionNotes, 3); 
+      score += checkNotes(baseNotes, targetVibeNotes, 3);
+
+      // Heart Notes (Medium Weight - The "Character")
+      score += checkNotes(heartNotes, targetOccasionNotes, 2);
+      score += checkNotes(heartNotes, targetVibeNotes, 2);
+
+      // Top Notes (Low Weight - The "Opening")
+      score += checkNotes(topNotes, targetOccasionNotes, 1);
+      score += checkNotes(topNotes, targetVibeNotes, 1);
+
+
+      // --- B. FRAGRANCE FAMILY ALIGNMENT ---
+      // If the product belongs to the preferred family of the occasion (e.g. Occasion="Night", Family="Oriental")
+      if (occasionProfile.preferredFamilies) {
+        occasionProfile.preferredFamilies.forEach(fam => {
+          if (heartNotes.includes(fam) || fullDesc.includes(fam)) {
+            score += 4; // Significant boost for correct family
+          }
+        });
+      }
+
+      // --- C. KEYWORD FALLBACK (Frontend Inputs) ---
+      frontendKeywords.forEach(k => {
+        if (fullDesc.includes(k) || baseNotes.includes(k)) score += 1;
+      });
+
+      // --- D. SYNERGY BONUS ---
+      // If product has notes from BOTH the Occasion AND the Vibe, it's a "Perfect Harmony"
+      const hasOccasionMatch = Array.from(targetOccasionNotes).some(n => (baseNotes + heartNotes).includes(n));
+      const hasVibeMatch = Array.from(targetVibeNotes).some(n => (baseNotes + heartNotes).includes(n));
+      
+      if (hasOccasionMatch && hasVibeMatch) {
+        score += 10; // Massive boost for hitting both criteria
+      }
+
+      return { ...product, score, matchedNotes };
+    });
+
+    // 5. SORT & SELECT
+    scoredProducts.sort((a, b) => b.score - a.score);
+    
+    // Log logic for debugging (optional)
+    // console.log("Top Match:", scoredProducts[0]?.name, "Score:", scoredProducts[0]?.score, "Matches:", scoredProducts[0]?.matchedNotes);
+
+    const bestMatch = scoredProducts.length > 0 ? scoredProducts[0] : candidates[0];
+
+    // Clean image
+    if (typeof bestMatch.imageurl === "string") {
+       try { bestMatch.imageurl = JSON.parse(bestMatch.imageurl); } catch {}
+    }
+
+    res.json(bestMatch);
+
+  } catch (error) {
+    console.error("❌ Aura Match Error:", error);
+    res.status(500).json({ error: "Server error during calculation" });
+  }
+});
 
 router.post('/recommendations', async (req, res) => {
   const { excludeIds, userId } = req.body;
