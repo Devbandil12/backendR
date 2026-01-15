@@ -9,6 +9,11 @@ import http from 'http';
 import { SourceMapConsumer } from 'source-map'; // 👈 added
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url'; // 🟢 1. Import this
+
+// 🟢 2. Define __dirname manually
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ⚡ PERFORMANCE & SECURITY PACKAGES
 import compression from 'compression'; // Compress JSON response (Huge speedup)
@@ -33,6 +38,7 @@ import { initCronJobs } from './services/cron.service.js';
 import cmsRoutes from './routes/cms.js';
 import { startEmailWorker } from './services/emailQueue.js';
 import referralRouter from "./routes/referral.js";
+import rewardsRouter from "./routes/rewards.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -152,7 +158,9 @@ app.use("/api/contact", contactRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/promos', promoRoutes);
 app.use('/api/cms', cmsRoutes);
-app.use("/api/referrals", referralRouter); 
+app.use("/api/referrals", referralRouter); // 🟢 THIS IS MISSING
+app.use("/api/rewards", rewardsRouter); // 🟢 THIS IS MISSING
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));

@@ -83,6 +83,18 @@ export const referralsTable = pgTable('referrals', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
+// 5. Reward Claims Table
+export const rewardClaimsTable = pgTable('reward_claims', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
+  taskType: varchar('task_type', { length: 50 }).notNull(), // 'paparazzi', 'follower', 'reviewer'
+  proof: text('proof').notNull(), // URL to image OR text
+  status: varchar('status', { length: 20 }).default('pending'), // 'pending', 'approved', 'rejected'
+  rewardAmount: integer('reward_amount').notNull(),
+  adminNote: text('admin_note'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
 // --- PRODUCTS & VARIANTS ---
 export const productsTable = pgTable('products', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -357,7 +369,8 @@ export const usersRelations = relations(usersTable, ({ many, one }) => ({
   referredByRelation: one(usersTable, {
     fields: [usersTable.referredBy],
     references: [usersTable.id],
-    relationName: 'referralChain'
+    relationName: 'referralChain',
+    userClaims: many(rewardClaimsTable)
   }),
 }));
 
@@ -386,6 +399,14 @@ export const referralsRelations = relations(referralsTable, ({ one }) => ({
   }),
   referee: one(usersTable, {
     fields: [referralsTable.refereeId],
+    references: [usersTable.id],
+  }),
+}));
+
+// 5. Reward Claims Relations
+export const rewardClaimsRelations = relations(rewardClaimsTable, ({ one }) => ({
+  user: one(usersTable, {
+    fields: [rewardClaimsTable.userId],
     references: [usersTable.id],
   }),
 }));

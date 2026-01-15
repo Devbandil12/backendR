@@ -36,6 +36,7 @@
     "razorpay": "^2.8.6",
     "resend": "^2.1.0",
     "source-map": "^0.7.4",
+    "tesseract.js": "^7.0.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
