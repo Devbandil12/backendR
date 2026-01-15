@@ -1,1 +1,0 @@
-ALTER TABLE "coupons" ADD COLUMN "cond_required_size" integer;

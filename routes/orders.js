@@ -25,6 +25,8 @@ import {
 } from "../cacheKeys.js";
 import { createNotification } from '../helpers/notificationManager.js';
 import { generateInvoicePDF } from "../services/invoice.service.js";
+import { processReferralCompletion } from "../controllers/referralController.js";
+
 const router = express.Router();
 
 // Initialize Razorpay for Auto-Sync
@@ -391,6 +393,18 @@ router.put("/:id/status", async (req, res) => {
                 metadata: { orderId: id, oldStatus, newStatus: status }
             });
         }
+
+        // 🟢 REFERRAL HOOK: Complete referral if Delivered
+        if (status.toLowerCase() === 'delivered') {
+            try {
+                await processReferralCompletion(updatedOrder.userId);
+            } catch (refError) {
+                console.error("⚠️ Referral completion failed:", refError);
+                // Don't fail the request, just log it
+            }
+        }
+        
+        // 🟢 SEND NOTIFICATION TO USER
 
         let message = `Your order #${updatedOrder.id} is now ${status}.`;
         if (status === 'Delivered') {

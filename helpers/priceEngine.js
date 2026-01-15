@@ -31,9 +31,9 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
   if (variantIds.length === 0) {
      // Return zeroed out structure if empty
      return { 
-        originalTotal: 0, productTotal: 0, deliveryCharge: 0, 
-        offerDiscount: 0, appliedOffers: [], discountAmount: 0, 
-        total: 0, codAvailable: false 
+       originalTotal: 0, productTotal: 0, deliveryCharge: 0, 
+       offerDiscount: 0, appliedOffers: [], discountAmount: 0, 
+       total: 0, codAvailable: false, walletUsed: 0 
      };
   }
   
@@ -41,7 +41,7 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
     where: inArray(productVariantsTable.id, variantIds),
     with: {
       product: {
-        columns: { category: true }
+        columns: { category: true, mrp: true } // Added mrp just in case
       }
     }
   });
@@ -217,6 +217,7 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
     appliedOffers, 
     discountAmount: manualDiscountAmount, 
     total,
-    codAvailable 
+    codAvailable,
+    walletUsed: 0 // 🟢 Added Default
   };
 };

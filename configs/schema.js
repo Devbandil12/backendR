@@ -1,4 +1,4 @@
-// file configs/schema.js
+// file: configs/schema.js
 
 import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, index, jsonb, } from 'drizzle-orm/pg-core';
 import { sql, relations } from 'drizzle-orm';
@@ -8,6 +8,14 @@ const generateNumericId = () => {
   return `DA${timestamp}`;
 };
 
+const generateTicketId = () => `SUP-${Date.now()}`;
+
+
+// =========================================
+// 1. DEFINE ALL TABLES FIRST
+// =========================================
+
+// 1. Users Table
 export const usersTable = pgTable('users', {
   id: uuid("id").defaultRandom().primaryKey(),
   clerkId: text("clerk_id").notNull().unique(),
@@ -23,207 +31,12 @@ export const usersTable = pgTable('users', {
   notify_promos: boolean('notify_promos').default(true).notNull(),
   notify_pincode: boolean('notify_pincode').default(true).notNull(),
   pushSubscription: jsonb('push_subscription'),
+  referralCode: text('referral_code').unique(),
+  referredBy: uuid('referred_by'),
+  walletBalance: integer('wallet_balance').default(0).notNull(),
 });
 
-export const usersRelations = relations(usersTable, ({ many }) => ({
-  orders: many(ordersTable),
-  addresses: many(UserAddressTable),
-  reviews: many(reviewsTable),
-  cartItems: many(addToCartTable),
-  wishlistItems: many(wishlistTable),
-  notifications: many(notificationsTable),
-  savedItems: many(savedForLaterTable), 
-}));
-
-
-// 🟢 MODIFIED: This table now stores shared info
-export const productsTable = pgTable('products', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  name: varchar('name', { length: 255 }).notNull(),
-  composition: varchar('composition', { length: 255 }).notNull(),
-  description: varchar('description', { length: 255 }).notNull(),
-  fragrance: varchar('fragrance', { length: 255 }).notNull(),
-  fragranceNotes: varchar('fragranceNotes', { length: 255 }).notNull(),
-  imageurl: jsonb("imageurl").notNull().default(sql`'{}'::jsonb`),
-  category: varchar('category', { length: 100 }).default('Uncategorized'),
-  isArchived: boolean('is_archived').default(false).notNull(),
-});
-
-// 🟢 NEW: This table stores purchasable items (SKUs)
-export const productVariantsTable = pgTable('product_variants', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: 'cascade' }),
-
-  // Variant-specific details
-  name: text('name').notNull(), // e.g., "20ml" or "Signature Combo"
-  size: integer('size').notNull(),
-  oprice: integer('oprice').notNull(),
-  discount: integer('discount').notNull().default(0),
-  costPrice: integer('cost_price').default(0),
-  stock: integer("stock").notNull().default(0),
-  sold: integer('sold').default(0),
-  isArchived: boolean('is_archived').default(false).notNull(),
-  sku: varchar('sku', { length: 100 }).unique(), // Optional, but good practice
-});
-
-// 🟢 NEW: This table links a "combo" variant to its "content" variants
-export const productBundlesTable = pgTable('product_bundles', {
-  id: uuid('id').defaultRandom().primaryKey(),
-
-  // The "Combo" product variant
-  bundleVariantId: uuid('bundle_variant_id').notNull().references(() => productVariantsTable.id, { onDelete: 'cascade' }),
-
-  // The "content" product variant (e.g., one 20ml bottle)
-  contentVariantId: uuid('content_variant_id').notNull().references(() => productVariantsTable.id, { onDelete: 'cascade' }),
-
-  // How many of this content item are in the bundle
-  quantity: integer('quantity').notNull().default(1),
-});
-
-// 🟢 MODIFIED: productsRelations
-export const productsRelations = relations(productsTable, ({ many }) => ({
-  reviews: many(reviewsTable), // Reviews are still for the main product
-  orderItems: many(orderItemsTable),
-  variants: many(productVariantsTable), // A product has many variants
-}));
-
-// 🟢 NEW: productVariantsRelations
-export const productVariantsRelations = relations(productVariantsTable, ({ one, many }) => ({
-  product: one(productsTable, { // A variant belongs to one product
-    fields: [productVariantsTable.productId],
-    references: [productsTable.id],
-  }),
-  bundleEntries: many(productBundlesTable, {
-    relationName: 'bundleEntries',
-    fields: [productVariantsTable.id],
-    references: [productBundlesTable.bundleVariantId],
-  }),
-  bundleContents: many(productBundlesTable, {
-    relationName: 'bundleContents',
-    fields: [productVariantsTable.id],
-    references: [productBundlesTable.contentVariantId],
-  }),
-}));
-
-// 🟢 NEW: productBundlesRelations
-export const productBundlesRelations = relations(productBundlesTable, ({ one }) => ({
-  bundle: one(productVariantsTable, {
-    fields: [productBundlesTable.bundleVariantId],
-    references: [productVariantsTable.id],
-    relationName: 'bundleEntries',
-  }),
-  content: one(productVariantsTable, {
-    fields: [productBundlesTable.contentVariantId],
-    references: [productVariantsTable.id],
-    relationName: 'bundleContents',
-  }),
-}));
-
-// 🟢 MODIFIED: addToCartTable
-export const addToCartTable = pgTable('add_to_cart', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
-  quantity: integer('quantity').notNull().default(1),
-  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
-});
-
-export const addToCartRelations = relations(addToCartTable, ({ one }) => ({
-  user: one(usersTable, {
-    fields: [addToCartTable.userId],
-    references: [usersTable.id],
-  }),
-  variant: one(productVariantsTable, {
-    fields: [addToCartTable.variantId],
-    references: [productVariantsTable.id],
-  })
-}));
-
-// 🟢 MODIFIED: wishlistTable
-export const wishlistTable = pgTable("wishlist_table", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  variantId: uuid("variant_id").notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
-  addedAt: timestamp("added_at", { withTimezone: true }).defaultNow(),
-});
-
-export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
-  user: one(usersTable, {
-    fields: [wishlistTable.userId],
-    references: [usersTable.id],
-  }),
-  variant: one(productVariantsTable, {
-    fields: [wishlistTable.variantId],
-    references: [productVariantsTable.id],
-  }),
-}));
-
-// 🟢 NEW: Table for "Save for Later" items (distinct from Wishlist)
-export const savedForLaterTable = pgTable('saved_for_later', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
-  quantity: integer('quantity').notNull().default(1), // Preserves the quantity from the cart
-  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
-});
-
-
-// 🟢 NEW: Relations for savedForLaterTable
-export const savedForLaterRelations = relations(savedForLaterTable, ({ one }) => ({
-  user: one(usersTable, {
-    fields: [savedForLaterTable.userId],
-    references: [usersTable.id],
-  }),
-  variant: one(productVariantsTable, {
-    fields: [savedForLaterTable.variantId],
-    references: [productVariantsTable.id],
-  })
-}));
-
-// 🟢 --- START: MODIFIED ordersTable ---
-export const ordersTable = pgTable('orders', {
-  id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
-  userId: uuid('user_id').notNull().references(() => usersTable.id),
-  userAddressId: uuid('user_address_id').notNull().references(() => UserAddressTable.id),
-  razorpay_order_id: text('razorpay_order_id'),
-  totalAmount: integer('total_amount').notNull(),
-  status: text('status').default('order placed'),
-  progressStep: integer('progressStep').default(0),
-  paymentMode: text('payment_mode').notNull(),
-  transactionId: text('transaction_id').default("null"),
-  paymentStatus: text("payment_status").default("pending"),
-  phone: text("phone").notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
-  refund_id: text('refund_id'),
-  refund_amount: integer('refund_amount'),
-  refund_status: text('refund_status'),
-  refund_speed: text('refund_speed'),
-  refund_initiated_at: timestamp('refund_initiated_at'),
-  refund_completed_at: timestamp('refund_completed_at'),
-
-  // --- Discount Section ---
-  couponCode: varchar('coupon_code', { length: 50 }), // For MANUAL coupons
-  discountAmount: integer('discount_amount').default(0), // For MANUAL coupons
-
-  // 🟢 NEW: Fields for automatic offers
-  offerDiscount: integer('offer_discount').default(0), // The total discount from *automatic* offers
-  offerCodes: jsonb('offer_codes'), // An array of applied offer names, e.g., ["FREE30ML", "10PERCENTOFF"]
-});
-// 🟢 --- END: MODIFIED ordersTable ---
-
-export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
-  user: one(usersTable, {
-    fields: [ordersTable.userId],
-    references: [usersTable.id],
-  }),
-  address: one(UserAddressTable, {
-    fields: [ordersTable.userAddressId],
-    references: [UserAddressTable.id],
-  }),
-  orderItems: many(orderItemsTable),
-}));
-
+// 2. User Address Table
 export const UserAddressTable = pgTable('user_address', {
   id: uuid('id').defaultRandom().primaryKey(),
   userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
@@ -249,63 +62,141 @@ export const UserAddressTable = pgTable('user_address', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
 
-export const userAddressRelations = relations(UserAddressTable, ({ one }) => ({
-  user: one(usersTable, {
-    fields: [UserAddressTable.userId],
-    references: [usersTable.id],
-  }),
-}));
-
-export const pincodeServiceabilityTable = pgTable('pincode_serviceability', {
-  pincode: varchar('pincode', { length: 6 }).primaryKey(),
-  city: varchar('city', { length: 100 }).notNull(),
-  state: varchar('state', { length: 100 }).notNull(),
-  isServiceable: boolean('is_serviceable').default(false),
-  codAvailable: boolean('cod_available').default(false),
-  onlinePaymentAvailable: boolean('online_payment_available').default(true),
-  deliveryCharge: integer('delivery_charge').default(50),
+// 3. Wallet Transactions Table
+export const walletTransactionsTable = pgTable('wallet_transactions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
+  amount: integer('amount').notNull(),
+  type: varchar('type', { length: 50 }).notNull(),
+  description: text('description').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
-// 🟢 MODIFIED: orderItemsTable
+
+// 4. Referrals Table
+export const referralsTable = pgTable('referrals', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  referrerId: uuid('referrer_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
+  refereeId: uuid('referee_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
+  status: varchar('status', { length: 20 }).default('pending'), // 'pending', 'completed'
+  rewardAmount: integer('reward_amount').default(100),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+// --- PRODUCTS & VARIANTS ---
+export const productsTable = pgTable('products', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  composition: varchar('composition', { length: 255 }).notNull(),
+  description: varchar('description', { length: 255 }).notNull(),
+  fragrance: varchar('fragrance', { length: 255 }).notNull(),
+  fragranceNotes: varchar('fragranceNotes', { length: 255 }).notNull(),
+  imageurl: jsonb("imageurl").notNull().default(sql`'{}'::jsonb`),
+  category: varchar('category', { length: 100 }).default('Uncategorized'),
+  isArchived: boolean('is_archived').default(false).notNull(),
+});
+
+
+export const productVariantsTable = pgTable('product_variants', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  size: integer('size').notNull(),
+  oprice: integer('oprice').notNull(),
+  discount: integer('discount').notNull().default(0),
+  costPrice: integer('cost_price').default(0),
+  stock: integer("stock").notNull().default(0),
+  sold: integer('sold').default(0),
+  isArchived: boolean('is_archived').default(false).notNull(),
+  sku: varchar('sku', { length: 100 }).unique(),
+});
+
+
+export const productBundlesTable = pgTable('product_bundles', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  bundleVariantId: uuid('bundle_variant_id').notNull().references(() => productVariantsTable.id, { onDelete: 'cascade' }),
+  contentVariantId: uuid('content_variant_id').notNull().references(() => productVariantsTable.id, { onDelete: 'cascade' }),
+  quantity: integer('quantity').notNull().default(1),
+});
+
+
+// --- CART, WISHLIST & SAVED FOR LATER ---
+
+export const addToCartTable = pgTable('add_to_cart', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
+  quantity: integer('quantity').notNull().default(1),
+  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
+});
+
+export const wishlistTable = pgTable("wishlist_table", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  variantId: uuid("variant_id").notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
+  addedAt: timestamp("added_at", { withTimezone: true }).defaultNow(),
+});
+
+export const savedForLaterTable = pgTable('saved_for_later', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id, { onDelete: "cascade" }),
+  quantity: integer('quantity').notNull().default(1),
+  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow(),
+});
+
+// --- ORDERS & ORDER ITEMS ---
+
+export const ordersTable = pgTable('orders', {
+  id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
+  userId: uuid('user_id').notNull().references(() => usersTable.id),
+  userAddressId: uuid('user_address_id').notNull().references(() => UserAddressTable.id),
+  razorpay_order_id: text('razorpay_order_id'),
+  totalAmount: integer('total_amount').notNull(),
+  status: text('status').default('order placed'),
+  progressStep: integer('progressStep').default(0),
+  paymentMode: text('payment_mode').notNull(),
+  transactionId: text('transaction_id').default("null"),
+  paymentStatus: text("payment_status").default("pending"),
+  phone: text("phone").notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+  refund_id: text('refund_id'),
+  refund_amount: integer('refund_amount'),
+  refund_status: text('refund_status'),
+  refund_speed: text('refund_speed'),
+  refund_initiated_at: timestamp('refund_initiated_at'),
+  refund_completed_at: timestamp('refund_completed_at'),
+  walletAmountUsed: integer('wallet_amount_used').default(0),
+
+  // Coupons & Offers
+  couponCode: varchar('coupon_code', { length: 50 }),
+  discountAmount: integer('discount_amount').default(0),
+  offerDiscount: integer('offer_discount').default(0),
+  offerCodes: jsonb('offer_codes'),
+});
+
 export const orderItemsTable = pgTable('order_items', {
   id: text('id').primaryKey().$defaultFn(() => generateNumericId()),
   orderId: text('order_id').notNull().references(() => ordersTable.id, { onDelete: "cascade" }),
   productName: varchar('product_name', { length: 255 }).notNull(),
   img: varchar('img', { length: 500 }).notNull(),
-  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id), // No cascade, protect history
-  productId: uuid('product_id').notNull().references(() => productsTable.id), // Keep this to link to the main product page
+  variantId: uuid('variant_id').notNull().references(() => productVariantsTable.id),
+  productId: uuid('product_id').notNull().references(() => productsTable.id),
   quantity: integer('quantity').notNull().default(1),
-  price: integer('price').notNull(), // This is the price *at the time of purchase*
+  price: integer('price').notNull(),
   totalPrice: integer('total_price').notNull(),
   size: integer('size').notNull().default(0),
 });
 
-export const orderItemsRelations = relations(orderItemsTable, ({ one }) => ({
-  order: one(ordersTable, {
-    fields: [orderItemsTable.orderId],
-    references: [ordersTable.id],
-  }),
-  variant: one(productVariantsTable, {
-    fields: [orderItemsTable.variantId],
-    references: [productVariantsTable.id],
-  }),
-  product: one(productsTable, {
-    fields: [orderItemsTable.productId],
-    references: [productsTable.id],
-  }),
-}));
+// --- COUPONS, REVIEWS, TESTIMONIALS & NOTIFICATIONS ---
 
-// 🟢 --- START: MODIFIED couponsTable ---
 export const couponsTable = pgTable('coupons', {
   id: serial('id').primaryKey(),
   code: varchar('code', { length: 50 }).notNull().unique(),
   description: text('description'),
-
-  // --- Main Action ---
-  discountType: varchar('discount_type', { length: 20 }).notNull(), // 'percent', 'flat', 'free_item'
+  discountType: varchar('discount_type', { length: 20 }).notNull(),
   discountValue: integer('discount_value').notNull().default(0),
-
-  // --- Basic Rules ---
   minOrderValue: integer('min_order_value').default(0),
   minItemCount: integer('min_item_count').default(0),
   maxDiscountAmount: integer('max_discount_amount'),
@@ -313,9 +204,6 @@ export const couponsTable = pgTable('coupons', {
   validUntil: timestamp('valid_until'),
   firstOrderOnly: boolean('is_first_order_only').default(false),
   maxUsagePerUser: integer('max_usage_per_user').default(1),
-
-  // --- 🟢 NEW: Automatic Offer Rules ---
-
   isAutomatic: boolean('is_automatic').default(false).notNull(),
   cond_requiredCategory: varchar('cond_required_category', { length: 100 }),
   action_targetSize: integer('action_target_size'),
@@ -323,21 +211,11 @@ export const couponsTable = pgTable('coupons', {
   cond_requiredSize: integer('cond_required_size'),
   action_buyX: integer('action_buy_x'),
   action_getY: integer('action_get_y'),
-  targetUserId: uuid('target_user_id').references(() => usersTable.id, { onDelete: 'cascade' }), // Null = Public
-  targetCategory: varchar('target_category', { length: 50 }), // 🟢 NEW: 'new_user', 'vip', 'returning', 'inactive'
+  targetUserId: uuid('target_user_id').references(() => usersTable.id, { onDelete: 'cascade' }),
+  targetCategory: varchar('target_category', { length: 50 }),
 });
 
-export const testimonials = pgTable("testimonials", {
-  id: serial("id").primaryKey(),
-  name: text("name").notNull(),
-  title: text("title"),
-  text: text("text").notNull(),
-  rating: integer("rating").notNull(),
-  avatar: text("avatar"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-});
 
-// 🟢 MODIFIED: reviewsTable
 export const reviewsTable = pgTable('product_reviews', {
   id: uuid('id').defaultRandom().primaryKey(),
   productId: uuid('product_id').notNull().references(() => productsTable.id, { onDelete: 'cascade' }),
@@ -355,6 +233,269 @@ export const reviewsTable = pgTable('product_reviews', {
   createdAtIdx: index('idx_reviews_created_at').on(table.createdAt),
 }));
 
+export const testimonials = pgTable("testimonials", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  title: text("title"),
+  text: text("text").notNull(),
+  rating: integer("rating").notNull(),
+  avatar: text("avatar"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+export const notificationsTable = pgTable('notifications', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+  message: text('message').notNull(),
+  link: text('link'),
+  isRead: boolean('is_read').default(false).notNull(),
+  type: varchar('type', { length: 50 }).default('general'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => ({
+  userIdIdx: index('idx_notifications_user_id').on(table.userId),
+}));
+
+//  --- PINCODE SERVICEABILITY, TICKETS & BANNERS ---
+
+export const pincodeServiceabilityTable = pgTable('pincode_serviceability', {
+  pincode: varchar('pincode', { length: 6 }).primaryKey(),
+  city: varchar('city', { length: 100 }).notNull(),
+  state: varchar('state', { length: 100 }).notNull(),
+  isServiceable: boolean('is_serviceable').default(false),
+  codAvailable: boolean('cod_available').default(false),
+  onlinePaymentAvailable: boolean('online_payment_available').default(true),
+  deliveryCharge: integer('delivery_charge').default(50),
+});
+
+export const ticketsTable = pgTable("tickets", {
+  id: text("id").primaryKey().$defaultFn(() => generateTicketId()),
+  userId: uuid("user_id").references(() => usersTable.id, { onDelete: "set null" }),
+  guestEmail: text("guest_email"),
+  guestPhone: text("guest_phone"),
+  subject: text("subject").notNull().default("Support Query"),
+  status: varchar("status", { length: 20 }).default("open").notNull(),
+  priority: varchar("priority", { length: 20 }).default("medium"),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+export const bannersTable = pgTable('banners', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  title: text('title').notNull(),
+  subtitle: text('subtitle'),
+  imageUrl: text('image_url').notNull(),
+  imageLayer1: text('image_layer_1'),
+  imageLayer2: text('image_layer_2'),
+  poeticLine: text('poetic_line'),
+  description: text('description'),
+  link: text('link').default('/products'),
+  buttonText: text('button_text').default('Shop Now'),
+  type: text('type').default('hero'),
+  layout: text('layout').default('split'),
+  isActive: boolean('is_active').default(true),
+  order: integer('order').default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
+export const aboutUsTable = pgTable('about_us', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  heroTitle: text('hero_title').default('DEVID AURA'),
+  heroSubtitle: text('hero_subtitle').default('Est. 2023'),
+  heroImage: text('hero_image').notNull(),
+  pillar1Title: text('pillar_1_title').default('Unrefined Nature.'),
+  pillar1Desc: text('pillar_1_desc'),
+  pillar1Image: text('pillar_1_image'),
+  pillar2Title: text('pillar_2_title').default('Liquid Patience.'),
+  pillar2Desc: text('pillar_2_desc'),
+  pillar2Image: text('pillar_2_image'),
+  pillar3Title: text('pillar_3_title').default('The Human Canvas.'),
+  pillar3Desc: text('pillar_3_desc'),
+  pillar3Image: text('pillar_3_image'),
+  foundersTitle: text('founders_title').default('Architects of Memory.'),
+  foundersQuote: text('founders_quote'),
+  foundersDesc: text('founders_desc'),
+  foundersImage: text('founders_image'),
+  founder1Name: text('founder_1_name').default('Harsh'),
+  founder1Role: text('founder_1_role').default('The Nose'),
+  founder2Name: text('founder_2_name').default('Yomesh'),
+  founder2Role: text('founder_2_role').default('The Eye'),
+  footerTitle: text('footer_title').default('Define Your Presence.'),
+  footerImageDesktop: text('footer_image_desktop'),
+  footerImageMobile: text('footer_image_mobile'),
+});
+
+// --- ACTIVITY LOGS  ---
+export const activityLogsTable = pgTable('activity_logs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').references(() => usersTable.id, { onDelete: 'cascade' }),
+  targetId: uuid('target_id').references(() => usersTable.id, { onDelete: 'set null' }),
+  action: varchar('action', { length: 50 }).notNull(),
+  description: text('description'),
+  metadata: jsonb('metadata'),
+  performedBy: varchar('performed_by', { length: 20 }).default('user'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+
+// =========================================
+// 2. DEFINE ALL RELATIONS LAST
+// =========================================
+
+
+// 1. Users Relations
+export const usersRelations = relations(usersTable, ({ many, one }) => ({
+  orders: many(ordersTable),
+  addresses: many(UserAddressTable),
+  reviews: many(reviewsTable),
+  cartItems: many(addToCartTable),
+  wishlistItems: many(wishlistTable),
+  notifications: many(notificationsTable),
+  savedItems: many(savedForLaterTable),
+  walletTransactions: many(walletTransactionsTable),
+  referralsMade: many(referralsTable, { relationName: 'referrer_relation' }),
+
+  referredByRelation: one(usersTable, {
+    fields: [usersTable.referredBy],
+    references: [usersTable.id],
+    relationName: 'referralChain'
+  }),
+}));
+
+// 2. User Address Relations
+export const userAddressRelations = relations(UserAddressTable, ({ one }) => ({
+  user: one(usersTable, {
+    fields: [UserAddressTable.userId],
+    references: [usersTable.id],
+  }),
+}));
+
+// 3. Wallet Transactions Relations
+export const walletTransactionsRelations = relations(walletTransactionsTable, ({ one }) => ({
+  user: one(usersTable, {
+    fields: [walletTransactionsTable.userId],
+    references: [usersTable.id],
+  }),
+}));
+
+// 4. Referrals Relations
+export const referralsRelations = relations(referralsTable, ({ one }) => ({
+  referrer: one(usersTable, {
+    fields: [referralsTable.referrerId],
+    references: [usersTable.id],
+    relationName: 'referrer_relation', 
+  }),
+  referee: one(usersTable, {
+    fields: [referralsTable.refereeId],
+    references: [usersTable.id],
+  }),
+}));
+
+// --- PRODUCTS & VARIANTS RELATIONS ---
+export const productsRelations = relations(productsTable, ({ many }) => ({
+  reviews: many(reviewsTable),
+  orderItems: many(orderItemsTable),
+  variants: many(productVariantsTable),
+}));
+
+export const productVariantsRelations = relations(productVariantsTable, ({ one, many }) => ({
+  product: one(productsTable, {
+    fields: [productVariantsTable.productId],
+    references: [productsTable.id],
+  }),
+  bundleEntries: many(productBundlesTable, {
+    relationName: 'bundleEntries',
+  }),
+  bundleContents: many(productBundlesTable, {
+    relationName: 'bundleContents',
+  }),
+}));
+
+export const productBundlesRelations = relations(productBundlesTable, ({ one }) => ({
+  bundle: one(productVariantsTable, {
+    fields: [productBundlesTable.bundleVariantId],
+    references: [productVariantsTable.id],
+    relationName: 'bundleEntries',
+  }),
+  content: one(productVariantsTable, {
+    fields: [productBundlesTable.contentVariantId],
+    references: [productVariantsTable.id],
+    relationName: 'bundleContents',
+  }),
+}));
+
+// --- CART, WISHLIST & SAVED FOR LATER RELATIONS ---
+export const addToCartRelations = relations(addToCartTable, ({ one }) => ({
+  user: one(usersTable, {
+    fields: [addToCartTable.userId],
+    references: [usersTable.id],
+  }),
+  variant: one(productVariantsTable, {
+    fields: [addToCartTable.variantId],
+    references: [productVariantsTable.id],
+  })
+}));
+
+
+export const wishlistRelations = relations(wishlistTable, ({ one }) => ({
+  user: one(usersTable, {
+    fields: [wishlistTable.userId],
+    references: [usersTable.id],
+  }),
+  variant: one(productVariantsTable, {
+    fields: [wishlistTable.variantId],
+    references: [productVariantsTable.id],
+  }),
+}));
+
+
+export const savedForLaterRelations = relations(savedForLaterTable, ({ one }) => ({
+  user: one(usersTable, {
+    fields: [savedForLaterTable.userId],
+    references: [usersTable.id],
+  }),
+  variant: one(productVariantsTable, {
+    fields: [savedForLaterTable.variantId],
+    references: [productVariantsTable.id],
+  })
+}));
+
+// --- ORDERS & ORDER ITEMS RELATIONS ---
+export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
+  user: one(usersTable, {
+    fields: [ordersTable.userId],
+    references: [usersTable.id],
+  }),
+  address: one(UserAddressTable, {
+    fields: [ordersTable.userAddressId],
+    references: [UserAddressTable.id],
+  }),
+  orderItems: many(orderItemsTable),
+}));
+
+
+export const orderItemsRelations = relations(orderItemsTable, ({ one }) => ({
+  order: one(ordersTable, {
+    fields: [orderItemsTable.orderId],
+    references: [ordersTable.id],
+  }),
+  variant: one(productVariantsTable, {
+    fields: [orderItemsTable.variantId],
+    references: [productVariantsTable.id],
+  }),
+  product: one(productsTable, {
+    fields: [orderItemsTable.productId],
+    references: [productsTable.id],
+  }),
+}));
+
+// --- COUPONS, REVIEWS, TESTIMONIALS & NOTIFICATIONS RELATIONS ---
+export const couponsRelations = relations(couponsTable, ({ one }) => ({
+  targetUser: one(usersTable, {
+    fields: [couponsTable.targetUserId],
+    references: [usersTable.id],
+  }),
+}));
+
 export const reviewsRelations = relations(reviewsTable, ({ one }) => ({
   product: one(productsTable, {
     fields: [reviewsTable.productId],
@@ -367,18 +508,6 @@ export const reviewsRelations = relations(reviewsTable, ({ one }) => ({
 }));
 
 
-export const notificationsTable = pgTable('notifications', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: "cascade" }),
-  message: text('message').notNull(),
-  link: text('link'), // e.g., /myorder/DA123456
-  isRead: boolean('is_read').default(false).notNull(),
-  type: varchar('type', { length: 50 }).default('general'), // e.g., 'order', 'coupon', 'system'
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
-}, (table) => ({
-  userIdIdx: index('idx_notifications_user_id').on(table.userId),
-}));
-
 export const notificationsRelations = relations(notificationsTable, ({ one }) => ({
   user: one(usersTable, {
     fields: [notificationsTable.userId],
@@ -386,33 +515,15 @@ export const notificationsRelations = relations(notificationsTable, ({ one }) =>
   }),
 }));
 
-
-const generateTicketId = () => {
-  return `SUP-${Date.now()}`;
-};
-// 🟢 MODIFIED: Tickets Table with Readable ID
-export const ticketsTable = pgTable("tickets", {
-  id: text("id").primaryKey().$defaultFn(() => generateTicketId()), // Changed from UUID to Text with Generator
-  userId: uuid("user_id").references(() => usersTable.id, { onDelete: "set null" }),
-  guestEmail: text("guest_email"), 
-  guestPhone: text("guest_phone"),
-  subject: text("subject").notNull().default("Support Query"),
-  status: varchar("status", { length: 20 }).default("open").notNull(), 
-  priority: varchar("priority", { length: 20 }).default("medium"),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
-});
-
-// 🟢 MODIFIED: Messages Table (ticketId type changed to text)
+//  ---  TICKETS RELATIONS ---
 export const ticketMessagesTable = pgTable("ticket_messages", {
   id: uuid("id").defaultRandom().primaryKey(),
-  ticketId: text("ticket_id").notNull().references(() => ticketsTable.id, { onDelete: "cascade" }), // Must match ticketsTable.id type
+  ticketId: text("ticket_id").notNull().references(() => ticketsTable.id, { onDelete: "cascade" }),
   senderRole: varchar("sender_role", { length: 20 }).notNull(),
   message: text("message").notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
-// Relations (Keep as is)
 export const ticketsRelations = relations(ticketsTable, ({ one, many }) => ({
   user: one(usersTable, {
     fields: [ticketsTable.userId],
@@ -428,27 +539,8 @@ export const ticketMessagesRelations = relations(ticketMessagesTable, ({ one }) 
   }),
 }));
 
+// --- ACTIVITY LOGS  RELATIONS ---
 
-export const activityLogsTable = pgTable('activity_logs', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  
-  // 🟢 CHANGE: This now represents the ACTOR (Who performed the action)
-  userId: uuid('user_id').references(() => usersTable.id, { onDelete: 'cascade' }),
-  
-  // 🟢 NEW: This represents the TARGET (Who was changed)
-  targetId: uuid('target_id').references(() => usersTable.id, { onDelete: 'set null' }),
-
-  action: varchar('action', { length: 50 }).notNull(),
-  description: text('description'),
-  metadata: jsonb('metadata'),
-  
-  // We can keep this for redundancy or remove it, but let's keep it for easy UI display
-  performedBy: varchar('performed_by', { length: 20 }).default('user'), 
-  
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
-});
-
-// Add relations
 export const activityLogsRelations = relations(activityLogsTable, ({ one }) => ({
   actor: one(usersTable, {
     fields: [activityLogsTable.userId],
@@ -462,68 +554,3 @@ export const activityLogsRelations = relations(activityLogsTable, ({ one }) => (
   }),
 }));
 
-export const bannersTable = pgTable('banners', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  title: text('title').notNull(),
-  subtitle: text('subtitle'),
-  imageUrl: text('image_url').notNull(), // The Cloudinary URL
-  imageLayer1: text('image_layer_1'), // Back Layer
-  imageLayer2: text('image_layer_2'), // Front Layer
-
-  // 🟢 NEW: Extra Text Fields
-  poeticLine: text('poetic_line'), // "Build A Legacy"
-  description: text('description'), // "Standard perfume is for the crowd..."
-  link: text('link').default('/products'),
-  buttonText: text('button_text').default('Shop Now'),
-  
-  // 🟢 CRITICAL NEW COLUMNS
-  type: text('type').default('hero'),        // 'hero' OR 'mid_section'
-  layout: text('layout').default('split'),   // 'split' (Change Bottle) OR 'full' (Big Banner)
-  
-  isActive: boolean('is_active').default(true),
-  order: integer('order').default(0),
-  createdAt: timestamp('created_at').defaultNow(),
-});
-
-
-// ... existing imports ...
-
-// 🟢 ADD THIS NEW TABLE
-export const aboutUsTable = pgTable('about_us', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  
-  // Hero Section
-  heroTitle: text('hero_title').default('DEVID AURA'),
-  heroSubtitle: text('hero_subtitle').default('Est. 2023'),
-  heroImage: text('hero_image').notNull(),
-
-  // Pillar 1 (Ingredients)
-  pillar1Title: text('pillar_1_title').default('Unrefined Nature.'),
-  pillar1Desc: text('pillar_1_desc'),
-  pillar1Image: text('pillar_1_image'),
-
-  // Pillar 2 (Alchemy)
-  pillar2Title: text('pillar_2_title').default('Liquid Patience.'),
-  pillar2Desc: text('pillar_2_desc'),
-  pillar2Image: text('pillar_2_image'),
-
-  // Pillar 3 (Identity)
-  pillar3Title: text('pillar_3_title').default('The Human Canvas.'),
-  pillar3Desc: text('pillar_3_desc'),
-  pillar3Image: text('pillar_3_image'),
-
-  // Founders Section
-  foundersTitle: text('founders_title').default('Architects of Memory.'),
-  foundersQuote: text('founders_quote'),
-  foundersDesc: text('founders_desc'),
-  foundersImage: text('founders_image'),
-  founder1Name: text('founder_1_name').default('Harsh'),
-  founder1Role: text('founder_1_role').default('The Nose'),
-  founder2Name: text('founder_2_name').default('Yomesh'),
-  founder2Role: text('founder_2_role').default('The Eye'),
-
-  // Footer Section
-  footerTitle: text('footer_title').default('Define Your Presence.'),
-  footerImageDesktop: text('footer_image_desktop'),
-  footerImageMobile: text('footer_image_mobile'),
-});

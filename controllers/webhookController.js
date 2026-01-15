@@ -12,6 +12,7 @@ import {
   makeOrderKey,
 } from '../cacheKeys.js';
 import { createNotification } from '../helpers/notificationManager.js';
+import { processReferralCompletion } from './referralController.js'; // 🟢 IMPORT THIS
 
 // 🔴 REMOVED: Direct email imports
 // import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
@@ -131,6 +132,7 @@ const razorpayWebhookHandler = async (req, res) => {
                         }
 
                         console.log(`✅ Order ${existingOrder.id} marked PAID & Stock Deducted`);
+                        processReferralCompletion(existingOrder.userId).catch(e => console.error("Referral Hook Fail:", e));
                         cacheNeedsInvalidation = true;
 
                         await createNotification(existingOrder.userId, `Order #${existingOrder.id} confirmed successfully!`, '/myorder', 'order');

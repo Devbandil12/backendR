@@ -32,6 +32,7 @@ import promoRoutes from './routes/promoNotifications.js';
 import { initCronJobs } from './services/cron.service.js'; 
 import cmsRoutes from './routes/cms.js';
 import { startEmailWorker } from './services/emailQueue.js';
+import referralRouter from "./routes/referral.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -151,6 +152,7 @@ app.use("/api/contact", contactRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/promos', promoRoutes);
 app.use('/api/cms', cmsRoutes);
+app.use("/api/referrals", referralRouter); 
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));

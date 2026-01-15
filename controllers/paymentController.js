@@ -10,7 +10,8 @@ import {
   productVariantsTable,
   productBundlesTable,
   addToCartTable,
-  usersTable
+  usersTable,
+  walletTransactionsTable
 } from '../configs/schema.js';
 import { eq, sql, and, inArray, gte } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -70,8 +71,6 @@ export async function checkStockAvailability(cartItems) {
 
 // 🟢 2. ATOMIC REDUCE HELPER (Write)
 // Runs AFTER payment inside a Transaction.
-// Uses "Optimistic Concurrency" (gte) to ensure we never deduct below 0.
-// 🟢 2. ATOMIC REDUCE HELPER (Write)
 export async function reduceStock(cartItems, tx) {
   const affectedProductIds = new Set();
 
@@ -102,10 +101,10 @@ export async function reduceStock(cartItems, tx) {
         ))
         .returning({ productId: productVariantsTable.productId });
 
-      if (!updatedBundle) { // 🟢 Fixed Check
+      if (!updatedBundle) {
         throw new Error(`Stock updated while you were paying. Refund initiated.`);
       }
-      affectedProductIds.add(updatedBundle.productId); // 🟢 REMOVED [0]
+      affectedProductIds.add(updatedBundle.productId);
 
       // B. Reduce Bundle Children
       for (const content of bundleContents) {
@@ -121,10 +120,10 @@ export async function reduceStock(cartItems, tx) {
           ))
           .returning({ productId: productVariantsTable.productId });
 
-        if (!updatedChild) { // 🟢 Fixed Check
+        if (!updatedChild) {
           throw new Error(`Stock updated while you were paying. Refund initiated.`);
         }
-        affectedProductIds.add(updatedChild.productId); // 🟢 REMOVED [0]
+        affectedProductIds.add(updatedChild.productId);
       }
 
     } else {
@@ -140,10 +139,10 @@ export async function reduceStock(cartItems, tx) {
         ))
         .returning({ productId: productVariantsTable.productId });
 
-      if (!updatedVariant) { // 🟢 Fixed Check
+      if (!updatedVariant) {
         throw new Error(`Stock updated while you were paying. Refund initiated.`);
       }
-      affectedProductIds.add(updatedVariant.productId); // 🟢 REMOVED [0]
+      affectedProductIds.add(updatedVariant.productId);
     }
   }
   return Array.from(affectedProductIds);
@@ -158,12 +157,26 @@ export const createOrder = async (req, res) => {
       paymentMode = 'online',
       cartItems,
       userAddressId,
-      couponCode = null
+      couponCode = null,
+      useWallet = false
     } = req.body;
 
     if (!user) {
       return res.status(401).json({ success: false, msg: 'Please log in first' });
     }
+
+    const dbCartItems = await db
+      .select()
+      .from(addToCartTable)
+      .where(eq(addToCartTable.userId, user.id));
+
+    if (dbCartItems.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        msg: 'Cart is empty or order has already been placed.' 
+      });
+    }
+
     if (!Array.isArray(cartItems) || cartItems.length === 0) {
       return res.status(400).json({ success: false, msg: 'Cart is empty' });
     }
@@ -175,6 +188,9 @@ export const createOrder = async (req, res) => {
       productId: item.product?.id || item.productId
     }));
     await checkStockAvailability(secureCartItems);
+
+    const [dbUser] = await db.select().from(usersTable).where(eq(usersTable.id, user.id));
+    if (!dbUser) return res.status(404).json({ success: false, msg: "User not found" });
 
     const [address] = await db
       .select()
@@ -190,6 +206,15 @@ export const createOrder = async (req, res) => {
       couponCode,
       address.postalCode
     );
+
+    let finalAmount = breakdown.total;
+    let walletDeduction = 0;
+
+    if (useWallet && dbUser.walletBalance > 0) {
+      // Deduct whichever is smaller: The Bill Amount OR The Wallet Balance
+      walletDeduction = Math.min(finalAmount, dbUser.walletBalance);
+      finalAmount = finalAmount - walletDeduction;
+    }
 
     const { total, discountAmount, offerDiscount, appliedOffers, codAvailable } = breakdown;
     const offerCodes = appliedOffers.map(o => o.title);
@@ -241,6 +266,99 @@ export const createOrder = async (req, res) => {
       });
     }
 
+    // SCENARIO A: Fully Paid via Wallet (finalAmount is 0)
+    if (walletDeduction > 0 && finalAmount === 0) {
+
+      // 🟢 FIX 1: Capture the result from the transaction
+      const { insertedOrder, affectedProductIds } = await db.transaction(async (tx) => {
+        // 1. Create Order as PAID
+        const [orderResult] = await tx.insert(ordersTable).values({
+          id: orderId,
+          userId: user.id,
+          userAddressId,
+          totalAmount: 0, // Paid fully by wallet
+          walletAmountUsed: walletDeduction,
+          status: 'Order Placed',
+          paymentMode: 'wallet',
+          paymentStatus: 'paid',
+          transactionId: `WALLET-${Date.now()}`,
+          phone,
+          couponCode,
+          discountAmount: breakdown.discountAmount,
+          offerDiscount: breakdown.offerDiscount,
+          offerCodes: breakdown.appliedOffers.map(o => o.title),
+          progressStep: 1,
+        }).returning();
+
+        // 2. Deduct from Wallet
+        await tx.update(usersTable)
+          .set({ walletBalance: sql`${usersTable.walletBalance} - ${walletDeduction}` })
+          .where(eq(usersTable.id, user.id));
+
+        await tx.insert(walletTransactionsTable).values({
+          userId: user.id,
+          amount: -walletDeduction,
+          type: 'usage',
+          description: `Used for Order #${orderId}`
+        });
+
+        // 3. Insert Items & Reduce Stock
+        await tx.insert(orderItemsTable).values(enrichedItems);
+
+        // Capture affected IDs
+        const stockIds = await reduceStock(secureCartItems, tx);
+
+        // 4. Clear Cart
+        await tx.delete(addToCartTable).where(eq(addToCartTable.userId, user.id));
+
+        // Return data to outer scope
+        return { insertedOrder: orderResult, affectedProductIds: stockIds };
+      });
+
+
+      // ⚡ FAST RESPONSE LOGIC
+
+      // 1. Notification (Background)
+      createNotification(
+        user.id,
+        `Your order #${orderId} has been placed successfully.`,
+        `/myorder`,
+        'order'
+      ).catch(err => console.error("Notification fail:", err));
+
+      // 2. Emails (Via Redis Queue)
+      db.select().from(usersTable).where(eq(usersTable.id, user.id))
+        .then(([dbUser]) => {
+          if (dbUser?.email) {
+            addToEmailQueue({
+              userEmail: dbUser.email,
+              orderDetails: insertedOrder,
+              orderItems: enrichedItems,
+              paymentDetails: { method: 'WALLET_FULL' }
+            });
+          }
+        }).catch(err => console.error("Queue error:", err));
+
+      // 3. Cache Invalidation (Background)
+      const itemsToInvalidate = [
+        { key: makeAllOrdersKey(), prefix: true },
+        { key: makeUserOrdersKey(user.id), prefix: true },
+        { key: makeAllProductsKey(), prefix: true },
+        { key: makeCartKey(user.id) },
+        { key: makeCartCountKey(user.id) },
+      ];
+
+      if (affectedProductIds && affectedProductIds.length > 0) {
+        affectedProductIds.forEach(pid =>
+          itemsToInvalidate.push({ key: makeProductKey(pid), prefix: true })
+        );
+      }
+
+      invalidateMultiple(itemsToInvalidate).catch(err => console.error("Cache invalidate fail:", err));
+
+      return res.json({ success: true, orderId, message: "Order placed using Wallet Balance!" });
+    }
+
     // 🟢 COD FLOW (Transactional)
     if (paymentMode === 'cod') {
       let transactionResult;
@@ -252,7 +370,8 @@ export const createOrder = async (req, res) => {
             userId: user.id,
             userAddressId,
             razorpay_order_id: null,
-            totalAmount: total,
+            totalAmount: finalAmount,
+            walletAmountUsed: walletDeduction,
             status: 'Order Placed',
             paymentMode: 'cod',
             transactionId: null,
@@ -264,6 +383,20 @@ export const createOrder = async (req, res) => {
             offerCodes: offerCodes,
             progressStep: 1,
           }).returning();
+
+          // If wallet was used, deduct it now
+          if (walletDeduction > 0) {
+            await tx.update(usersTable)
+              .set({ walletBalance: sql`${usersTable.walletBalance} - ${walletDeduction}` })
+              .where(eq(usersTable.id, user.id));
+
+            await tx.insert(walletTransactionsTable).values({
+              userId: user.id,
+              amount: -walletDeduction,
+              type: 'usage',
+              description: `Partial payment for Order #${orderId}`
+            });
+          }
 
           // B. Insert Items
           await tx.insert(orderItemsTable).values(enrichedItems);
@@ -288,6 +421,7 @@ export const createOrder = async (req, res) => {
 
       const { insertedOrder, affectedProductIds } = transactionResult;
 
+
       // ⚡ FAST COD RESPONSE: Everything below runs in the background
 
       // 1. Notification (Background)
@@ -301,14 +435,14 @@ export const createOrder = async (req, res) => {
       // 2. Emails (Via Redis Queue)
       db.select().from(usersTable).where(eq(usersTable.id, user.id))
         .then(([dbUser]) => {
-            if (dbUser?.email) {
-                addToEmailQueue({
-                    userEmail: dbUser.email,
-                    orderDetails: insertedOrder,
-                    orderItems: enrichedItems, // ✅ We already have full items in memory here!
-                    paymentDetails: { method: 'COD' }
-                });
-            }
+          if (dbUser?.email) {
+            addToEmailQueue({
+              userEmail: dbUser.email,
+              orderDetails: insertedOrder,
+              orderItems: enrichedItems,
+              paymentDetails: { method: 'COD' }
+            });
+          }
         }).catch(err => console.error("Queue error:", err));
 
       // 3. Cache Invalidation (Background)
@@ -335,38 +469,41 @@ export const createOrder = async (req, res) => {
 
     // 🟢 ONLINE FLOW (Pending Order)
     const razorOrder = await razorpay.orders.create({
-      amount: total * 100,
+      amount: finalAmount * 100,
       currency: 'INR',
       receipt: user.id,
     });
 
-    await db.insert(ordersTable).values({
-      id: orderId,
-      userId: user.id,
-      userAddressId,
-      razorpay_order_id: razorOrder.id,
-      totalAmount: total,
-      status: 'pending_payment',
-      paymentMode: 'online',
+    await db.transaction(async (tx) => {
+      await tx.insert(ordersTable).values({
+        id: orderId,
+        userId: user.id,
+        userAddressId,
+        razorpay_order_id: razorOrder.id,
+        totalAmount: finalAmount,
+        walletAmountUsed: walletDeduction,
+        status: 'pending_payment',
+        paymentMode: 'online',
       transactionId: null,
-      paymentStatus: 'pending',
-      phone,
-      couponCode,
-      discountAmount,
-      offerDiscount,
-      offerCodes,
-      progressStep: 0,
-    });
+        paymentStatus: 'pending',
+        phone,
+        couponCode,
+        discountAmount,
+        offerDiscount,
+        offerCodes,
+        progressStep: 0,
+      });
 
-    await db.insert(orderItemsTable).values(enrichedItems);
+      await tx.insert(orderItemsTable).values(enrichedItems);
+    });
 
     return res.json({
       success: true,
       razorpayOrderId: razorOrder.id,
-      amount: total,
+      amount: finalAmount,
       keyId: RAZORPAY_ID_KEY,
       orderId,
-      breakdown: breakdown,
+      breakdown: { ...breakdown, total: finalAmount, walletUsed: walletDeduction },
     });
 
   } catch (err) {
@@ -413,10 +550,7 @@ export const verifyPayment = async (req, res) => {
       return res.json({ success: true, message: "Order already paid." });
     }
 
-    const [address] = await db
-      .select()
-      .from(UserAddressTable)
-      .where(eq(UserAddressTable.id, userAddressId));
+ 
 
     const secureCartItems = cartItems.map(item => ({
       variantId: item.variant.id,
@@ -424,14 +558,14 @@ export const verifyPayment = async (req, res) => {
       productId: item.product.id
     }));
 
-    const breakdown = await calculatePriceBreakdown(
-      secureCartItems,
-      couponCode,
-      address.postalCode
-    );
+   
 
     const payment = await razorpay.payments.fetch(razorpay_payment_id);
-    if (payment.amount !== breakdown.total * 100) {
+
+    // 🟢 FIXED: Compare with DB Amount (Total - Wallet)
+    // The existingOrder.totalAmount is the 'remainder' sent to Razorpay in createOrder
+    if (payment.amount !== existingOrder.totalAmount * 100) {
+      console.error(`Mismatch: Razorpay Paid ${payment.amount} !== DB Expected ${existingOrder.totalAmount * 100}`);
       await razorpay.payments.refund(
         razorpay_payment_id,
         { amount: payment.amount, speed: 'optimum' }
@@ -453,6 +587,21 @@ export const verifyPayment = async (req, res) => {
           progressStep: 1,
           updatedAt: new Date(),
         }).where(eq(ordersTable.id, existingOrder.id)).returning();
+
+
+        // 🟢 B. DEDUCT WALLET BALANCE HERE (Online Flow)
+        if (existingOrder.walletAmountUsed > 0) {
+            await tx.update(usersTable)
+                .set({ walletBalance: sql`${usersTable.walletBalance} - ${existingOrder.walletAmountUsed}` })
+                .where(eq(usersTable.id, user.id));
+
+            await tx.insert(walletTransactionsTable).values({
+                userId: user.id,
+                amount: -existingOrder.walletAmountUsed,
+                type: 'usage',
+                description: `Used for Order #${existingOrder.id}`
+            });
+        }
 
         const affectedProductIds = await reduceStock(secureCartItems, tx);
 
@@ -494,6 +643,7 @@ export const verifyPayment = async (req, res) => {
 
     const { updatedOrder, affectedProductIds } = transactionResult;
 
+
     // ⚡ FAST ONLINE RESPONSE: Side effects run in background
 
     // 1. Cache Invalidation (Background)
@@ -518,7 +668,6 @@ export const verifyPayment = async (req, res) => {
     ).catch(err => console.error("Notification fail:", err));
 
     // 3. Emails (Background)
-    // Manually fetching items and user to send email without blocking response
     Promise.all([
       db.select().from(usersTable).where(eq(usersTable.id, user.id)),
       db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, existingOrder.id))
@@ -527,7 +676,7 @@ export const verifyPayment = async (req, res) => {
         addToEmailQueue({
           userEmail: dbUser.email,
           orderDetails: updatedOrder,
-          orderItems: dbOrderItems, // ✅ Passes full items (Images, Names, Prices)
+          orderItems: dbOrderItems, // ✅ Passes full items
           paymentDetails: req.body
         });
       }

@@ -1,2 +1,0 @@
-ALTER TABLE "add_to_cart" ADD CONSTRAINT "add_to_cart_product_id_products_id_fk" FOREIGN KEY ("product_id") REFERENCES "public"."products"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "wishlist_table" ADD CONSTRAINT "wishlist_table_product_id_products_id_fk" FOREIGN KEY ("product_id") REFERENCES "public"."products"("id") ON DELETE cascade ON UPDATE no action;
