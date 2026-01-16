@@ -8,7 +8,8 @@ import {
   wishlistTable,
   usersTable,
   productBundlesTable, 
-  savedForLaterTable 
+  savedForLaterTable,
+  reviewsTable
 } from "../configs/schema.js";
 import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 
@@ -390,22 +391,57 @@ router.delete("/saved-for-later/:userId/:variantId", async (req, res) => {
 // GET /api/cart/wishlist/:userId
 router.get(
   "/wishlist/:userId",
-  // 🟢 FIXED: Removed 'cache(...)' middleware here too, to fix ReferenceError
   async (req, res) => {
     try {
       const { userId } = req.params;
-      const wishlistItems = await db
-        .select({
-          wishlistId: wishlistTable.id,
-          userId: wishlistTable.userId,
-          variantId: wishlistTable.variantId,
-          variant: productVariantsTable,
-          product: productsTable,
-        })
-        .from(wishlistTable)
-        .innerJoin(productVariantsTable, eq(wishlistTable.variantId, productVariantsTable.id))
-        .innerJoin(productsTable, eq(productVariantsTable.productId, productsTable.id))
-        .where(eq(wishlistTable.userId, userId));
+      
+      const rawWishlistItems = await db.query.wishlistTable.findMany({
+        where: eq(wishlistTable.userId, userId),
+        with: {
+          variant: {
+            with: {
+              product: {
+                with: {
+                  variants: true,
+                  reviews: true 
+                }
+              }
+            }
+          }
+        }
+      });
+
+      // Transform and calculate counts
+      const wishlistItems = rawWishlistItems.map(item => {
+        const product = item.variant.product;
+        const variant = item.variant;
+
+        // Calculate stats on the fly
+        const soldCount = product.variants 
+          ? product.variants.reduce((sum, v) => sum + (v.sold || 0), 0) 
+          : 0;
+        
+        // 🟢 Calculate Average Rating
+        let avgRating = 0;
+        if (product.reviews && product.reviews.length > 0) {
+            const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
+            avgRating = (total / product.reviews.length).toFixed(1);
+        }
+
+        const { variants, reviews, ...cleanProduct } = product;
+
+        return {
+            wishlistId: item.id,
+            userId: item.userId,
+            variantId: item.variantId,
+            variant: { ...variant, product: undefined }, 
+            product: {
+                ...cleanProduct,
+                soldCount,
+                avgRating // 🟢 Attached here
+            }
+        };
+      });
 
       res.json(wishlistItems);
     } catch (error) {
@@ -414,6 +450,7 @@ router.get(
     }
   }
 );
+
 
 // POST /api/cart/wishlist
 router.post("/wishlist", async (req, res) => {
@@ -438,6 +475,7 @@ router.post("/wishlist", async (req, res) => {
   }
 });
 
+
 // DELETE /api/cart/wishlist/:userId/:variantId
 router.delete("/wishlist/:userId/:variantId", async (req, res) => {
   try {
@@ -460,6 +498,7 @@ router.delete("/wishlist/:userId/:variantId", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 
 // POST /api/cart/wishlist/merge
 router.post("/wishlist/merge", async (req, res) => {

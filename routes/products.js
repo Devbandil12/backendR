@@ -1,7 +1,7 @@
 // routes/products.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { productsTable, productVariantsTable, activityLogsTable, ordersTable, orderItemsTable, wishlistTable, } from "../configs/schema.js"; // 🟢 Added
+import { productsTable, productVariantsTable, activityLogsTable, ordersTable, orderItemsTable, wishlistTable, reviewsTable } from "../configs/schema.js"; // 🟢 Added
 import { eq, inArray, notInArray, desc, sql, and, gt, ne } from "drizzle-orm";
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
@@ -51,20 +51,95 @@ const SCENT_INTELLIGENCE = {
   }
 };
 
-// ... [GET Routes Unchanged] ...
+// 🟢 [GET Routes Updated for Counts]
 router.get("/", cache(makeAllProductsKey(), 3600), async (req, res) => {
   try {
-    const products = await db.query.productsTable.findMany({
+    // 1. Fetch Products & Variants
+    const productsData = await db.query.productsTable.findMany({
       where: eq(productsTable.isArchived, false),
       with: { variants: { where: eq(productVariantsTable.isArchived, false) } },
     });
-    res.json(products);
+
+    // 2. Fetch Review Stats (Count AND Average)
+    const reviewStats = await db
+      .select({
+        productId: reviewsTable.productId,
+        count: sql`count(*)`,
+        avgRating: sql`avg(${reviewsTable.rating})` // 🟢 Calculate Average
+      })
+      .from(reviewsTable)
+      .groupBy(reviewsTable.productId);
+
+    // 3. Create a lookup map
+    const reviewMap = {};
+    reviewStats.forEach((r) => {
+      reviewMap[r.productId] = {
+        count: Number(r.count),
+        avg: Number(r.avgRating).toFixed(1) // Format to 1 decimal
+      };
+    });
+
+    // 4. Merge Data
+    const enrichedProducts = productsData.map((product) => {
+      const soldCount = product.variants 
+        ? product.variants.reduce((sum, v) => sum + (v.sold || 0), 0) 
+        : 0;
+      
+      const stats = reviewMap[product.id] || { count: 0, avg: 0 };
+
+      return { 
+        ...product, 
+        soldCount, 
+        reviewCount: stats.count,
+        avgRating: stats.avg // 🟢 Attach Average
+      };
+    });
+
+    res.json(enrichedProducts);
   } catch (error) {
     console.error("❌ Error fetching products:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
 
+router.get("/archived", async (req, res) => {
+  try {
+    const archivedProducts = await db.query.productsTable.findMany({
+      where: eq(productsTable.isArchived, true),
+      with: { variants: true },
+    });
+    res.json(archivedProducts);
+  } catch (error) {
+    console.error("❌ Error fetching archived products:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+router.get("/:id", cache((req) => makeProductKey(req.params.id), 1800), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const product = await db.query.productsTable.findFirst({
+      where: and(eq(productsTable.id, id), eq(productsTable.isArchived, false)),
+      with: { variants: { where: eq(productVariantsTable.isArchived, false) }, reviews: true },
+    });
+
+    if (!product) return res.status(404).json({ error: "Product not found" });
+
+    // For single product, we can calculate counts from the fetched data
+    if (product.variants) {
+       product.soldCount = product.variants.reduce((sum, v) => sum + (v.sold || 0), 0);
+    }
+    if (product.reviews) {
+       product.reviewCount = product.reviews.length;
+    }
+
+    if (typeof product.imageurl === "string") { try { product.imageurl = JSON.parse(product.imageurl); } catch { } }
+    res.json(product);
+  } catch (error) {
+    console.error("❌ Error fetching product:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 router.get("/archived", async (req, res) => {
   try {
     const archivedProducts = await db.query.productsTable.findMany({
