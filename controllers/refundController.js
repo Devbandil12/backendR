@@ -5,7 +5,8 @@ import {
     orderItemsTable,
     productsTable,
     productVariantsTable,
-    productBundlesTable
+    productBundlesTable,
+    activityLogsTable // 🟢 Added for logging
 } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -31,9 +32,10 @@ export const refundOrder = async (req, res) => {
     });
 
     try {
-        const { orderId, amount } = req.body;
-        if (!orderId || !amount) {
-            return res.status(400).json({ success: false, error: "Missing orderId or amount" });
+        const { orderId, amount, actorId } = req.body; // 🟢 Added actorId support
+        
+        if (!orderId) {
+            return res.status(400).json({ success: false, error: "Missing orderId" });
         }
 
         // Step 1: Fetch order from DB
@@ -43,6 +45,8 @@ export const refundOrder = async (req, res) => {
                 status: ordersTable.status,
                 refundId: ordersTable.refund_id,
                 userId: ordersTable.userId,
+                paymentMode: ordersTable.paymentMode,
+                totalAmount: ordersTable.totalAmount
             })
             .from(ordersTable)
             .where(eq(ordersTable.id, orderId));
@@ -51,17 +55,23 @@ export const refundOrder = async (req, res) => {
             return res.status(404).json({ success: false, error: "Order not found" });
         }
 
-        if (order.status === "Delivered" || order.status === "Order Cancelled") {
-            return res.status(400).json({ success: false, error: `Cannot refund an order that is already ${order.status}` });
+        // 🟢 STRICT RESTRICTION: Only 'Order Placed' can be cancelled by User
+        if (order.status.toLowerCase() !== 'order placed') {
+            return res.status(400).json({ 
+                success: false, 
+                error: `You cannot cancel this order as it is already ${order.status}. Please contact support.` 
+            });
         }
+
         if (order.refundId) {
             return res.status(400).json({ success: false, error: "Refund already initiated" });
         }
 
         let refund = null;
+        let refundAmountRecorded = 0;
 
-        if (!order.paymentId) {
-            // This is a COD order, just update status
+        // 🟢 SCENARIO A: COD ORDER
+        if (order.paymentMode === 'cod' || !order.paymentId) {
             await db
                 .update(ordersTable)
                 .set({
@@ -70,15 +80,18 @@ export const refundOrder = async (req, res) => {
                     updatedAt: new Date(),
                 })
                 .where(eq(ordersTable.id, orderId));
-        } else {
-            // --- Online Payment Refund Logic ---
+        } 
+        // 🟢 SCENARIO B: ONLINE ORDER
+        else {
+            // Use provided amount or default to total (safety fallback)
+            const refundBaseAmount = amount || order.totalAmount;
 
             // Step 2: Convert amount to paise
-            const amountInPaise = Math.round(amount * 100);
+            const amountInPaise = Math.round(refundBaseAmount * 100);
+            
+            // Apply Cancellation Fee (95% refund) if that is your policy
             let refundInPaise = Math.round(amountInPaise * 0.95);
-            if (refundInPaise < 100) {
-                refundInPaise = amountInPaise;
-            }
+            if (refundInPaise < 100) refundInPaise = amountInPaise;
 
             // Step 3: Fetch payment
             const payment = await razorpay.payments.fetch(order.paymentId);
@@ -86,6 +99,7 @@ export const refundOrder = async (req, res) => {
             // Step 4: Validate
             const alreadyRefunded = (payment.refunds || []).reduce((sum, r) => sum + (r.amount || 0), 0);
             const maxRefundable = payment.amount - alreadyRefunded;
+            
             if (refundInPaise > maxRefundable) {
                 return res.status(400).json({
                     success: false,
@@ -101,8 +115,8 @@ export const refundOrder = async (req, res) => {
 
             // Step 6: Fetch accurate refund status
             refund = await razorpay.refunds.fetch(refundInit.id);
+            refundAmountRecorded = refund.amount / 100;
 
-            // 🟢 FIX: Use safeDate helper to prevent "Invalid time value" crash
             const initiatedAt = refund.created_at ? safeDate(refund.created_at) : new Date();
             const completedAt = (refund.status === 'processed' && refund.processed_at)
                 ? safeDate(refund.processed_at)
@@ -125,8 +139,7 @@ export const refundOrder = async (req, res) => {
                 .where(eq(ordersTable.id, orderId));
         }
 
-
-        // Build notification message
+        // Notification
         const notifMessage = refund
             ? `Your refund for order #${orderId} has been ${refund.status}.`
             : `Your order #${orderId} has been cancelled.`;
@@ -138,7 +151,7 @@ export const refundOrder = async (req, res) => {
             'order'
         );
 
-        // 🟢 --- START: Step 8: Restore stock logic ---
+        // 🟢 --- Step 8: Restore stock & FIX SOLD COUNT ---
         const orderItems = await db
             .select({
                 variantId: orderItemsTable.variantId,
@@ -159,10 +172,13 @@ export const refundOrder = async (req, res) => {
         for (const item of orderItems) {
             affectedProductIds.add(item.productId);
 
-            // 1. Restore stock to the item variant
+            // 1. Restore stock & Reduce Sold for Main Item
             await db
                 .update(productVariantsTable)
-                .set({ stock: sql`${productVariantsTable.stock} + ${item.quantity}` })
+                .set({ 
+                    stock: sql`${productVariantsTable.stock} + ${item.quantity}`,
+                    sold: sql`${productVariantsTable.sold} - ${item.quantity}` // 🟢 FIX: Reduce Sold
+                })
                 .where(eq(productVariantsTable.id, item.variantId));
 
             // 2. Check if this item is a bundle
@@ -172,13 +188,16 @@ export const refundOrder = async (req, res) => {
                 .where(eq(productBundlesTable.bundleVariantId, item.variantId));
 
             if (bundleContents.length > 0) {
-                // 3. IT IS A BUNDLE: Restore stock for each of its contents
+                // 3. Restore stock & Reduce Sold for Bundle Contents
                 for (const content of bundleContents) {
                     const stockToRestore = content.quantity * item.quantity;
 
                     await db
                         .update(productVariantsTable)
-                        .set({ stock: sql`${productVariantsTable.stock} + ${stockToRestore}` })
+                        .set({ 
+                            stock: sql`${productVariantsTable.stock} + ${stockToRestore}`,
+                            sold: sql`${productVariantsTable.sold} - ${stockToRestore}` // 🟢 FIX: Reduce Sold
+                        })
                         .where(eq(productVariantsTable.id, content.contentVariantId));
 
                     const [contentVariant] = await db.select({ productId: productVariantsTable.productId })
@@ -191,8 +210,6 @@ export const refundOrder = async (req, res) => {
                 }
             }
         }
-        // 🟢 --- END: Step 8: Restore stock logic ---
-
 
         // 🟢 --- Step 9: Invalidate caches ---
         for (const pid of affectedProductIds) {
@@ -200,6 +217,17 @@ export const refundOrder = async (req, res) => {
         }
 
         await invalidateMultiple(itemsToInvalidate);
+
+        // 🟢 --- Step 10: Log Activity (If Actor ID present) ---
+        if (actorId) {
+            await db.insert(activityLogsTable).values({
+                userId: actorId, 
+                action: 'ORDER_CANCEL_USER',
+                description: `Cancelled Order #${orderId}`,
+                performedBy: 'user', // Assuming this endpoint is primarily for users
+                metadata: { orderId, refundAmount: refundAmountRecorded }
+            });
+        }
 
         return res.json({ success: true, message: "Order successfully cancelled and stock restored." });
 

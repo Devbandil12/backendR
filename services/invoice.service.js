@@ -9,7 +9,7 @@ const formatCurrency = (amount) => {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   }).format(amount || 0);
-  return `Rs. ${formattedAmount}`; 
+  return `Rs. ${formattedAmount}`;
 };
 
 const formatDate = (date) => {
@@ -36,14 +36,14 @@ function drawHeader(doc, seller) {
 
   // Invoice Title
   doc.fillColor('#111827').font('Helvetica-Bold').fontSize(24).text('INVOICE', 0, 45, { align: 'right', width: 545 });
-  
+
   // Divider
   doc.strokeColor('#E5E7EB').lineWidth(1).moveTo(50, 145).lineTo(545, 145).stroke();
 }
 
 function drawCustomerInfo(doc, billing, order, invoiceNumber) {
   const startY = 165;
-  
+
   // 🟢 ADJUSTED COLUMNS: Moved metadata column left to fit longer invoice numbers
   const col2X = 320; // Was 350
   const valX = 400;  // Was 440 (col2X + 90)
@@ -66,7 +66,7 @@ function drawCustomerInfo(doc, billing, order, invoiceNumber) {
 
   // 🟢 CHECK: Always add Transaction ID if it exists
   if (order.transactionId) {
-     meta.push({ label: 'Txn ID:', value: order.transactionId });
+    meta.push({ label: 'Txn ID:', value: order.transactionId });
   }
 
   let metaY = startY;
@@ -82,19 +82,19 @@ function drawCustomerInfo(doc, billing, order, invoiceNumber) {
 
 function drawTable(doc, items, startY) {
   const startX = 50;
-  const colWidths = [30, 230, 60, 40, 70, 65]; 
+  const colWidths = [30, 230, 60, 40, 70, 65];
   const headers = ['#', 'Item Description', 'Size', 'Qty', 'Price', 'Total'];
-  
+
   let currentY = startY;
 
   // Header Background
   doc.fillColor('#F9FAFB').rect(startX, currentY, 495, 25).fill();
-  
+
   // Header Text
   doc.fillColor('#111827').font('Helvetica-Bold').fontSize(9);
   let x = startX + 5;
   headers.forEach((h, i) => {
-    const align = i >= 4 ? 'right' : 'left'; 
+    const align = i >= 4 ? 'right' : 'left';
     const w = colWidths[i] - 10;
     doc.text(h, x, currentY + 8, { width: w, align });
     x += colWidths[i];
@@ -123,13 +123,13 @@ function drawTable(doc, items, startY) {
 
     const descWidth = colWidths[1] - 10;
     const descHeight = doc.heightOfString(item.productName, { width: descWidth });
-    const rowHeight = Math.max(28, descHeight + 10); 
+    const rowHeight = Math.max(28, descHeight + 10);
 
     // 🟢 PAGE BREAK LOGIC: 
     // If current Y is past 720, we assume no room for this row + totals
     if (currentY + rowHeight > 720) {
       doc.addPage();
-      currentY = 50; 
+      currentY = 50;
     }
 
     doc.moveTo(startX, currentY + rowHeight).lineTo(startX + 495, currentY + rowHeight).lineWidth(0.5).strokeColor('#E5E7EB').stroke();
@@ -148,9 +148,7 @@ function drawTable(doc, items, startY) {
 }
 
 function drawTotals(doc, totals, startY) {
-  // 🟢 INTELLIGENT PAGE BREAK
-  // Footer is at 780. Totals need ~100px. 
-  // If we are below 680, we move to next page to avoid overlap or weird spacing.
+  // 泙 INTELLIGENT PAGE BREAK
   if (startY > 680) {
     doc.addPage();
     startY = 50;
@@ -161,17 +159,22 @@ function drawTotals(doc, totals, startY) {
   const valX = 430;
   const valWidth = 115;
 
+  // 🟢 Updated Lines Array to include Wallet
   const lines = [
     { label: 'Subtotal', value: totals.subtotal },
     { label: 'Discount', value: totals.discount, isNegative: true },
     { label: 'Delivery', value: totals.delivery },
+    { label: 'Wallet Used', value: totals.walletUsed, isNegative: true }, // 🟢 Added this line
   ];
 
   doc.font('Helvetica').fontSize(10);
   lines.forEach(line => {
-    if (line.value || line.value === 0) {
+    // Only draw if value exists and is not 0 (except Subtotal/Delivery which might legitimately be 0, but usually we hide 0 discounts)
+    if (line.value > 0) {
       doc.fillColor('#6B7280').text(line.label, labelX, y, { width: 90, align: 'left' });
+
       const txt = line.isNegative ? `- ${formatCurrency(line.value)}` : formatCurrency(line.value);
+
       doc.fillColor('#111827').text(txt, valX, y, { width: valWidth, align: 'right' });
       y += 18;
     }
@@ -180,7 +183,7 @@ function drawTotals(doc, totals, startY) {
   // Grand Total
   y += 5;
   doc.rect(labelX - 10, y - 5, 225, 30).fillColor('#F3F4F6').fill();
-  
+
   doc.fillColor('#111827').font('Helvetica-Bold').fontSize(12);
   doc.text('Grand Total', labelX, y + 4);
   doc.text(formatCurrency(totals.grandTotal), valX, y + 4, { width: valWidth, align: 'right' });
@@ -194,9 +197,9 @@ function drawFooter(doc) {
 }
 
 export async function generateInvoicePDF({
-  order, 
-  items, 
-  billing, 
+  order,
+  items,
+  billing,
   seller = {
     name: process.env.STORE_NAME || 'Your Store Pvt Ltd',
     address: process.env.STORE_ADDRESS || 'Street, City, State, PIN',
@@ -205,11 +208,11 @@ export async function generateInvoicePDF({
     gstin: process.env.STORE_GSTIN || undefined,
   },
   outputDir = path.resolve('storage', 'invoices'),
-  fileName, 
+  fileName,
 }) {
   const name = `${order.invoiceNumber}.pdf`;
   const dir = path.resolve(outputDir, String(new Date().getFullYear()));
-  
+
   await ensureDir(dir);
   const filePath = path.join(dir, name);
 

@@ -146,8 +146,7 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
   // --- B. FINANCIAL CALCULATIONS (With Real Product Discount) ---
   const formatMoney = (amount) => `₹${Number(amount).toLocaleString('en-IN')}`;
   
-  // 1. Fetch MRP (Original Price) from DB to calculate exact savings
-  // The 'orderItems' array usually only has the sold price. We need 'oprice' from 'productVariantsTable'.
+  // 1. Fetch MRP (Original Price)
   let mrpTotal = 0;
   const variantIds = orderItems.map(i => i.variantId).filter(Boolean);
   
@@ -158,41 +157,42 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
             .from(productVariantsTable)
             .where(inArray(productVariantsTable.id, variantIds));
         
-        // Calculate Total MRP
         mrpTotal = orderItems.reduce((sum, item) => {
             const variant = variants.find(v => v.id === item.variantId);
-            // Use DB oprice if available, otherwise fallback to sold price (assume no discount)
             const oprice = (variant && Number(variant.oprice)) ? Number(variant.oprice) : (Number(item.totalPrice) / item.quantity);
             return sum + (oprice * item.quantity);
         }, 0);
     } catch (e) {
         console.error("Error fetching MRPs:", e);
-        // Fallback: If DB fail, assume MRP = Sold Price
         mrpTotal = orderItems.reduce((acc, item) => acc + (parseFloat(item.totalPrice) || 0), 0);
     }
   }
 
-  // 2. Sold Total (What user actually pays for items before extra coupons)
+  // 2. Sold Total (Sum of item prices)
   const itemSoldTotal = orderItems.reduce((acc, item) => acc + (parseFloat(item.totalPrice) || 0), 0);
 
-  // 3. Product Savings (MRP - Sold Price)
+  // 3. Product Savings
   const productSavings = Math.max(0, mrpTotal - itemSoldTotal);
 
-  // 4. Coupon Discount (Extra code applied at checkout)
+  // 4. Coupon Discount
   const couponDiscount = parseFloat(orderDetails.discountAmount) || 0;
 
-  // 5. Final Paid Amount
+  // 5. Wallet Deduction (🟢 Added Fix)
+  const walletUsed = parseFloat(orderDetails.walletAmountUsed) || 0;
+
+  // 6. Final Paid Amount
   const finalTotal = parseFloat(orderDetails.totalAmount) || 0;
 
-  // 6. Delivery (Derived)
-  // Formula: Final = (Sold - Coupon) + Delivery  =>  Delivery = Final - (Sold - Coupon)
-  const calculatedDelivery = finalTotal - (itemSoldTotal - couponDiscount);
+  // 7. Delivery (🟢 Corrected Logic)
+  // Logic: Final = Sold - Coupon - Wallet + Delivery
+  // Therefore: Delivery = Final - Sold + Coupon + Wallet
+  // We use Math.max(0, ...) to prevent floating point errors returning -0.01
+  const calculatedDelivery = Math.max(0, finalTotal - itemSoldTotal + couponDiscount + walletUsed);
   const deliveryCharge = calculatedDelivery > 1 ? calculatedDelivery : 0;
 
 
   // --- C. Items List HTML ---
   const itemsHtml = orderItems.map(item => {
-    // Check if item is free (price 0)
     const isFree = item.totalPrice <= 0;
     const priceDisplay = isFree 
         ? `<span style="color: #D4AF37; font-weight: 800; font-size: 11px; letter-spacing: 1px; border: 1px solid #D4AF37; padding: 3px 8px; border-radius: 4px; text-transform: uppercase;">Free Gift</span>` 
@@ -238,13 +238,13 @@ const theme = {
   deliveryDate.setDate(deliveryDate.getDate() + 7);
   const deliveryString = deliveryDate.toLocaleDateString("en-IN", { weekday: 'short', day: 'numeric', month: 'short' });
 
-  // Payment Display
+  // Payment Display (🟢 Updated for Wallet)
   let paymentDisplay = "Online Payment";
   if (orderDetails.paymentMode === 'cod') paymentDisplay = "Cash on Delivery";
+  else if (orderDetails.paymentMode === 'wallet') paymentDisplay = "Wallet Balance";
   else if (paymentDetails?.method) paymentDisplay = `Online (${paymentDetails.method})`;
 
-  // 🟢 Logic: Only show Transaction ID if it exists and NOT COD
-  const showTransactionId = orderDetails.paymentMode !== 'cod' && orderDetails.razorpay_order_id;
+  const showTransactionId = orderDetails.paymentMode !== 'cod' && orderDetails.paymentMode !== 'wallet' && orderDetails.razorpay_order_id;
 
   // --- E. HTML Email Construction ---
   const emailHtml = `
@@ -353,6 +353,12 @@ const theme = {
                                 Coupon ${orderDetails.couponCode ? `<span style="font-size:10px; color:#555; background:#eee; padding:2px 5px; border-radius:3px; margin-left:4px;">${orderDetails.couponCode}</span>` : ''}
                             </td>
                             <td style="padding: 5px 0; color: #2e7d32; font-size: 13px; text-align: right; font-weight: 600;">-${formatMoney(couponDiscount)}</td>
+                          </tr>` : ''}
+                          
+                          ${walletUsed > 0 ? `
+                          <tr>
+                            <td style="padding: 5px 0; color: #2e7d32; font-size: 13px;">Wallet Used</td>
+                            <td style="padding: 5px 0; color: #2e7d32; font-size: 13px; text-align: right; font-weight: 600;">-${formatMoney(walletUsed)}</td>
                           </tr>` : ''}
 
                           <tr>

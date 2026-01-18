@@ -12,7 +12,7 @@ import {
     activityLogsTable, // 🟢 IMPORTED: Activity Logs
     productBundlesTable // 🟢 IMPORTED: (Kept for bundle logic if needed)
 } from "../configs/schema.js";
-import { eq, asc, sql } from "drizzle-orm";
+import { eq, asc, sql, inArray } from "drizzle-orm";
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import {
@@ -105,7 +105,7 @@ router.get(
 
             // 🟢 2. AUTO-SYNC LOGIC: Trigger if refund is active AND (status is not terminal OR date is missing).
             const isRefundActive = order.refund_id;
-            const isMissingData = 
+            const isMissingData =
                 (order.refund_status !== 'processed' && order.refund_status !== 'failed') ||
                 (order.refund_status === 'processed' && !order.refund_completed_at);
 
@@ -116,20 +116,20 @@ router.get(
 
                     // If status has changed OR if status is processed but the date is missing
                     if (refund.status !== order.refund_status || (refund.status === 'processed' && !order.refund_completed_at)) {
-                        
+
                         let completedAt;
-                        
+
                         if (refund.status === 'processed') {
                             // 1. PRIMARY: Use the official Razorpay timestamp
                             if (refund.processed_at) {
-                                completedAt = safeDate(refund.processed_at); 
+                                completedAt = safeDate(refund.processed_at);
                             } else {
                                 // 2. FALLBACK: Use the current server time if Razorpay misses the timestamp
                                 console.warn(`⚠️ Razorpay returned 'processed' but is missing processed_at for ${order.refund_id}. Using current time as fallback.`);
-                                completedAt = new Date(); 
+                                completedAt = new Date();
                             }
                         } else {
-                             completedAt = null;
+                            completedAt = null;
                         }
 
                         // 🟢 WRAP DB UPDATE AND CACHE INVALIDATION IN A TRANSACTION
@@ -239,7 +239,16 @@ router.get("/:id/invoice", async (req, res) => {
             totalPrice: item.price * item.quantity
         }));
 
-        // FIX: Correctly access 'transactionId' from schema
+        // 3. 🟢 CALCULATE TOTALS ACCURATELY
+        const subtotal = items.reduce((sum, item) => sum + item.totalPrice, 0);
+        const totalDiscount = (order.discountAmount || 0) + (order.offerDiscount || 0);
+        const walletUsed = order.walletAmountUsed || 0;
+        
+        // Reverse calculate delivery: Final = (Sub - Disc + Del) - Wallet
+        // Therefore: Del = Final - Sub + Disc + Wallet
+        // We use Math.max to prevent negative delivery due to float precision issues
+        const deliveryCharge = Math.max(0, order.totalAmount - subtotal + totalDiscount + walletUsed);
+
         let txnId = order.transactionId;
         if (!txnId || txnId === "null" || txnId === "undefined") {
             txnId = null;
@@ -256,9 +265,10 @@ router.get("/:id/invoice", async (req, res) => {
             transactionId: txnId,
             invoiceNumber: invoiceNo,
             totals: {
-                subtotal: items.reduce((sum, item) => sum + item.totalPrice, 0),
-                discount: 0,
-                delivery: 0,
+                subtotal: subtotal,
+                discount: totalDiscount,
+                walletUsed: walletUsed, // 🟢 Passing Wallet Info
+                delivery: deliveryCharge, // 🟢 Passing Calculated Delivery
                 grandTotal: order.totalAmount
             }
         };
@@ -334,40 +344,13 @@ router.put("/:id/status", async (req, res) => {
             .select()
             .from(ordersTable)
             .where(eq(ordersTable.id, id));
-        
+
         const oldStatus = currentOrder?.status;
 
         const itemsToInvalidate = [];
         let orderItems = [];
 
-        // --- LOGIC TO UPDATE 'SOLD' COUNT ---
-        if (
-            currentOrder &&
-            currentOrder.status === "order placed" &&
-            (status === "Processing" || status === "Shipped")
-        ) {
-            orderItems = await db
-                .select({
-                    quantity: orderItemsTable.quantity,
-                    variantId: orderItemsTable.variantId,
-                    productId: orderItemsTable.productId,
-                })
-                .from(orderItemsTable)
-                .where(eq(orderItemsTable.orderId, id));
-
-            itemsToInvalidate.push({ key: makeAllProductsKey() });
-            for (const item of orderItems) {
-                // MODIFIED: Update sold count on productVariantsTable
-                await db
-                    .update(productVariantsTable)
-                    .set({ sold: sql`${productVariantsTable.sold} + ${item.quantity}` })
-                    .where(eq(productVariantsTable.id, item.variantId));
-
-                // Invalidate parent product and specific variant
-                itemsToInvalidate.push({ key: makeProductKey(item.productId) });
-            }
-        }
-        // --- END OF 'SOLD' COUNT LOGIC ---
+        // 🟢 UPDATE PROGRESS STEP BASED ON STATUS
 
         let newProgressStep = 1;
         if (status === "Processing") newProgressStep = 2;
@@ -403,7 +386,7 @@ router.put("/:id/status", async (req, res) => {
                 // Don't fail the request, just log it
             }
         }
-        
+
         // 🟢 SEND NOTIFICATION TO USER
 
         let message = `Your order #${updatedOrder.id} is now ${status}.`;
@@ -439,94 +422,114 @@ router.put("/:id/status", async (req, res) => {
     }
 });
 
-// 🟢 PUT to cancel an order (Modified for Logging)
+
+// 🟢 ADMIN CANCEL ROUTE (Handles Both COD & Online | No Restrictions)
+
 router.put("/:id/cancel", async (req, res) => {
     try {
         const { id } = req.params;
-        const { actorId } = req.body; // 🟢 Extract actorId
+        const { actorId } = req.body; // Admin ID
 
         if (!id) return res.status(400).json({ error: "Order ID is required" });
 
-        const [canceledOrder] = await db
-            .update(ordersTable)
-            .set({ status: "Order Cancelled" })
-            .where(eq(ordersTable.id, id))
-            .returning();
+        const [order] = await db.select().from(ordersTable).where(eq(ordersTable.id, id));
+        if (!order) return res.status(404).json({ error: "Order not found" });
 
-        if (!canceledOrder)
-            return res
-                .status(404)
-                .json({ error: "Order not found or cannot be canceled" });
+        if (order.status === "Order Cancelled") {
+            return res.status(400).json({ error: "Order is already cancelled" });
+        }
 
-        // 🟢 LOG ACTIVITY
+        // 🟢 SCENARIO A: ONLINE & PAID (Trigger Refund)
+        if (order.paymentMode === 'online' && order.transactionId && order.paymentStatus === 'paid') {
+            try {
+                const payment = await razorpay.payments.fetch(order.transactionId);
+
+                // Admin Refund = Full Amount usually (You can customize this)
+                const refundInPaise = payment.amount;
+
+                const refundInit = await razorpay.payments.refund(order.transactionId, {
+                    amount: refundInPaise,
+                    speed: 'optimum',
+                });
+
+                const refund = await razorpay.refunds.fetch(refundInit.id);
+
+                await db.update(ordersTable).set({
+                    paymentStatus: 'refunded',
+                    refund_id: refund.id,
+                    refund_amount: refund.amount,
+                    refund_status: refund.status,
+                    updatedAt: new Date()
+                }).where(eq(ordersTable.id, id));
+
+            } catch (payErr) {
+                console.error("Admin Auto-Refund Warning:", payErr.message);
+                // We DO NOT stop the cancellation. Admin can refund manually on Razorpay dashboard if this fails.
+            }
+        }
+
+        // 🟢 COMMON: Update Status (Works for COD & Online)
+        await db.update(ordersTable).set({
+            status: "Order Cancelled",
+            paymentStatus: order.paymentMode === 'cod' ? 'cancelled' : 'refunded', // Update COD status too
+            updatedAt: new Date()
+        }).where(eq(ordersTable.id, id));
+
+        // --- LOGGING ---
         if (actorId) {
             await db.insert(activityLogsTable).values({
-                userId: actorId, // Log under Admin ID
-                action: 'ORDER_CANCEL',
-                description: `Cancelled Order #${id}`,
+                userId: actorId,
+                action: 'ORDER_CANCEL_ADMIN',
+                description: `Admin cancelled Order #${id}`,
                 performedBy: 'admin',
-                metadata: { orderId: id }
+                metadata: { orderId: id, oldStatus: order.status }
             });
         }
 
-        // Build list of caches to invalidate
+        // --- RESTORE STOCK & FIX SOLD COUNT ---
+        const orderItems = await db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, id));
         const itemsToInvalidate = [
             { key: makeAllOrdersKey() },
-            { key: makeOrderKey(canceledOrder.id) },
-            { key: makeUserOrdersKey(canceledOrder.userId) },
-            { key: makeAllProductsKey() },
-            { key: makeAdminOrdersReportKey() },
+            { key: makeOrderKey(id) },
+            { key: makeUserOrdersKey(order.userId) },
+            { key: makeAllProductsKey() }
         ];
 
-        const orderItems = await db
-            .select({
-                quantity: orderItemsTable.quantity,
-                variantId: orderItemsTable.variantId,
-                productId: orderItemsTable.productId,
-            })
-            .from(orderItemsTable)
-            .where(eq(orderItemsTable.orderId, id));
-
-        // 🟢 RESTORE STOCK LOGIC (Includes recursive bundle support)
         for (const item of orderItems) {
-            
-            // 1. Restore stock of the item itself
-            await db
-                .update(productVariantsTable)
-                .set({ stock: sql`${productVariantsTable.stock} + ${item.quantity}` })
-                .where(eq(productVariantsTable.id, item.variantId));
+            // 1. Main Item
+            await db.update(productVariantsTable).set({
+                stock: sql`${productVariantsTable.stock} + ${item.quantity}`,
+                sold: sql`${productVariantsTable.sold} - ${item.quantity}`
+            }).where(eq(productVariantsTable.id, item.variantId));
 
-            // 2. CHECK IF BUNDLE -> Restore inner components
-            const bundleContents = await db
-                .select()
-                .from(productBundlesTable)
+            // 2. Bundle
+            const bundleContents = await db.select().from(productBundlesTable)
                 .where(eq(productBundlesTable.bundleVariantId, item.variantId));
 
             if (bundleContents.length > 0) {
                 for (const content of bundleContents) {
-                    const quantityToRestore = item.quantity * content.quantity;
-                    await db
-                        .update(productVariantsTable)
-                        .set({ stock: sql`${productVariantsTable.stock} + ${quantityToRestore}` })
-                        .where(eq(productVariantsTable.id, content.contentVariantId));
+                    const qty = item.quantity * content.quantity;
+                    await db.update(productVariantsTable).set({
+                        stock: sql`${productVariantsTable.stock} + ${qty}`,
+                        sold: sql`${productVariantsTable.sold} - ${qty}`
+                    }).where(eq(productVariantsTable.id, content.contentVariantId));
                 }
             }
-
-            // Add product-specific key
             itemsToInvalidate.push({ key: makeProductKey(item.productId) });
         }
 
-        // Invalidate all caches at once
         await invalidateMultiple(itemsToInvalidate);
+        await createNotification(order.userId, `Your order #${id} was cancelled by support.`, `/myorder`, 'order');
 
-        res
-            .status(200)
-            .json({ message: "Order canceled successfully", canceledOrder });
+        res.json({ message: "Order cancelled by Admin" });
+
     } catch (error) {
-        console.error("❌ Error canceling order:", error);
+        console.error("Admin Cancel Error:", error);
         res.status(500).json({ error: "Internal Server Error" });
     }
 });
+
+
 
 // GET /details/for-reports
 router.get(
@@ -565,5 +568,95 @@ router.get(
         }
     }
 );
+
+
+// 🟢 NEW: BULK STATUS UPDATE ROUTE
+router.put("/bulk-status", async (req, res) => {
+    try {
+        const { orderIds, status, actorId } = req.body;
+
+        if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
+            return res.status(400).json({ error: "No order IDs provided" });
+        }
+        if (!status) {
+            return res.status(400).json({ error: "Status is required" });
+        }
+
+        // Determine Progress Step
+        let newProgressStep = 1;
+        if (status === "Processing") newProgressStep = 2;
+        if (status === "Shipped") newProgressStep = 3;
+        if (status === "Delivered") newProgressStep = 4;
+
+        // 1. Bulk Update in DB
+        const updatedOrders = await db
+            .update(ordersTable)
+            .set({ 
+                status: status, 
+                progressStep: newProgressStep,
+                updatedAt: new Date()
+            })
+            .where(inArray(ordersTable.id, orderIds))
+            .returning();
+
+        // 2. Process Side Effects (Logs, Notifications, Referrals)
+        const itemsToInvalidate = [
+            { key: makeAllOrdersKey() },
+            { key: makeAdminOrdersReportKey() }
+        ];
+
+        // Process each updated order for side effects
+        await Promise.all(updatedOrders.map(async (order) => {
+            // A. Log Activity
+            if (actorId) {
+                await db.insert(activityLogsTable).values({
+                    userId: actorId,
+                    action: 'ORDER_STATUS_BULK_UPDATE',
+                    description: `Bulk updated Order #${order.id} to ${status}`,
+                    performedBy: 'admin',
+                    metadata: { orderId: order.id, newStatus: status }
+                });
+            }
+
+            // B. Referral Completion (if Delivered)
+            if (status.toLowerCase() === 'delivered') {
+                try {
+                    await processReferralCompletion(order.userId);
+                } catch (err) {
+                    console.error(`Referral error for ${order.id}:`, err);
+                }
+            }
+
+            // C. Send Notification
+            let message = `Your order #${order.id} is now ${status}.`;
+            if (status === 'Delivered') message = `Your order #${order.id} has been delivered!`;
+            else if (status === 'Shipped') message = `Your order #${order.id} has shipped.`;
+
+            await createNotification(
+                order.userId,
+                message,
+                `/myorder`,
+                'order'
+            );
+
+            // D. Collect Cache Keys
+            itemsToInvalidate.push({ key: makeOrderKey(order.id) });
+            itemsToInvalidate.push({ key: makeUserOrdersKey(order.userId) });
+        }));
+
+        // 3. Invalidate Caches
+        await invalidateMultiple(itemsToInvalidate);
+
+        res.json({ 
+            success: true, 
+            message: `Successfully updated ${updatedOrders.length} orders to ${status}`,
+            count: updatedOrders.length 
+        });
+
+    } catch (error) {
+        console.error("❌ Bulk update error:", error);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
+});
 
 export default router;

@@ -57,7 +57,7 @@ app.use(cors({
     "https://www.devidaura.com",
     "https://devidaura.com",
     "http://localhost:5173",
-    "http://localhost:3000",
+    "http://localhost:4173",
   ],
   methods: ["GET", "POST", "PUT", "DELETE",'PATCH', "OPTIONS"],
   credentials: true,
@@ -169,54 +169,54 @@ app.get('/wake-up', (req, res) => {
   res.send('✅ Devid Aura backend awake');
 });
 
-app.get('/api/debug-network', async (req, res) => {
-  try {
-    // 1. Get Public IP
-    const ipRes = await fetch('https://api.ipify.org?format=json');
-    const ipData = await ipRes.json();
+// app.get('/api/debug-network', async (req, res) => {
+//   try {
+//     // 1. Get Public IP
+//     const ipRes = await fetch('https://api.ipify.org?format=json');
+//     const ipData = await ipRes.json();
     
-    // 2. Test Connection to Gmail
-    const host = 'smtp.gmail.com';
-    const port = 465;
+//     // 2. Test Connection to Gmail
+//     const host = 'smtp.gmail.com';
+//     const port = 465;
     
-    let connectionLog = [];
-    const start = Date.now();
+//     let connectionLog = [];
+//     const start = Date.now();
 
-    const result = await new Promise((resolve) => {
-      const socket = new net.Socket();
-      socket.setTimeout(5000); // 5 second timeout
+//     const result = await new Promise((resolve) => {
+//       const socket = new net.Socket();
+//       socket.setTimeout(5000); // 5 second timeout
 
-      connectionLog.push(`Attempting to connect to ${host}:${port}...`);
+//       connectionLog.push(`Attempting to connect to ${host}:${port}...`);
 
-      socket.connect(port, host, () => {
-        connectionLog.push('✅ Connection Established! (Network is OK)');
-        socket.end();
-        resolve('SUCCESS');
-      });
+//       socket.connect(port, host, () => {
+//         connectionLog.push('✅ Connection Established! (Network is OK)');
+//         socket.end();
+//         resolve('SUCCESS');
+//       });
 
-      socket.on('timeout', () => {
-        connectionLog.push('❌ Connection TIMED OUT (Blocked by Firewall/Gmail)');
-        socket.destroy();
-        resolve('TIMEOUT');
-      });
+//       socket.on('timeout', () => {
+//         connectionLog.push('❌ Connection TIMED OUT (Blocked by Firewall/Gmail)');
+//         socket.destroy();
+//         resolve('TIMEOUT');
+//       });
 
-      socket.on('error', (err) => {
-        connectionLog.push(`❌ Connection Error: ${err.message}`);
-        resolve('ERROR');
-      });
-    });
+//       socket.on('error', (err) => {
+//         connectionLog.push(`❌ Connection Error: ${err.message}`);
+//         resolve('ERROR');
+//       });
+//     });
 
-    res.json({
-      server_ip: ipData.ip,
-      connection_status: result,
-      logs: connectionLog,
-      duration: `${Date.now() - start}ms`
-    });
+//     res.json({
+//       server_ip: ipData.ip,
+//       connection_status: result,
+//       logs: connectionLog,
+//       duration: `${Date.now() - start}ms`
+//     });
 
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+//   } catch (error) {
+//     res.status(500).json({ error: error.message });
+//   }
+// });
 
 
 // ───── Initialize Cron Jobs ─────
