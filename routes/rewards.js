@@ -12,7 +12,7 @@ const router = express.Router();
 const upload = multer({ dest: "uploads/" }); // Temp folder for images
 
 // ==========================================
-// 🟢 1. DYNAMIC CONFIG SYSTEM
+// ⚡ 1. DYNAMIC CONFIG SYSTEM
 // ==========================================
 const CONFIG_FILE = path.resolve("rewardsConfig.json");
 
@@ -67,7 +67,7 @@ router.post("/config", (req, res) => {
 });
 
 // ==========================================
-// 🟢 2. NEW: GET USER HISTORY (Crucial for UI)
+// ⚡ 2. NEW: GET USER HISTORY (Crucial for UI)
 // ==========================================
 router.get("/my-history/:userId", async (req, res) => {
     try {
@@ -84,7 +84,7 @@ router.get("/my-history/:userId", async (req, res) => {
 });
 
 // ==========================================
-// 🟢 3. MAIN CLAIM ROUTE (Advanced Logic)
+// ⚡ 3. MAIN CLAIM ROUTE (Advanced Logic)
 // ==========================================
 router.post("/claim", upload.single("proofImage"), async (req, res) => {
   let tempFilePath = null;
@@ -98,17 +98,19 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
     if (!userId || !taskType) return res.status(400).json({ error: "Missing required fields" });
 
     // A. DUPLICATE CHECK (Prevent Spam)
-    // For one-time tasks (like Following), check if they already did it.
+    // Ensures user gets reward only one time per task type (unless rejected)
     if (taskType !== 'monthly_lottery') {
         const existing = await db.query.rewardClaimsTable.findFirst({
             where: and(
                 eq(rewardClaimsTable.userId, userId),
                 eq(rewardClaimsTable.taskType, taskType),
-                sql`${rewardClaimsTable.status} != 'rejected'` // Allow retry only if rejected
+                // If status is 'pending' or 'approved', block them.
+                // Only allow retry if 'rejected'.
+                sql`${rewardClaimsTable.status} != 'rejected'` 
             )
         });
         if (existing) {
-            return res.status(400).json({ error: "You have already submitted this task!" });
+            return res.status(400).json({ error: "You have already completed or submitted this task!" });
         }
     } else {
         // Lottery: Strict Once per 30 Days Check
@@ -153,17 +155,21 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
         const review = await db.query.reviewsTable.findFirst({
             where: and(
                 eq(reviewsTable.userId, userId), 
-                sql`array_length(${reviewsTable.photoUrls}, 1) > 0`
+                // Must have photos
+                sql`array_length(${reviewsTable.photoUrls}, 1) > 0`,
+                // [UPDATED] Must be a Verified Buyer
+                eq(reviewsTable.isVerifiedBuyer, true)
             ),
             orderBy: [desc(reviewsTable.createdAt)]
         });
 
         if (review) {
             status = "approved"; 
-            adminNote = `System Verified: Review ID ${review.id}`;
+            adminNote = `System Verified: Review ID ${review.id} (Verified Buyer)`;
             proofData = `Linked Review: ${review.id}`;
         } else {
-            return res.status(400).json({ error: "No photo review found on your profile yet." });
+            // Updated error message to be specific
+            return res.status(400).json({ error: "No Verified Buyer photo review found on your profile." });
         }
     } else if (taskType === 'monthly_lottery') {
          adminNote = "Monthly Lottery Entry";
@@ -193,7 +199,7 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
     
     res.json({ 
         success: true, 
-        message: status === 'approved' ? `🎉 Verified! ₹${rewardAmount} added instantly.` : "Proof uploaded! Under review." 
+        message: status === 'approved' ? `⚡ Verified! ₹${rewardAmount} added instantly.` : "Proof uploaded! Under review." 
     });
 
   } catch (error) {
@@ -204,7 +210,7 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
 });
 
 // ==========================================
-// 🟢 4. ADMIN ROUTES
+// ⚡ 4. ADMIN ROUTES
 // ==========================================
 
 // Get Pending Claims
