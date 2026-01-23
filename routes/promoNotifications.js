@@ -1,4 +1,4 @@
-// routes/promoNotifications.js
+// ✅ file: routes/promoNotifications.js
 import express from 'express';
 import { db } from '../configs/index.js';
 import { couponsTable } from '../configs/schema.js';
@@ -7,7 +7,11 @@ import { cache } from '../cacheMiddleware.js';
 
 const router = express.Router();
 
-// GET /api/promos/latest-public
+/* ======================================================
+   🟢 GET LATEST PROMOS (Public)
+   - Used for Homepage Banner
+   - Cached for 1 hour
+====================================================== */
 router.get('/latest-public', cache(() => 'promos:latest-public', 3600), async (req, res) => {
     try {
         const now = new Date();
@@ -17,7 +21,7 @@ router.get('/latest-public', cache(() => 'promos:latest-public', 3600), async (r
             description: couponsTable.description,
             discountType: couponsTable.discountType,
             discountValue: couponsTable.discountValue,
-            validFrom: couponsTable.validFrom, // 🟢 ADD THIS LINE
+            validFrom: couponsTable.validFrom, 
         })
         .from(couponsTable)
         .where(and(

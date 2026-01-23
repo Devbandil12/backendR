@@ -148,11 +148,11 @@ export async function reduceStock(cartItems, tx) {
   return Array.from(affectedProductIds);
 }
 
-// 🟢 1. OPTIMIZED createOrder (COD Speed Fix)
+// 🟢 3. SECURE CREATE ORDER
 export const createOrder = async (req, res) => {
   try {
     const {
-      user,
+      // user, // 🛑 SECURITY: Ignore user from body
       phone,
       paymentMode = 'online',
       cartItems,
@@ -161,8 +161,12 @@ export const createOrder = async (req, res) => {
       useWallet = false
     } = req.body;
 
+    // 🔒 RESOLVE USER FROM TOKEN
+    const requesterClerkId = req.auth.userId;
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, requesterClerkId));
+    
     if (!user) {
-      return res.status(401).json({ success: false, msg: 'Please log in first' });
+      return res.status(401).json({ success: false, msg: 'Authentication failed. Please log in.' });
     }
 
     const dbCartItems = await db
@@ -189,9 +193,6 @@ export const createOrder = async (req, res) => {
     }));
     await checkStockAvailability(secureCartItems);
 
-    const [dbUser] = await db.select().from(usersTable).where(eq(usersTable.id, user.id));
-    if (!dbUser) return res.status(404).json({ success: false, msg: "User not found" });
-
     const [address] = await db
       .select()
       .from(UserAddressTable)
@@ -210,13 +211,13 @@ export const createOrder = async (req, res) => {
     let finalAmount = breakdown.total;
     let walletDeduction = 0;
 
-    if (useWallet && dbUser.walletBalance > 0) {
+    if (useWallet && user.walletBalance > 0) {
       // Deduct whichever is smaller: The Bill Amount OR The Wallet Balance
-      walletDeduction = Math.min(finalAmount, dbUser.walletBalance);
+      walletDeduction = Math.min(finalAmount, user.walletBalance);
       finalAmount = finalAmount - walletDeduction;
     }
 
-    const { total, discountAmount, offerDiscount, appliedOffers, codAvailable } = breakdown;
+    const { discountAmount, offerDiscount, appliedOffers, codAvailable } = breakdown;
     const offerCodes = appliedOffers.map(o => o.title);
 
     if (paymentMode === 'cod' && !codAvailable) {
@@ -484,7 +485,7 @@ export const createOrder = async (req, res) => {
         walletAmountUsed: walletDeduction,
         status: 'pending_payment',
         paymentMode: 'online',
-      transactionId: null,
+        transactionId: null,
         paymentStatus: 'pending',
         phone,
         couponCode,
@@ -512,18 +513,26 @@ export const createOrder = async (req, res) => {
   }
 };
 
-// 🟢 2. OPTIMIZED verifyPayment (Online Speed Fix)
+// 🟢 4. SECURE VERIFY PAYMENT
 export const verifyPayment = async (req, res) => {
   try {
     const {
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
-      user,
+      // user, // 🛑 SECURITY: Ignore user from body
       cartItems,
       couponCode = null,
       userAddressId,
     } = req.body;
+
+    // 🔒 RESOLVE USER FROM TOKEN
+    const requesterClerkId = req.auth.userId;
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, requesterClerkId));
+    
+    if (!user) {
+      return res.status(401).json({ success: false, error: "Unauthorized" });
+    }
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !userAddressId) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
@@ -546,11 +555,15 @@ export const verifyPayment = async (req, res) => {
     if (!existingOrder) {
       return res.status(404).json({ success: false, error: "Order not found." });
     }
+    
+    // 🔒 Additional check: Ensure order belongs to logged-in user
+    if (existingOrder.userId !== user.id) {
+        return res.status(403).json({ success: false, error: "Forbidden: Not your order." });
+    }
+
     if (existingOrder.paymentStatus === 'paid') {
       return res.json({ success: true, message: "Order already paid." });
     }
-
- 
 
     const secureCartItems = cartItems.map(item => ({
       variantId: item.variant.id,
@@ -558,12 +571,9 @@ export const verifyPayment = async (req, res) => {
       productId: item.product.id
     }));
 
-   
-
     const payment = await razorpay.payments.fetch(razorpay_payment_id);
 
-    // 🟢 FIXED: Compare with DB Amount (Total - Wallet)
-    // The existingOrder.totalAmount is the 'remainder' sent to Razorpay in createOrder
+    // Compare Amount
     if (payment.amount !== existingOrder.totalAmount * 100) {
       console.error(`Mismatch: Razorpay Paid ${payment.amount} !== DB Expected ${existingOrder.totalAmount * 100}`);
       await razorpay.payments.refund(

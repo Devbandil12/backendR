@@ -1,3 +1,4 @@
+/* eslint-disable */
 import Razorpay from 'razorpay';
 import { db } from '../configs/index.js';
 import {
@@ -6,7 +7,8 @@ import {
     productsTable,
     productVariantsTable,
     productBundlesTable,
-    activityLogsTable // 🟢 Added for logging
+    activityLogsTable,
+    usersTable // 🟢 Added
 } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -32,8 +34,13 @@ export const refundOrder = async (req, res) => {
     });
 
     try {
-        const { orderId, amount, actorId } = req.body; // 🟢 Added actorId support
+        const { orderId, amount } = req.body; 
         
+        // 🔒 AUTHENTICATION
+        const requesterClerkId = req.auth.userId; 
+        const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, requesterClerkId));
+        if (!user) return res.status(401).json({ success: false, error: "Unauthorized" });
+
         if (!orderId) {
             return res.status(400).json({ success: false, error: "Missing orderId" });
         }
@@ -53,6 +60,11 @@ export const refundOrder = async (req, res) => {
 
         if (!order) {
             return res.status(404).json({ success: false, error: "Order not found" });
+        }
+
+        // 🔒 AUTHORIZATION CHECK (Owner or Admin)
+        if (order.userId !== user.id && user.role !== 'admin') {
+            return res.status(403).json({ success: false, error: "Forbidden: Not your order" });
         }
 
         // 🟢 STRICT RESTRICTION: Only 'Order Placed' can be cancelled by User
@@ -83,37 +95,28 @@ export const refundOrder = async (req, res) => {
         } 
         // 🟢 SCENARIO B: ONLINE ORDER
         else {
-            // Use provided amount or default to total (safety fallback)
             const refundBaseAmount = amount || order.totalAmount;
-
-            // Step 2: Convert amount to paise
             const amountInPaise = Math.round(refundBaseAmount * 100);
             
-            // Apply Cancellation Fee (95% refund) if that is your policy
             let refundInPaise = Math.round(amountInPaise * 0.95);
             if (refundInPaise < 100) refundInPaise = amountInPaise;
 
-            // Step 3: Fetch payment
             const payment = await razorpay.payments.fetch(order.paymentId);
-
-            // Step 4: Validate
             const alreadyRefunded = (payment.refunds || []).reduce((sum, r) => sum + (r.amount || 0), 0);
             const maxRefundable = payment.amount - alreadyRefunded;
             
             if (refundInPaise > maxRefundable) {
                 return res.status(400).json({
                     success: false,
-                    error: `Refund amount exceeds remaining refundable amount ₹${(maxRefundable / 100).toFixed(2)}.`,
+                    error: `Refund amount exceeds remaining refundable amount.`,
                 });
             }
 
-            // Step 5: Call refund
             const refundInit = await razorpay.payments.refund(order.paymentId, {
                 amount: refundInPaise,
                 speed: 'optimum',
             });
 
-            // Step 6: Fetch accurate refund status
             refund = await razorpay.refunds.fetch(refundInit.id);
             refundAmountRecorded = refund.amount / 100;
 
@@ -122,7 +125,6 @@ export const refundOrder = async (req, res) => {
                 ? safeDate(refund.processed_at)
                 : null;
 
-            // Step 7: Persist refund data in DB
             await db
                 .update(ordersTable)
                 .set({
@@ -139,7 +141,6 @@ export const refundOrder = async (req, res) => {
                 .where(eq(ordersTable.id, orderId));
         }
 
-        // Notification
         const notifMessage = refund
             ? `Your refund for order #${orderId} has been ${refund.status}.`
             : `Your order #${orderId} has been cancelled.`;
@@ -177,26 +178,24 @@ export const refundOrder = async (req, res) => {
                 .update(productVariantsTable)
                 .set({ 
                     stock: sql`${productVariantsTable.stock} + ${item.quantity}`,
-                    sold: sql`${productVariantsTable.sold} - ${item.quantity}` // 🟢 FIX: Reduce Sold
+                    sold: sql`${productVariantsTable.sold} - ${item.quantity}`
                 })
                 .where(eq(productVariantsTable.id, item.variantId));
 
-            // 2. Check if this item is a bundle
+            // 2. Check if Bundle
             const bundleContents = await db
                 .select()
                 .from(productBundlesTable)
                 .where(eq(productBundlesTable.bundleVariantId, item.variantId));
 
             if (bundleContents.length > 0) {
-                // 3. Restore stock & Reduce Sold for Bundle Contents
                 for (const content of bundleContents) {
                     const stockToRestore = content.quantity * item.quantity;
-
                     await db
                         .update(productVariantsTable)
                         .set({ 
                             stock: sql`${productVariantsTable.stock} + ${stockToRestore}`,
-                            sold: sql`${productVariantsTable.sold} - ${stockToRestore}` // 🟢 FIX: Reduce Sold
+                            sold: sql`${productVariantsTable.sold} - ${stockToRestore}`
                         })
                         .where(eq(productVariantsTable.id, content.contentVariantId));
 
@@ -211,23 +210,20 @@ export const refundOrder = async (req, res) => {
             }
         }
 
-        // 🟢 --- Step 9: Invalidate caches ---
         for (const pid of affectedProductIds) {
             itemsToInvalidate.push({ key: makeProductKey(pid), prefix: true });
         }
 
         await invalidateMultiple(itemsToInvalidate);
 
-        // 🟢 --- Step 10: Log Activity (If Actor ID present) ---
-        if (actorId) {
-            await db.insert(activityLogsTable).values({
-                userId: actorId, 
-                action: 'ORDER_CANCEL_USER',
-                description: `Cancelled Order #${orderId}`,
-                performedBy: 'user', // Assuming this endpoint is primarily for users
-                metadata: { orderId, refundAmount: refundAmountRecorded }
-            });
-        }
+        // 🟢 --- Step 10: Log Activity ---
+        await db.insert(activityLogsTable).values({
+            userId: user.id, 
+            action: 'ORDER_CANCEL_USER',
+            description: `Cancelled Order #${orderId}`,
+            performedBy: user.role === 'admin' ? 'admin' : 'user',
+            metadata: { orderId, refundAmount: refundAmountRecorded }
+        });
 
         return res.json({ success: true, message: "Order successfully cancelled and stock restored." });
 

@@ -1,24 +1,32 @@
-// routes/variants.js
+// ✅ file: routes/variants.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { productVariantsTable, activityLogsTable } from "../configs/schema.js"; // 🟢 Added activityLogsTable
+import { 
+  productVariantsTable, 
+  activityLogsTable, 
+  usersTable // 🟢 Added for Actor Resolution
+} from "../configs/schema.js"; 
 import { eq } from "drizzle-orm";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeAllProductsKey, makeProductKey } from "../cacheKeys.js";
 
+// 🔒 SECURITY: Import Middleware
+import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
+
 const router = express.Router();
 
 /**
- * 🟢 PUT /api/variants/:variantId (Modified for Logging)
+ * 🔒 PUT /api/variants/:variantId (Admin Only)
  * Update a single product variant
  */
-router.put("/:variantId", async (req, res) => {
+router.put("/:variantId", requireAuth, verifyAdmin, async (req, res) => {
   const { variantId } = req.params;
+  const requesterClerkId = req.auth.userId;
   
-  // Destructure actorId separate from data
+  // Destructure data (ignore insecure actorId from body)
   const {
     name, size, oprice, discount, costPrice, stock, sold, sku, isArchived, 
-    actorId // 🟢 Extract actorId
+    actorId: ignored 
   } = req.body;
 
   const variantData = { name, size, oprice, discount, costPrice, stock, sold, sku, isArchived };
@@ -33,6 +41,13 @@ router.put("/:variantId", async (req, res) => {
   }
 
   try {
+    // 🟢 SECURE: Resolve Actor ID
+    const adminUser = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true }
+    });
+    const actorId = adminUser?.id;
+
     // 1. Fetch current variant for comparison
     const currentVariant = await db.query.productVariantsTable.findFirst({
         where: eq(productVariantsTable.id, variantId)
@@ -53,11 +68,10 @@ router.put("/:variantId", async (req, res) => {
         if (variantData.oprice && variantData.oprice !== currentVariant.oprice) changes.push("Price");
         if (variantData.stock && variantData.stock !== currentVariant.stock) changes.push("Stock");
         if (variantData.name && variantData.name !== currentVariant.name) changes.push("Name");
-        // Add more comparisons as needed
 
         if (changes.length > 0) {
             await db.insert(activityLogsTable).values({
-                userId: actorId, // Admin ID
+                userId: actorId, 
                 action: 'VARIANT_UPDATE',
                 description: `Updated variant ${updatedVariant.name}: ${changes.join(', ')}`,
                 performedBy: 'admin',
@@ -80,17 +94,25 @@ router.put("/:variantId", async (req, res) => {
 });
 
 /**
- * 🟢 POST /api/variants (Modified for Logging)
+ * 🔒 POST /api/variants (Admin Only)
  * Add a new variant
  */
-router.post("/", async (req, res) => {
-  const { productId, actorId, ...variantData } = req.body; // 🟢 Extract actorId
+router.post("/", requireAuth, verifyAdmin, async (req, res) => {
+  const requesterClerkId = req.auth.userId;
+  const { productId, actorId: ignored, ...variantData } = req.body; 
 
   if (!productId) {
     return res.status(400).json({ error: "productId is required." });
   }
 
   try {
+    // 🟢 SECURE: Resolve Actor ID
+    const adminUser = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true }
+    });
+    const actorId = adminUser?.id;
+
     const [newVariant] = await db
       .insert(productVariantsTable)
       .values({
@@ -116,7 +138,6 @@ router.post("/", async (req, res) => {
         });
     }
 
-    // Invalidate the parent product's cache
     await invalidateMultiple([
       { key: makeAllProductsKey(), prefix: true },
       { key: makeProductKey(newVariant.productId), prefix: true },
@@ -130,13 +151,20 @@ router.post("/", async (req, res) => {
 });
 
 /**
- * 🟢 PUT /:variantId/archive (Modified for Logging)
+ * 🔒 PUT /:variantId/archive (Admin Only)
  */
-router.put("/:variantId/archive", async (req, res) => {
+router.put("/:variantId/archive", requireAuth, verifyAdmin, async (req, res) => {
   const { variantId } = req.params;
-  const { actorId } = req.body; // 🟢 Extract actorId
+  const requesterClerkId = req.auth.userId;
 
   try {
+    // 🟢 SECURE: Resolve Actor ID
+    const adminUser = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true }
+    });
+    const actorId = adminUser?.id;
+
     const [archivedVariant] = await db
       .update(productVariantsTable)
       .set({ isArchived: true }) 
@@ -147,7 +175,6 @@ router.put("/:variantId/archive", async (req, res) => {
       return res.status(404).json({ error: "Variant not found." });
     }
 
-    // 🟢 LOG ACTIVITY
     if (actorId) {
         await db.insert(activityLogsTable).values({
             userId: actorId,
@@ -158,7 +185,6 @@ router.put("/:variantId/archive", async (req, res) => {
         });
     }
 
-    // Invalidate the parent product's cache
     await invalidateMultiple([
       { key: makeAllProductsKey(), prefix: true },
       { key: makeProductKey(archivedVariant.productId), prefix: true },
@@ -172,13 +198,20 @@ router.put("/:variantId/archive", async (req, res) => {
 });
 
 /**
- * 🟢 PUT /:variantId/unarchive (Modified for Logging)
+ * 🔒 PUT /:variantId/unarchive (Admin Only)
  */
-router.put("/:variantId/unarchive", async (req, res) => {
+router.put("/:variantId/unarchive", requireAuth, verifyAdmin, async (req, res) => {
   const { variantId } = req.params;
-  const { actorId } = req.body; // 🟢 Extract actorId
+  const requesterClerkId = req.auth.userId;
 
   try {
+    // 🟢 SECURE: Resolve Actor ID
+    const adminUser = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true }
+    });
+    const actorId = adminUser?.id;
+
     const [unarchivedVariant] = await db
       .update(productVariantsTable)
       .set({ isArchived: false }) 
@@ -189,7 +222,6 @@ router.put("/:variantId/unarchive", async (req, res) => {
       return res.status(404).json({ error: "Variant not found." });
     }
 
-    // 🟢 LOG ACTIVITY
     if (actorId) {
         await db.insert(activityLogsTable).values({
             userId: actorId,
@@ -200,7 +232,6 @@ router.put("/:variantId/unarchive", async (req, res) => {
         });
     }
 
-    // Invalidate cache
     await invalidateMultiple([
       { key: makeAllProductsKey(), prefix: true },
       { key: makeProductKey(unarchivedVariant.productId), prefix: true },

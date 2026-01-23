@@ -51,6 +51,23 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow images to load
 }));
 
+app.use((req, res, next) => {
+  if (req.path.endsWith('.map')) {
+    return res.status(403).send('Source map access is forbidden.');
+  }
+  next();
+});
+
+app.use((err, req, res, next) => {
+  console.error("🔥 Error Middleware:", err.message);
+  
+  if (err.message === 'Unauthenticated') {
+    return res.status(401).json({ error: "Unauthorized: You must be logged in." });
+  }
+  
+  res.status(500).json({ error: "Internal Server Error" });
+});
+
 // ───── CORS ─────
 app.use(cors({
   origin: [

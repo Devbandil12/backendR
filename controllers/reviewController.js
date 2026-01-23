@@ -17,18 +17,6 @@ import {
   makeUserReviewsKey,
 } from "../cacheKeys.js";
 
-// 🔧 Helper: Map Clerk ID or UUID → internal UUID
-const resolveUserId = async (userId) => {
-  if (!userId) return null;
-
-  let [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId));
-  if (!user) {
-    [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, userId));
-  }
-
-  return user ? user.id : null;
-};
-
 // 🔧 Helper: Check if user has purchased a product
 const hasPurchasedProduct = async (internalUserId, productId) => {
   if (!internalUserId || !productId) return false;
@@ -48,48 +36,40 @@ const hasPurchasedProduct = async (internalUserId, productId) => {
 };
 
 // 🔧 Helper: invalidate all review cache variants for a product + user
-// REFACTORED: Use new key builders and invalidateMultiple
 const invalidateReviewCaches = async (productId, userId) => {
   const items = [
-    // Use prefix invalidation for all paginated/filtered review lists
     { key: makeProductReviewsPrefix(productId), prefix: true },
-    // Invalidate the specific stats key
     { key: makeProductReviewStatsKey(productId) },
   ];
 
   if (userId) {
-    // Invalidate this user's specific review list
     items.push({ key: makeUserReviewsKey(userId) });
   }
 
   await invalidateMultiple(items);
 };
 
-// ✅ Create Review
+// ✅ Create Review (Secured)
 export const createReview = async (req, res) => {
   try {
-    const {
-      name,
-      rating,
-      comment,
-      photoUrls,
-      productId,
-      userId,
-      clerkId,
-    } = req.body;
+    const { rating, comment, photoUrls, productId } = req.body;
+    
+    // 🔒 AUTHENTICATION
+    const requesterClerkId = req.auth.userId; 
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, requesterClerkId));
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
 
     if (!rating || !comment || !productId) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const internalUserId = await resolveUserId(userId || clerkId);
-    const isVerified = await hasPurchasedProduct(internalUserId, productId);
+    const isVerified = await hasPurchasedProduct(user.id, productId);
 
     const [review] = await db
       .insert(reviewsTable)
       .values({
-        name: name || "Anonymous",
-        userId: internalUserId,
+        name: user.name || "Anonymous",
+        userId: user.id, // 🔒 Using Secured ID
         rating: parseInt(rating),
         comment,
         photoUrls: Array.isArray(photoUrls) ? photoUrls : [],
@@ -101,7 +81,7 @@ export const createReview = async (req, res) => {
       .returning();
 
     // Invalidate cache
-    await invalidateReviewCaches(productId, internalUserId);
+    await invalidateReviewCaches(productId, user.id);
 
     res.status(201).json(review);
   } catch (err) {
@@ -110,7 +90,89 @@ export const createReview = async (req, res) => {
   }
 };
 
-// ✅ Get Reviews By Product
+// ✅ Delete Review (Secured)
+export const deleteReview = async (req, res) => {
+  const { id } = req.params;
+  const requesterClerkId = req.auth.userId; 
+
+  try {
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, requesterClerkId));
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const [reviewToDelete] = await db
+      .select({ productId: reviewsTable.productId, userId: reviewsTable.userId })
+      .from(reviewsTable)
+      .where(eq(reviewsTable.id, id));
+
+    if (!reviewToDelete) return res.status(404).json({ error: "Review not found" });
+
+    // 🔒 ACL: Owner or Admin
+    if (reviewToDelete.userId !== user.id && user.role !== 'admin') {
+        return res.status(403).json({ error: "Forbidden: Not your review" });
+    }
+
+    const deleted = await db
+      .delete(reviewsTable)
+      .where(eq(reviewsTable.id, id))
+      .returning();
+
+    await invalidateReviewCaches(reviewToDelete.productId, reviewToDelete.userId);
+
+    res.json({ success: true, deleted });
+  } catch (err) {
+    console.error("❌ Failed to delete review:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// ✅ Update Review (Secured)
+export const updateReview = async (req, res) => {
+  const { id } = req.params;
+  const { rating, comment, photoUrls } = req.body;
+  const requesterClerkId = req.auth.userId; 
+
+  try {
+    const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, requesterClerkId));
+    if (!user) return res.status(401).json({ error: "Unauthorized" });
+
+    const [existing] = await db
+      .select()
+      .from(reviewsTable)
+      .where(eq(reviewsTable.id, id));
+
+    if (!existing) {
+      return res.status(404).json({ error: "Review not found" });
+    }
+
+    // 🔒 ACL: Owner only (Admins usually just delete, but allow edit if you want)
+    if (existing.userId !== user.id && user.role !== 'admin') {
+        return res.status(403).json({ error: "Forbidden: Not your review" });
+    }
+
+    const isVerified = await hasPurchasedProduct(existing.userId, existing.productId);
+
+    const updated = await db
+      .update(reviewsTable)
+      .set({
+        ...(rating && { rating: parseInt(rating) }),
+        ...(comment && { comment }),
+        ...(photoUrls && { photoUrls }),
+        isVerifiedBuyer: isVerified,
+        updatedAt: new Date(),
+      })
+      .where(eq(reviewsTable.id, id))
+      .returning();
+
+    await invalidateReviewCaches(existing.productId, existing.userId);
+
+    res.json({ success: true, updated });
+  } catch (err) {
+    console.error("❌ Failed to update review:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+// ✅ Get Reviews By Product (Public - No Auth Needed)
 export const getReviewsByProduct = async (req, res) => {
   const { productId } = req.params;
   const { rating, limit = 10, cursor } = req.query;
@@ -192,7 +254,7 @@ export const getReviewsByProduct = async (req, res) => {
   }
 };
 
-// ✅ Get Review Stats
+// ✅ Get Review Stats (Public)
 export const getReviewStats = async (req, res) => {
   const { productId } = req.params;
 
@@ -227,13 +289,22 @@ export const getReviewStats = async (req, res) => {
   }
 };
 
-
-// ✅ Check Verified Buyer
+// ✅ Check Verified Buyer (Public/Secured by Route Cache)
 export const isVerifiedBuyer = async (req, res) => {
   const { userId, clerkId, productId } = req.query;
+  // NOTE: This controller now relies on route-level override if called via secure route
+  // The route sets req.query.userId = req.auth.userId for authenticated checks
 
   try {
-    const internalUserId = await resolveUserId(userId || clerkId);
+    // Resolve helper handles both UUID and Clerk ID
+    // If securely called, userId is already the Clerk ID from token
+    let internalUserId = null;
+    let [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId || clerkId));
+    if (!user) {
+      [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, userId || clerkId));
+    }
+    internalUserId = user ? user.id : null;
+
     const isVerified = await hasPurchasedProduct(internalUserId, productId);
     res.json({ verified: isVerified });
   } catch (err) {
@@ -242,71 +313,7 @@ export const isVerifiedBuyer = async (req, res) => {
   }
 };
 
-// ✅ Delete Review
-export const deleteReview = async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const [reviewToDelete] = await db
-      .select({ productId: reviewsTable.productId, userId: reviewsTable.userId })
-      .from(reviewsTable)
-      .where(eq(reviewsTable.id, id));
-
-    const deleted = await db
-      .delete(reviewsTable)
-      .where(eq(reviewsTable.id, id))
-      .returning();
-
-    if (reviewToDelete) {
-      await invalidateReviewCaches(reviewToDelete.productId, reviewToDelete.userId);
-    }
-
-    res.json({ success: true, deleted });
-  } catch (err) {
-    console.error("❌ Failed to delete review:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-};
-
-// ✅ Update Review
-export const updateReview = async (req, res) => {
-  const { id } = req.params;
-  const { rating, comment, photoUrls } = req.body;
-
-  try {
-    const [existing] = await db
-      .select()
-      .from(reviewsTable)
-      .where(eq(reviewsTable.id, id));
-
-    if (!existing) {
-      return res.status(404).json({ error: "Review not found" });
-    }
-
-    const isVerified = await hasPurchasedProduct(existing.userId, existing.productId);
-
-    const updated = await db
-      .update(reviewsTable)
-      .set({
-        ...(rating && { rating: parseInt(rating) }),
-        ...(comment && { comment }),
-        ...(photoUrls && { photoUrls }),
-        isVerifiedBuyer: isVerified,
-        updatedAt: new Date(),
-      })
-      .where(eq(reviewsTable.id, id))
-      .returning();
-
-    await invalidateReviewCaches(existing.productId, existing.userId);
-
-    res.json({ success: true, updated });
-  } catch (err) {
-    console.error("❌ Failed to update review:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-};
-
-// ✅ Get Reviews by User
+// ✅ Get Reviews by User (Public/Secured by Route)
 export const getReviewsByUser = async (req, res) => {
   try {
     const { userId } = req.params;

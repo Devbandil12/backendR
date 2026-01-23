@@ -1,4 +1,4 @@
-// routes/cart.js
+// ✅ file: routes/cart.js
 import express from "express";
 import { db } from "../configs/index.js";
 import {
@@ -16,18 +16,33 @@ import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import * as keys from "../cacheKeys.js";
 
+// 🔒 SECURITY: Import Middleware
+import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
+
 const router = express.Router();
 
 /* =========================================================
-   🛒 CART ROUTES
+   🛒 CART ROUTES (Secured)
 ========================================================= */
 
-// GET /api/cart/:userId — Get all cart items for a user
-router.get(
-  "/:userId",
-  async (req, res) => {
+// GET /api/cart/:userId
+router.get("/:userId", requireAuth, async (req, res) => {
     try {
       const { userId } = req.params;
+      const requesterClerkId = req.auth.userId;
+
+      // 1. Resolve & Verify User
+      const requester = await db.query.usersTable.findFirst({
+          where: eq(usersTable.clerkId, requesterClerkId),
+          columns: { id: true, role: true }
+      });
+      if (!requester) return res.status(401).json({ error: "Unauthorized" });
+
+      // 🔒 ACL: Only allow Owner or Admin
+      if (requester.id !== userId && requester.role !== 'admin') {
+          return res.status(403).json({ error: "Forbidden" });
+      }
+
       const cartItems = await db.query.addToCartTable.findMany({
           where: eq(addToCartTable.userId, userId),
           with: {
@@ -40,9 +55,7 @@ router.get(
           where: eq(productBundlesTable.bundleVariantId, item.variantId),
           with: {
             content: { 
-              with: {
-                product: true 
-              }
+              with: { product: true }
             }
           }
         });
@@ -80,19 +93,27 @@ router.get(
   }
 );
 
-// POST /api/cart — Add product to cart
-router.post("/", async (req, res) => {
+// POST /api/cart — Add product
+router.post("/", requireAuth, async (req, res) => {
   try {
-    const { userId, productId, variantId, quantity } = req.body;
+    const { productId, variantId, quantity } = req.body;
+    const requesterClerkId = req.auth.userId;
 
-    if (!userId || !productId || !variantId || !quantity) {
+    // 🔒 Security: Resolve User ID from Token
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user) return res.status(401).json({ error: "User not found" });
+    const userId = user.id;
+
+    if (!productId || !variantId || !quantity) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
     const [newItem] = await db
       .insert(addToCartTable)
       .values({ 
-        userId, 
+        userId, // 🔒 Forced
         variantId, 
         quantity 
       })
@@ -108,10 +129,17 @@ router.post("/", async (req, res) => {
 });
 
 // PUT /api/cart/:userId/:variantId — Update quantity
-router.put("/:userId/:variantId", async (req, res) => {
+router.put("/:userId/:variantId", requireAuth, async (req, res) => {
   try {
     const { userId, variantId } = req.params;
     const { quantity } = req.body;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 ACL Check
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user || user.id !== userId) return res.status(403).json({ error: "Forbidden" });
 
     await db
       .update(addToCartTable)
@@ -132,10 +160,17 @@ router.put("/:userId/:variantId", async (req, res) => {
   }
 });
 
-// DELETE /api/cart/:userId/:variantId — Remove one product
-router.delete("/:userId/:variantId", async (req, res) => {
+// DELETE /api/cart/:userId/:variantId
+router.delete("/:userId/:variantId", requireAuth, async (req, res) => {
   try {
     const { userId, variantId } = req.params;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 ACL Check
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user || user.id !== userId) return res.status(403).json({ error: "Forbidden" });
 
     await db
       .delete(addToCartTable)
@@ -155,10 +190,18 @@ router.delete("/:userId/:variantId", async (req, res) => {
   }
 });
 
-// DELETE /api/cart/:userId — Clear all items
-router.delete("/:userId", async (req, res) => {
+// DELETE /api/cart/:userId — Clear Cart
+router.delete("/:userId", requireAuth, async (req, res) => {
   try {
     const { userId } = req.params;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 ACL Check
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user || user.id !== userId) return res.status(403).json({ error: "Forbidden" });
+
     await db.delete(addToCartTable).where(eq(addToCartTable.userId, userId));
     await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
     res.json({ success: true });
@@ -168,17 +211,23 @@ router.delete("/:userId", async (req, res) => {
   }
 });
 
-// POST /api/cart/merge — Merge guest cart with user
-router.post("/merge", async (req, res) => {
-  const { userId, guestCart } = req.body;
-
-  if (!userId || !Array.isArray(guestCart) || guestCart.length === 0) {
-    return res
-      .status(400)
-      .json({ error: "Invalid request body for cart merge" });
-  }
+// POST /api/cart/merge
+router.post("/merge", requireAuth, async (req, res) => {
+  const { guestCart } = req.body;
+  const requesterClerkId = req.auth.userId;
 
   try {
+    // 🔒 Security: Resolve User ID
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user) return res.status(401).json({ error: "User not found" });
+    const userId = user.id;
+
+    if (!Array.isArray(guestCart) || guestCart.length === 0) {
+      return res.status(400).json({ error: "Invalid request body" });
+    }
+
     await db.transaction(async (tx) => {
       const guestVariantIds = guestCart.map((item) => item.variantId);
       const existingCartItems = await tx
@@ -230,14 +279,21 @@ router.post("/merge", async (req, res) => {
 });
 
 /* =========================================================
-   🕒 SAVED FOR LATER ROUTES
+   🕒 SAVED FOR LATER ROUTES (Secured)
 ========================================================= */
 
 // GET /api/cart/saved-for-later/:userId
-// 🟢 FIXED: Added bundle lookup logic (same as Main Cart)
-router.get("/saved-for-later/:userId", async (req, res) => {
+router.get("/saved-for-later/:userId", requireAuth, async (req, res) => {
   try {
     const { userId } = req.params;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 ACL Check
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user || user.id !== userId) return res.status(403).json({ error: "Forbidden" });
+
     const savedItems = await db.query.savedForLaterTable.findMany({
       where: eq(savedForLaterTable.userId, userId),
       with: {
@@ -245,17 +301,11 @@ router.get("/saved-for-later/:userId", async (req, res) => {
       },
     });
 
-    // 🟢 Step 1: Enrich items with bundle contents if applicable
     const detailedSavedItems = await Promise.all(savedItems.map(async (item) => {
-        // Check if this variant is a bundle (has entries in productBundlesTable)
         const bundleContents = await db.query.productBundlesTable.findMany({
           where: eq(productBundlesTable.bundleVariantId, item.variantId),
           with: {
-            content: { 
-              with: {
-                product: true 
-              }
-            }
+            content: { with: { product: true } }
           }
         });
 
@@ -263,7 +313,6 @@ router.get("/saved-for-later/:userId", async (req, res) => {
           return {
             ...item,
             isBundle: true,
-            // 🟢 Flatten structure for easier frontend consumption
             contents: bundleContents.map(c => ({
               quantity: c.quantity,
               name: c.content.product.name,
@@ -271,15 +320,12 @@ router.get("/saved-for-later/:userId", async (req, res) => {
             }))
           };
         }
-        
         return { ...item, isBundle: false, contents: [] };
     }));
     
-    // 🟢 Step 2: Transform to match frontend expectations
     const formatted = detailedSavedItems.map(item => ({
       ...item,
-      product: item.variant.product, // Lift product up
-      // isBundle and contents are now included
+      product: item.variant.product, 
     }));
 
     res.json(formatted);
@@ -290,18 +336,25 @@ router.get("/saved-for-later/:userId", async (req, res) => {
 });
 
 // POST /api/cart/save-for-later
-router.post("/save-for-later", async (req, res) => {
-  const { userId, variantId, quantity } = req.body;
-  if (!userId || !variantId) return res.status(400).json({ error: "Missing fields" });
-
+router.post("/save-for-later", requireAuth, async (req, res) => {
   try {
+    const { variantId, quantity } = req.body;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 Security: Resolve User
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user) return res.status(401).json({ error: "User not found" });
+    const userId = user.id;
+
+    if (!variantId) return res.status(400).json({ error: "Missing variantId" });
+
     await db.transaction(async (tx) => {
-      // 1. Remove from Cart
       await tx.delete(addToCartTable).where(
         and(eq(addToCartTable.userId, userId), eq(addToCartTable.variantId, variantId))
       );
 
-      // 2. Check if THIS variant is already in Saved
       const existing = await tx.query.savedForLaterTable.findFirst({
         where: and(
           eq(savedForLaterTable.userId, userId),
@@ -309,7 +362,6 @@ router.post("/save-for-later", async (req, res) => {
         ),
       });
 
-      // 3. Insert or Update Saved
       if (existing) {
         await tx.update(savedForLaterTable)
           .set({ quantity: existing.quantity + (quantity || 1) })
@@ -332,23 +384,29 @@ router.post("/save-for-later", async (req, res) => {
 });
 
 // POST /api/cart/move-to-cart
-router.post("/move-to-cart", async (req, res) => {
-  const { userId, variantId, quantity } = req.body;
-  if (!userId || !variantId) return res.status(400).json({ error: "Missing fields" });
-
+router.post("/move-to-cart", requireAuth, async (req, res) => {
   try {
+    const { variantId, quantity } = req.body;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 Security: Resolve User
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user) return res.status(401).json({ error: "User not found" });
+    const userId = user.id;
+
+    if (!variantId) return res.status(400).json({ error: "Missing variantId" });
+
     await db.transaction(async (tx) => {
-      // 1. Remove from Saved
       await tx.delete(savedForLaterTable).where(
         and(eq(savedForLaterTable.userId, userId), eq(savedForLaterTable.variantId, variantId))
       );
 
-      // 2. Check if already in Cart
       const existing = await tx.query.addToCartTable.findFirst({
         where: and(eq(addToCartTable.userId, userId), eq(addToCartTable.variantId, variantId)),
       });
 
-      // 3. Insert or Update Cart
       if (existing) {
         await tx.update(addToCartTable)
           .set({ quantity: existing.quantity + (quantity || 1) })
@@ -371,9 +429,17 @@ router.post("/move-to-cart", async (req, res) => {
 });
 
 // DELETE /api/cart/saved-for-later/:userId/:variantId
-router.delete("/saved-for-later/:userId/:variantId", async (req, res) => {
+router.delete("/saved-for-later/:userId/:variantId", requireAuth, async (req, res) => {
   try {
     const { userId, variantId } = req.params;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 ACL Check
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user || user.id !== userId) return res.status(403).json({ error: "Forbidden" });
+
     await db.delete(savedForLaterTable).where(
       and(eq(savedForLaterTable.userId, userId), eq(savedForLaterTable.variantId, variantId))
     );
@@ -385,15 +451,20 @@ router.delete("/saved-for-later/:userId/:variantId", async (req, res) => {
 });
 
 /* =========================================================
-   💖 WISHLIST ROUTES
+   💖 WISHLIST ROUTES (Secured)
 ========================================================= */
 
 // GET /api/cart/wishlist/:userId
-router.get(
-  "/wishlist/:userId",
-  async (req, res) => {
+router.get("/wishlist/:userId", requireAuth, async (req, res) => {
     try {
       const { userId } = req.params;
+      const requesterClerkId = req.auth.userId;
+
+      // 🔒 ACL Check
+      const user = await db.query.usersTable.findFirst({
+          where: eq(usersTable.clerkId, requesterClerkId)
+      });
+      if (!user || user.id !== userId) return res.status(403).json({ error: "Forbidden" });
       
       const rawWishlistItems = await db.query.wishlistTable.findMany({
         where: eq(wishlistTable.userId, userId),
@@ -411,17 +482,14 @@ router.get(
         }
       });
 
-      // Transform and calculate counts
       const wishlistItems = rawWishlistItems.map(item => {
         const product = item.variant.product;
         const variant = item.variant;
 
-        // Calculate stats on the fly
         const soldCount = product.variants 
           ? product.variants.reduce((sum, v) => sum + (v.sold || 0), 0) 
           : 0;
         
-        // 🟢 Calculate Average Rating
         let avgRating = 0;
         if (product.reviews && product.reviews.length > 0) {
             const total = product.reviews.reduce((sum, r) => sum + r.rating, 0);
@@ -438,7 +506,7 @@ router.get(
             product: {
                 ...cleanProduct,
                 soldCount,
-                avgRating // 🟢 Attached here
+                avgRating 
             }
         };
       });
@@ -451,12 +519,20 @@ router.get(
   }
 );
 
-
 // POST /api/cart/wishlist
-router.post("/wishlist", async (req, res) => {
+router.post("/wishlist", requireAuth, async (req, res) => {
   try {
-    const { userId, productId, variantId } = req.body;
-    if (!userId || !productId || !variantId) {
+    const { productId, variantId } = req.body;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 Security: Resolve User
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user) return res.status(401).json({ error: "User not found" });
+    const userId = user.id;
+
+    if (!productId || !variantId) {
       return res.status(400).json({ error: "Missing required fields" });
     }
     const [newItem] = await db
@@ -475,11 +551,17 @@ router.post("/wishlist", async (req, res) => {
   }
 });
 
-
 // DELETE /api/cart/wishlist/:userId/:variantId
-router.delete("/wishlist/:userId/:variantId", async (req, res) => {
+router.delete("/wishlist/:userId/:variantId", requireAuth, async (req, res) => {
   try {
     const { userId, variantId } = req.params;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 ACL Check
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user || user.id !== userId) return res.status(403).json({ error: "Forbidden" });
 
     await db
       .delete(wishlistTable)
@@ -499,15 +581,20 @@ router.delete("/wishlist/:userId/:variantId", async (req, res) => {
   }
 });
 
-
 // POST /api/cart/wishlist/merge
-router.post("/wishlist/merge", async (req, res) => {
-  const { userId, guestWishlist } = req.body;
+router.post("/wishlist/merge", requireAuth, async (req, res) => {
+  const { guestWishlist } = req.body;
+  const requesterClerkId = req.auth.userId;
 
-  if (!userId || !Array.isArray(guestWishlist) || guestWishlist.length === 0) {
-    return res
-      .status(400)
-      .json({ error: "Invalid request body for wishlist merge" });
+  // 🔒 Security: Resolve User
+  const user = await db.query.usersTable.findFirst({
+      where: eq(usersTable.clerkId, requesterClerkId)
+  });
+  if (!user) return res.status(401).json({ error: "User not found" });
+  const userId = user.id;
+
+  if (!Array.isArray(guestWishlist) || guestWishlist.length === 0) {
+    return res.status(400).json({ error: "Invalid request body" });
   }
 
   try {
@@ -540,16 +627,22 @@ router.post("/wishlist/merge", async (req, res) => {
     res.json({ success: true, message: "Guest wishlist merged successfully." });
   } catch (error) {
     console.error("❌ Error merging wishlist:", error);
-    res
-      .status(500)
-      .json({ error: "Server error while merging wishlist." });
+    res.status(500).json({ error: "Server error while merging wishlist." });
   }
 });
 
 // DELETE /api/cart/wishlist/:userId
-router.delete("/wishlist/:userId", async (req, res) => {
+router.delete("/wishlist/:userId", requireAuth, async (req, res) => {
   try {
     const { userId } = req.params;
+    const requesterClerkId = req.auth.userId;
+
+    // 🔒 ACL Check
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user || user.id !== userId) return res.status(403).json({ error: "Forbidden" });
+
     await db.delete(wishlistTable).where(eq(wishlistTable.userId, userId));
     await invalidateMultiple([{ key: keys.makeWishlistKey(userId) }]);
     res.json({ success: true });
@@ -560,10 +653,10 @@ router.delete("/wishlist/:userId", async (req, res) => {
 });
 
 /* =========================================================
-   👑 ADMIN ROUTES
+   👑 ADMIN ROUTES (Secured)
 ========================================================= */
 
-router.get("/admin/abandoned", async (req, res) => {
+router.get("/admin/abandoned", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -599,7 +692,7 @@ router.get("/admin/abandoned", async (req, res) => {
   }
 });
 
-router.get("/admin/wishlist-stats", async (req, res) => {
+router.get("/admin/wishlist-stats", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const stats = await db
       .select({
@@ -630,10 +723,18 @@ router.get("/admin/wishlist-stats", async (req, res) => {
   }
 });
 
-router.post("/add-custom-bundle", async (req, res) => {
-  const { userId, templateVariantId, contentVariantIds } = req.body;
+router.post("/add-custom-bundle", requireAuth, async (req, res) => {
+  const { templateVariantId, contentVariantIds } = req.body;
+  const requesterClerkId = req.auth.userId;
 
-  if (!userId || !templateVariantId || !Array.isArray(contentVariantIds) || contentVariantIds.length !== 4) {
+  // 🔒 Security: Resolve User
+  const user = await db.query.usersTable.findFirst({
+      where: eq(usersTable.clerkId, requesterClerkId)
+  });
+  if (!user) return res.status(401).json({ error: "User not found" });
+  const userId = user.id;
+
+  if (!templateVariantId || !Array.isArray(contentVariantIds) || contentVariantIds.length !== 4) {
     return res.status(400).json({ error: "Invalid bundle data." });
   }
 

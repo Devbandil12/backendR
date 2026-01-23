@@ -1,10 +1,13 @@
-// file: routes/referral.js
+// ✅ file: routes/referral.js
 import express from "express";
 import fs from "fs";
 import path from "path";
 import { db } from "../configs/index.js";
 import { usersTable, referralsTable, walletTransactionsTable } from "../configs/schema.js"; 
 import { eq, desc, sql, and } from "drizzle-orm";
+
+// 🔒 SECURITY: Import Middleware
+import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -51,13 +54,17 @@ const generateReferralCode = (name) => {
   return `${cleanName}${random}`;
 };
 
-// 🟢 API: Get Current Offers
+/* ======================================================
+   🟢 GET CONFIG (Public/User)
+====================================================== */
 router.get("/config", (req, res) => {
   res.json(getRewards());
 });
 
-// 🟢 API: Update Offers (Admin Only)
-router.post("/config", (req, res) => {
+/* ======================================================
+   🔒 UPDATE CONFIG (Admin Only)
+====================================================== */
+router.post("/config", requireAuth, verifyAdmin, (req, res) => {
   const { refereeBonus, referrerBonus } = req.body;
   if (refereeBonus === undefined || referrerBonus === undefined) {
     return res.status(400).json({ error: "Invalid values" });
@@ -73,11 +80,28 @@ router.post("/config", (req, res) => {
 });
 
 
-// 🟢 GET: User's Referral Stats & Wallet History
-router.get("/stats/:userId", async (req, res) => {
+/* ======================================================
+   🔒 GET STATS (User & Admin)
+   - Checks ownership
+====================================================== */
+router.get("/stats/:userId", requireAuth, async (req, res) => {
   try {
     const { userId } = req.params;
+    const requesterClerkId = req.auth.userId;
+
     if (!userId || userId === 'undefined') return res.status(400).json({ error: "Invalid User ID" });
+
+    // 1. Resolve Requester
+    const requester = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true, role: true }
+    });
+    if (!requester) return res.status(401).json({ error: "Unauthorized" });
+
+    // 🔒 2. OWNERSHIP CHECK
+    if (userId !== requester.id && requester.role !== 'admin') {
+        return res.status(403).json({ error: "Forbidden" });
+    }
 
     const user = await db.query.usersTable.findFirst({
       where: eq(usersTable.id, userId),
@@ -138,16 +162,26 @@ router.get("/stats/:userId", async (req, res) => {
   }
 });
 
-// 🟢 POST: Apply Referral Code
-router.post("/apply", async (req, res) => {
+/* ======================================================
+   🔒 APPLY REFERRAL (User Only)
+   - Uses Token Identity
+====================================================== */
+router.post("/apply", requireAuth, async (req, res) => {
   try {
-    const { userId, code } = req.body;
-    const REWARDS = getRewards(); // Fetch latest config
+    const { code } = req.body;
+    const requesterClerkId = req.auth.userId; // 🟢 Secure Identity
+    const REWARDS = getRewards();
 
-    if (!userId || !code) return res.status(400).json({ error: "Missing data" });
+    if (!code) return res.status(400).json({ error: "Missing referral code" });
 
-    const currentUser = await db.query.usersTable.findFirst({ where: eq(usersTable.id, userId) });
+    // Resolve User
+    const currentUser = await db.query.usersTable.findFirst({ 
+        where: eq(usersTable.clerkId, requesterClerkId) 
+    });
     if (!currentUser) return res.status(404).json({ error: "User not found" });
+    
+    const userId = currentUser.id; // Use DB ID
+
     if (currentUser.referredBy) return res.status(400).json({ error: "You have already been referred." });
 
     const referrer = await db.query.usersTable.findFirst({ where: eq(usersTable.referralCode, code) });
@@ -187,8 +221,10 @@ router.post("/apply", async (req, res) => {
   }
 });
 
-// 🟢 GET: Admin All Referrals (With Referee Bonus Lookup)
-router.get("/admin/all", async (req, res) => {
+/* ======================================================
+   🔒 GET ALL REFERRALS (Admin Only)
+====================================================== */
+router.get("/admin/all", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const referrals = await db.query.referralsTable.findMany({
       with: {
@@ -198,8 +234,6 @@ router.get("/admin/all", async (req, res) => {
       orderBy: [desc(referralsTable.createdAt)],
     });
 
-    // 🟢 ENRICH DATA: Fetch what the Referee actually got
-    // We look for a 'referral_bonus' transaction for each referee
     const enrichedReferrals = await Promise.all(referrals.map(async (ref) => {
         let refereeBonus = 0;
         
@@ -215,7 +249,7 @@ router.get("/admin/all", async (req, res) => {
 
         return {
             ...ref,
-            refereeBonus // Add this field to the response
+            refereeBonus 
         };
     }));
 

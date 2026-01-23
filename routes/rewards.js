@@ -1,4 +1,4 @@
-// file: routes/rewards.js
+// ✅ file: routes/rewards.js
 import express from "express";
 import multer from "multer";
 import { createWorker } from "tesseract.js";
@@ -8,8 +8,11 @@ import { db } from "../configs/index.js";
 import { usersTable, walletTransactionsTable, rewardClaimsTable, reviewsTable } from "../configs/schema.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 
+// 🔒 SECURITY: Import Middleware
+import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
+
 const router = express.Router();
-const upload = multer({ dest: "uploads/" }); // Temp folder for images
+const upload = multer({ dest: "uploads/" }); 
 
 // ==========================================
 // ⚡ 1. DYNAMIC CONFIG SYSTEM
@@ -43,13 +46,17 @@ const saveRewardValues = (newValues) => {
   } catch (err) { return false; }
 };
 
-// API: Get Current Config
+/* ======================================================
+   🟢 GET CONFIG (Public)
+====================================================== */
 router.get("/config", (req, res) => {
   res.json(getRewardValues());
 });
 
-// API: Update Config
-router.post("/config", (req, res) => {
+/* ======================================================
+   🔒 UPDATE CONFIG (Admin Only)
+====================================================== */
+router.post("/config", requireAuth, verifyAdmin, (req, res) => {
   const { paparazzi, loyal_follower, reviewer, monthly_lottery } = req.body;
   if (!paparazzi || !loyal_follower || !reviewer || !monthly_lottery) {
     return res.status(400).json({ error: "Missing values" });
@@ -66,46 +73,67 @@ router.post("/config", (req, res) => {
   res.json({ success: true, config: newConfig });
 });
 
-// ==========================================
-// ⚡ 2. NEW: GET USER HISTORY (Crucial for UI)
-// ==========================================
-router.get("/my-history/:userId", async (req, res) => {
+/* ======================================================
+   🔒 GET USER HISTORY (Owner Only)
+====================================================== */
+router.get("/my-history/:userId", requireAuth, async (req, res) => {
     try {
-        const { userId } = req.params;
-        const claims = await db.query.rewardClaimsTable.findMany({
-            where: eq(rewardClaimsTable.userId, userId),
-            orderBy: [desc(rewardClaimsTable.createdAt)]
-        });
-        res.json({ success: true, data: claims });
+      const { userId } = req.params;
+      const requesterClerkId = req.auth.userId;
+
+      // 1. Resolve Requester
+      const requester = await db.query.usersTable.findFirst({
+          where: eq(usersTable.clerkId, requesterClerkId),
+          columns: { id: true, role: true }
+      });
+      if (!requester) return res.status(401).json({ error: "Unauthorized" });
+
+      // 🔒 2. OWNERSHIP CHECK
+      if (userId !== requester.id && requester.role !== 'admin') {
+          return res.status(403).json({ error: "Forbidden" });
+      }
+
+      const claims = await db.query.rewardClaimsTable.findMany({
+        where: eq(rewardClaimsTable.userId, userId),
+        orderBy: [desc(rewardClaimsTable.createdAt)]
+      });
+      res.json({ success: true, data: claims });
     } catch (error) {
-        console.error("History Fetch Error:", error);
-        res.status(500).json({ error: "Failed to fetch history" });
+      console.error("History Fetch Error:", error);
+      res.status(500).json({ error: "Failed to fetch history" });
     }
 });
 
-// ==========================================
-// ⚡ 3. MAIN CLAIM ROUTE (Advanced Logic)
-// ==========================================
-router.post("/claim", upload.single("proofImage"), async (req, res) => {
+/* ======================================================
+   🔒 CLAIM REWARD (User Only)
+   - Uses Token Identity
+====================================================== */
+router.post("/claim", requireAuth, upload.single("proofImage"), async (req, res) => {
   let tempFilePath = null;
   const REWARDS = getRewardValues(); 
 
   try {
-    const { userId, taskType, handle } = req.body;
+    const { taskType, handle } = req.body; // userId ignored from body
+    const requesterClerkId = req.auth.userId;
+    
     const file = req.file;
     tempFilePath = file ? file.path : null;
 
-    if (!userId || !taskType) return res.status(400).json({ error: "Missing required fields" });
+    if (!taskType) return res.status(400).json({ error: "Missing task type" });
+
+    // Resolve User
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    const userId = user.id;
 
     // A. DUPLICATE CHECK (Prevent Spam)
-    // Ensures user gets reward only one time per task type (unless rejected)
     if (taskType !== 'monthly_lottery') {
         const existing = await db.query.rewardClaimsTable.findFirst({
             where: and(
                 eq(rewardClaimsTable.userId, userId),
                 eq(rewardClaimsTable.taskType, taskType),
-                // If status is 'pending' or 'approved', block them.
-                // Only allow retry if 'rejected'.
                 sql`${rewardClaimsTable.status} != 'rejected'` 
             )
         });
@@ -113,7 +141,6 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
             return res.status(400).json({ error: "You have already completed or submitted this task!" });
         }
     } else {
-        // Lottery: Strict Once per 30 Days Check
         const recentEntry = await db.query.rewardClaimsTable.findFirst({
             where: and(
                 eq(rewardClaimsTable.userId, userId),
@@ -139,7 +166,6 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
             await worker.terminate();
             const lowerText = text.toLowerCase();
             
-            // Simple keyword matching to help Admin
             if (taskType === 'loyal_follower' && (lowerText.includes('following') || lowerText.includes('message'))) {
                 adminNote = "AI Confidence: High (Text 'Following' found)";
             } else if (taskType === 'paparazzi' && (lowerText.includes('view') || lowerText.includes('seen'))) {
@@ -155,9 +181,7 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
         const review = await db.query.reviewsTable.findFirst({
             where: and(
                 eq(reviewsTable.userId, userId), 
-                // Must have photos
                 sql`array_length(${reviewsTable.photoUrls}, 1) > 0`,
-                // [UPDATED] Must be a Verified Buyer
                 eq(reviewsTable.isVerifiedBuyer, true)
             ),
             orderBy: [desc(reviewsTable.createdAt)]
@@ -168,7 +192,6 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
             adminNote = `System Verified: Review ID ${review.id} (Verified Buyer)`;
             proofData = `Linked Review: ${review.id}`;
         } else {
-            // Updated error message to be specific
             return res.status(400).json({ error: "No Verified Buyer photo review found on your profile." });
         }
     } else if (taskType === 'monthly_lottery') {
@@ -184,7 +207,6 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
 
         // 2. Immediate Payout (Only if Auto-Approved)
         if (status === 'approved') {
-            const user = await tx.query.usersTable.findFirst({ where: eq(usersTable.id, userId) });
             await tx.update(usersTable)
                 .set({ walletBalance: (user.walletBalance || 0) + rewardAmount })
                 .where(eq(usersTable.id, userId));
@@ -213,8 +235,10 @@ router.post("/claim", upload.single("proofImage"), async (req, res) => {
 // ⚡ 4. ADMIN ROUTES
 // ==========================================
 
-// Get Pending Claims
-router.get("/admin/pending", async (req, res) => {
+/* ======================================================
+   🔒 GET PENDING CLAIMS (Admin Only)
+====================================================== */
+router.get("/admin/pending", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const pendingClaims = await db.query.rewardClaimsTable.findMany({
       where: eq(rewardClaimsTable.status, 'pending'),
@@ -229,8 +253,10 @@ router.get("/admin/pending", async (req, res) => {
   }
 });
 
-// Pick Lottery Winner
-router.post("/admin/pick-lottery-winner", async (req, res) => {
+/* ======================================================
+   🔒 PICK LOTTERY WINNER (Admin Only)
+====================================================== */
+router.post("/admin/pick-lottery-winner", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const entries = await db.query.rewardClaimsTable.findMany({
       where: and(
@@ -255,8 +281,10 @@ router.post("/admin/pick-lottery-winner", async (req, res) => {
   } catch (error) { res.status(500).json({ error: "Failed to pick winner" }); }
 });
 
-// Admin Decision (Approve/Reject)
-router.post("/admin/decide", async (req, res) => {
+/* ======================================================
+   🔒 ADMIN DECISION (Admin Only)
+====================================================== */
+router.post("/admin/decide", requireAuth, verifyAdmin, async (req, res) => {
     try {
         const { claimId, decision } = req.body;
         if(!['approve', 'reject'].includes(decision)) return res.status(400).json({error: "Invalid decision"});

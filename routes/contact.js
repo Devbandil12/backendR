@@ -1,24 +1,30 @@
+// ✅ file: routes/contact.js
 import express from "express";
 import { db } from "../configs/index.js";
 import { ticketsTable, ticketMessagesTable, usersTable } from "../configs/schema.js";
 import { eq, desc, asc, or } from "drizzle-orm"; 
-import nodemailer from "nodemailer"; // 👈 Required for sending emails
+import nodemailer from "nodemailer";
+
+// 🔒 SECURITY: Import Middleware
+import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// 1. Configure Email Transporter (Gmail)
+// 1. Configure Email Transporter
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
-    user: process.env.EMAIL_USER, // Your Gmail (e.g. devidauraofficial@gmail.com)
-    pass: process.env.EMAIL_PASS, // Your App Password
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
   },
 });
 
 const generateTicketId = () => `SUP-${Date.now()}`;
 
-// GET all tickets (For Admin)
-router.get("/", async (req, res) => {
+/* ======================================================
+   🔒 GET ALL TICKETS (Admin Only)
+====================================================== */
+router.get("/", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const tickets = await db.query.ticketsTable.findMany({
       with: {
@@ -34,15 +40,34 @@ router.get("/", async (req, res) => {
   }
 });
 
-// GET tickets by User Email
-router.get("/user/:email", async (req, res) => {
+/* ======================================================
+   🔒 GET USER TICKETS (Owner or Admin)
+   - Verifies the requester owns the email
+====================================================== */
+router.get("/user/:email", requireAuth, async (req, res) => {
   try {
     const { email } = req.params;
-    const user = await db.query.usersTable.findFirst({ where: eq(usersTable.email, email) });
+    const requesterClerkId = req.auth.userId;
+
+    // 1. Resolve Requester
+    const requester = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true, role: true, email: true }
+    });
+    if (!requester) return res.status(401).json({ error: "Unauthorized" });
+
+    // 🔒 2. OWNERSHIP CHECK
+    // Allow if Admin OR if the email param matches the requester's email
+    if (requester.email !== email && requester.role !== 'admin') {
+        return res.status(403).json({ error: "Forbidden: You can only view your own tickets." });
+    }
+
+    // 3. Logic to find tickets (by ID or Email)
+    const targetUser = await db.query.usersTable.findFirst({ where: eq(usersTable.email, email) });
 
     let searchCondition;
-    if (user) {
-        searchCondition = or(eq(ticketsTable.userId, user.id), eq(ticketsTable.guestEmail, email));
+    if (targetUser) {
+        searchCondition = or(eq(ticketsTable.userId, targetUser.id), eq(ticketsTable.guestEmail, email));
     } else {
         searchCondition = eq(ticketsTable.guestEmail, email);
     }
@@ -59,14 +84,21 @@ router.get("/user/:email", async (req, res) => {
   }
 });
 
-// POST Create New Ticket (Sends confirmation email)
+/* ======================================================
+   🟢 POST CREATE TICKET (Public)
+   - Allows guests to create tickets
+   - Ignores body.userId to prevent spoofing
+====================================================== */
 router.post("/", async (req, res) => {
-  const { userId, email, phone, name, subject, message } = req.body;
+  // 🔒 Security: Do not extract 'userId' from body. 
+  // We rely on email matching for history association.
+  const { email, phone, name, subject, message } = req.body;
+  
   try {
     // 1. Save Ticket to DB
     const [newTicket] = await db.insert(ticketsTable).values({
       id: generateTicketId(),
-      userId: userId || null,
+      userId: null, // Always null for public submission (safer)
       guestEmail: email,
       guestPhone: phone,
       subject: subject || "New Support Query",
@@ -89,7 +121,7 @@ router.post("/", async (req, res) => {
             text: `Hi ${name || 'there'},\n\nWe received your message regarding "${subject}".\nTicket ID: ${newTicket.id}\n\nWe will get back to you shortly.\n\n- Team Devid Aura`
         });
 
-        // Email to You (Admin)
+        // Email to Admin
         await transporter.sendMail({
             from: `"Devid Aura System" <${process.env.EMAIL_USER}>`,
             to: process.env.EMAIL_USER, 
@@ -107,13 +139,24 @@ router.post("/", async (req, res) => {
   }
 });
 
-// 🟢 POST Reply to Ticket (Sends notification on reply)
-router.post("/:ticketId/reply", async (req, res) => {
+/* ======================================================
+   🔒 POST REPLY (Authenticated)
+   - Enforces senderRole based on Token
+====================================================== */
+router.post("/:ticketId/reply", requireAuth, async (req, res) => {
   const { ticketId } = req.params;
-  const { message, senderRole } = req.body; 
+  const { message } = req.body; // Ignore senderRole from body
+  const requesterClerkId = req.auth.userId;
 
   try {
-    // 1. Fetch current ticket (to get user's email)
+    // 1. Identify Actor
+    const actor = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true, role: true, email: true }
+    });
+    if (!actor) return res.status(401).json({ error: "Unauthorized" });
+
+    // 2. Fetch Ticket
     const ticket = await db.query.ticketsTable.findFirst({
         where: eq(ticketsTable.id, ticketId)
     });
@@ -123,7 +166,19 @@ router.post("/:ticketId/reply", async (req, res) => {
         return res.status(400).json({ error: "This ticket is permanently closed." });
     }
 
-    // 2. Add Reply to DB
+    // 3. Determine Role & Validate Access
+    let senderRole = 'user';
+    if (actor.role === 'admin') {
+        senderRole = 'admin';
+    } else {
+        // If not admin, must be owner
+        const isOwner = (ticket.userId === actor.id) || (ticket.guestEmail === actor.email);
+        if (!isOwner) {
+            return res.status(403).json({ error: "Forbidden: Not your ticket" });
+        }
+    }
+
+    // 4. Add Reply
     const [newMessage] = await db.insert(ticketMessagesTable).values({
       ticketId,
       senderRole,
@@ -134,11 +189,9 @@ router.post("/:ticketId/reply", async (req, res) => {
       .set({ updatedAt: new Date() }) 
       .where(eq(ticketsTable.id, ticketId));
 
-    // 3. Send Notification Email
+    // 5. Send Notification
     try {
         const isUserReplying = senderRole === 'user';
-        
-        // LOGIC: If User replies -> Send to Admin. If Admin replies -> Send to User.
         const targetEmail = isUserReplying ? process.env.EMAIL_USER : ticket.guestEmail;
         
         const emailSubject = isUserReplying 
@@ -156,7 +209,6 @@ router.post("/:ticketId/reply", async (req, res) => {
                 subject: emailSubject,
                 text: emailBody
             });
-            console.log(`✅ Reply notification sent to ${targetEmail}`);
         }
     } catch (emailErr) {
         console.error("⚠️ Failed to send reply notification:", emailErr.message);
@@ -169,8 +221,10 @@ router.post("/:ticketId/reply", async (req, res) => {
   }
 });
 
-// PATCH Update Ticket Status
-router.patch("/:ticketId/status", async (req, res) => {
+/* ======================================================
+   🔒 PATCH STATUS (Admin Only)
+====================================================== */
+router.patch("/:ticketId/status", requireAuth, verifyAdmin, async (req, res) => {
   const { ticketId } = req.params;
   const { status } = req.body; 
 

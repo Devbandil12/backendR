@@ -8,7 +8,7 @@ import {
   orderItemsTable,
   productsTable,
   UserAddressTable,
-  activityLogsTable, 
+  activityLogsTable,
 } from "../configs/schema.js";
 import { eq, asc, desc, inArray, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -16,12 +16,15 @@ import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeAllUsersKey, makeFindByClerkIdKey, makeUserAddressesKey, makeUserOrdersKey } from "../cacheKeys.js";
 
+// 🔒 SECURITY: Import Middleware
+import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
+
 const router = express.Router();
 
 /* ======================================================
-   🟢 GET ALL ADMIN LOGS (Strictly for Admin Panel)
+   🔒 GET ALL ADMIN LOGS (Strictly for Admin Panel)
 ====================================================== */
-router.get("/admin/all-activity-logs", async (req, res) => {
+router.get("/admin/all-activity-logs", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const targetUserTable = alias(usersTable, "target_user");
 
@@ -33,7 +36,7 @@ router.get("/admin/all-activity-logs", async (req, res) => {
         createdAt: activityLogsTable.createdAt,
         performedBy: activityLogsTable.performedBy,
         metadata: activityLogsTable.metadata,
-        
+
         actorName: usersTable.name,
         actorEmail: usersTable.email,
         actorImage: usersTable.profileImage,
@@ -49,16 +52,16 @@ router.get("/admin/all-activity-logs", async (req, res) => {
       .limit(100);
 
     const formattedLogs = adminLogs.map(log => ({
-        ...log,
-        actor: {
-            name: log.actorName || 'Unknown Admin',
-            email: log.actorEmail,
-            profileImage: log.actorImage
-        },
-        target: {
-            name: log.targetName, 
-            email: log.targetEmail
-        }
+      ...log,
+      actor: {
+        name: log.actorName || 'Unknown Admin',
+        email: log.actorEmail,
+        profileImage: log.actorImage
+      },
+      target: {
+        name: log.targetName,
+        email: log.targetEmail
+      }
     }));
 
     res.json(formattedLogs);
@@ -69,9 +72,9 @@ router.get("/admin/all-activity-logs", async (req, res) => {
 });
 
 /* ======================================================
-   🟢 GET ALL USERS (Admin)
+   🔒 GET ALL USERS (Strictly Admin)
 ====================================================== */
-router.get("/", cache(makeAllUsersKey(), 3600), async (req, res) => {
+router.get("/", requireAuth, verifyAdmin, cache(makeAllUsersKey(), 3600), async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store'); // Prevent browser caching
 
@@ -90,15 +93,13 @@ router.get("/", cache(makeAllUsersKey(), 3600), async (req, res) => {
 });
 
 /* ======================================================
-   GET USER BY CLERK ID
+   🔒 GET CURRENT USER (Secure Replacement)
+   Replaces: /find-by-clerk-id (Vulnerable)
 ====================================================== */
-router.get(
-  "/find-by-clerk-id",
-  cache((req) => makeFindByClerkIdKey(req.query.clerkId), 300),
-  async (req, res) => {
+router.get("/me", requireAuth, async (req, res) => {
     try {
-      const { clerkId } = req.query;
-      if (!clerkId) return res.status(400).json({ error: "clerkId is required" });
+      // 🟢 TRUST THE TOKEN, NOT THE QUERY PARAM
+      const clerkId = req.auth.userId; 
 
       const user = await db.query.usersTable.findFirst({
         where: eq(usersTable.clerkId, clerkId),
@@ -113,18 +114,34 @@ router.get(
         gender: user.gender || null,
       });
     } catch (error) {
-      console.error("❌ Error fetching user by clerkId:", error);
+      console.error("❌ Error fetching user profile:", error);
       res.status(500).json({ error: "Internal Server Error" });
     }
-  }
-);
+});
+
+// Backward compatibility (optional, but secure it just in case)
+router.get("/find-by-clerk-id", requireAuth, async (req, res) => {
+    // Ignore req.query.clerkId -> Use req.auth.userId
+    const clerkId = req.auth.userId;
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, clerkId),
+    });
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.json(user);
+});
+
 
 /* ======================================================
-   🟢 CREATE USER
+   🟢 CREATE USER (Protected)
 ====================================================== */
-router.post("/", async (req, res) => {
+router.post("/", requireAuth, async (req, res) => {
   try {
     const { name, email, clerkId } = req.body;
+
+    // 🔒 Verify that the creator owns the Clerk ID
+    if (req.auth.userId !== clerkId) {
+        return res.status(403).json({ error: "Identity mismatch" });
+    }
 
     const existingUser = await db.query.usersTable.findFirst({
       where: or(eq(usersTable.clerkId, clerkId), eq(usersTable.email, email)),
@@ -134,7 +151,7 @@ router.post("/", async (req, res) => {
 
     const [newUser] = await db.insert(usersTable).values({ name, email, clerkId }).returning();
 
-    // Log account creation (Self-action, so userId is new user)
+    // Log account creation
     await db.insert(activityLogsTable).values({
       userId: newUser.id,
       action: 'ACCOUNT_CREATED',
@@ -155,68 +172,84 @@ router.post("/", async (req, res) => {
 });
 
 /* ======================================================
-   🟢 UPDATE USER (Logs to ACTOR)
+   🔒 UPDATE USER (Role Protected)
 ====================================================== */
-router.put("/:id", async (req, res) => {
-  const { id } = req.params; // Target User ID
+router.put("/:id", requireAuth, async (req, res) => {
+  const { id } = req.params; // Target DB User ID
+  const requesterClerkId = req.auth.userId; // Authenticated User
 
   try {
+    // 1. Fetch Requester Role
+    const requester = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true, role: true }
+    });
+
+    if (!requester) return res.status(401).json({ error: "Unauthorized" });
+
+    // 2. Fetch Target User
     const userToUpdate = await db.query.usersTable.findFirst({
-      columns: { 
-          clerkId: true, 
-          email: true,
-          role: true,
-          name: true 
-      },
       where: eq(usersTable.id, id),
     });
 
     if (!userToUpdate) return res.status(404).json({ message: "User not found" });
 
-    // Extract 'actorId' (Who is doing the update?)
-    const { profileImage, dob, gender, role, actorId, ...rest } = req.body;
+    // 3. Permission Check
+    const isAdmin = requester.role === 'admin';
+    const isSelf = requester.id === userToUpdate.id;
 
-    const [updatedUser] = await db
-      .update(usersTable)
-      .set({
+    if (!isAdmin && !isSelf) {
+        return res.status(403).json({ error: "Forbidden: You can only edit your own profile." });
+    }
+
+    // 4. Filter Fields (Sanitize Input)
+    const { 
+        profileImage, dob, gender, // Safe fields
+        role, walletBalance, referralCode, // 🔒 Restricted fields
+        actorId, // Ignored, we use requester info
+        ...rest 
+    } = req.body;
+
+    const cleanUpdates = {
         ...rest,
-        ...(role !== undefined && { role }), 
         ...(profileImage !== undefined && { profileImage }),
         ...(dob !== undefined && { dob: new Date(dob) }),
         ...(gender !== undefined && { gender }),
-      })
+    };
+
+    // Only Admin can update restricted fields
+    if (isAdmin) {
+        if (role !== undefined) cleanUpdates.role = role;
+        if (walletBalance !== undefined) cleanUpdates.walletBalance = walletBalance;
+        if (referralCode !== undefined) cleanUpdates.referralCode = referralCode;
+    }
+
+    const [updatedUser] = await db
+      .update(usersTable)
+      .set(cleanUpdates)
       .where(eq(usersTable.id, id))
       .returning();
 
-    // --- LOGGING LOGIC ---
+    // --- LOGGING ---
     const changes = [];
-    if (req.body.name && req.body.name !== userToUpdate.name) changes.push("Name");
-    if (req.body.phone && req.body.phone !== userToUpdate.phone) changes.push("Phone");
-    if (role && role !== userToUpdate.role) changes.push(`Role (${userToUpdate.role} → ${role})`);
+    if (cleanUpdates.name && cleanUpdates.name !== userToUpdate.name) changes.push("Name");
+    if (cleanUpdates.phone && cleanUpdates.phone !== userToUpdate.phone) changes.push("Phone");
+    if (isAdmin && role && role !== userToUpdate.role) changes.push(`Role (${userToUpdate.role} → ${role})`);
 
     if (changes.length > 0) {
-      const isRoleChange = changes.some(c => c.startsWith("Role"));
-      
-      const logUserId = actorId || id; 
-
       await db.insert(activityLogsTable).values({
-        userId: logUserId, 
+        userId: requester.id,
         targetId: id,
-        
-        action: isRoleChange ? 'ADMIN_UPDATE' : 'PROFILE_UPDATE', 
+        action: isAdmin && !isSelf ? 'ADMIN_UPDATE' : 'PROFILE_UPDATE',
         description: `Updated ${userToUpdate.email}: ${changes.join(', ')}`,
-        
-        performedBy: isRoleChange ? 'admin' : 'user', 
-        metadata: { 
-            changes,
-            targetUserId: id 
-        }
+        performedBy: isAdmin && !isSelf ? 'admin' : 'user',
+        metadata: { changes, targetUserId: id }
       });
     }
 
     await invalidateMultiple([
-      { key: makeAllUsersKey() }, 
-      { key: makeFindByClerkIdKey(userToUpdate.clerkId) }, 
+      { key: makeAllUsersKey() },
+      { key: makeFindByClerkIdKey(userToUpdate.clerkId) },
     ]);
 
     res.json(updatedUser);
@@ -227,18 +260,32 @@ router.put("/:id", async (req, res) => {
 });
 
 /* ======================================================
-   DELETE USER
+   🔒 DELETE USER (Admin or Self)
 ====================================================== */
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
+  const requesterClerkId = req.auth.userId;
 
   try {
+    const requester = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true, role: true }
+    });
+
     const userToDelete = await db.query.usersTable.findFirst({
-      columns: { clerkId: true },
+      columns: { clerkId: true, id: true },
       where: eq(usersTable.id, id),
     });
 
     if (!userToDelete) return res.status(404).json({ message: "User not found" });
+
+    // Authorization Check
+    const isAdmin = requester?.role === 'admin';
+    const isSelf = requester?.id === userToDelete.id;
+
+    if (!isAdmin && !isSelf) {
+        return res.status(403).json({ error: "Forbidden" });
+    }
 
     await db.delete(usersTable).where(eq(usersTable.id, id));
 
@@ -255,86 +302,108 @@ router.delete("/:id", async (req, res) => {
 });
 
 /* ======================================================
-   🟢 GET LOGS FOR SPECIFIC USER (Strictly My Actions)
-   - Only shows actions performed BY the user (userId = id).
-   - Removes actions performed ON the user by others (targetId = id).
-   - If User is Admin, shows their Admin actions too (Only Theirs).
+   🔒 GET LOGS (Owner Only)
 ====================================================== */
-router.get("/:id/logs", async (req, res) => {
-    try {
-      const { id } = req.params;
-      
-      const targetUserTable = alias(usersTable, "target_user");
+router.get("/:id/logs", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const requesterClerkId = req.auth.userId;
 
-      const logs = await db
-        .select({
-            id: activityLogsTable.id,
-            action: activityLogsTable.action,
-            description: activityLogsTable.description,
-            createdAt: activityLogsTable.createdAt,
-            performedBy: activityLogsTable.performedBy,
-            metadata: activityLogsTable.metadata,
-            
-            actorName: usersTable.name,
-            actorImage: usersTable.profileImage,
+    const requester = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true, role: true }
+    });
 
-            targetName: targetUserTable.name,
-        })
-        .from(activityLogsTable)
-        .leftJoin(usersTable, eq(activityLogsTable.userId, usersTable.id))
-        .leftJoin(targetUserTable, eq(activityLogsTable.targetId, targetUserTable.id))
-        .where(
-            eq(activityLogsTable.userId, id) // 🟢 STRICT FILTER: Only actions I performed
-        )
-        .orderBy(desc(activityLogsTable.createdAt))
-        .limit(50); 
+    // Only allow if requester is the user (id) or Admin
+    if (requester.id !== id && requester.role !== 'admin') {
+        return res.status(403).json({ error: "Forbidden" });
+    }
 
-      const formattedLogs = logs.map(log => ({
-          id: log.id,
-          type: 'security',
-          action: log.action,
-          description: log.description,
-          createdAt: log.createdAt,
-          performedBy: log.performedBy,
-          actor: { 
+    const targetUserTable = alias(usersTable, "target_user");
+
+    const logs = await db
+      .select({
+        id: activityLogsTable.id,
+        action: activityLogsTable.action,
+        description: activityLogsTable.description,
+        createdAt: activityLogsTable.createdAt,
+        performedBy: activityLogsTable.performedBy,
+        metadata: activityLogsTable.metadata,
+        
+        actorName: usersTable.name,
+        actorImage: usersTable.profileImage,
+
+        targetName: targetUserTable.name,
+      })
+      .from(activityLogsTable)
+      .leftJoin(usersTable, eq(activityLogsTable.userId, usersTable.id))
+      .leftJoin(targetUserTable, eq(activityLogsTable.targetId, targetUserTable.id))
+      .where(eq(activityLogsTable.userId, id))
+      .orderBy(desc(activityLogsTable.createdAt))
+      .limit(50); 
+
+    const formattedLogs = logs.map(log => ({
+        id: log.id,
+        type: 'security',
+        action: log.action,
+        description: log.description,
+        createdAt: log.createdAt,
+        performedBy: log.performedBy,
+        actor: { 
             name: log.actorName || 'You', 
             profileImage: log.actorImage 
-          },
-          target: { name: log.targetName }, // Useful if I (Admin) updated someone else
-          metadata: log.metadata
-      }));
+        },
+        target: { name: log.targetName },
+        metadata: log.metadata
+    }));
 
-      res.json(formattedLogs);
-    } catch (error) {
-      console.error("❌ Error fetching logs:", error);
-      res.status(500).json({ error: "Internal Server Error" });
-    }
+    res.json(formattedLogs);
+  } catch (error) {
+    console.error("❌ Error fetching logs:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
 });
 
 /* ======================================================
-   GET USER ADDRESSES & ORDERS (Unchanged)
+   🔒 GET ADDRESSES (Owner Only)
 ====================================================== */
-router.get(
-  "/:id/addresses",
-  cache((req) => makeUserAddressesKey(req.params.id), 300),
-  async (req, res) => {
+router.get("/:id/addresses", requireAuth, cache((req) => makeUserAddressesKey(req.params.id), 300), async (req, res) => {
     try {
       const { id } = req.params;
+      
+      // Basic Ownership Check
+      const requester = await db.query.usersTable.findFirst({
+          where: eq(usersTable.clerkId, req.auth.userId),
+          columns: { id: true, role: true }
+      });
+      if (requester.id !== id && requester.role !== 'admin') {
+          return res.status(403).json({ error: "Forbidden" });
+      }
+
       const addresses = await db.select().from(UserAddressTable).where(eq(UserAddressTable.userId, id));
       res.json(addresses);
     } catch (error) {
       console.error("❌ Error fetching user addresses:", error);
       res.status(500).json({ error: "Internal Server Error" });
     }
-  }
-);
+});
 
-router.get(
-  "/:userId/orders",
-  cache((req) => makeUserOrdersKey(req.params.userId), 300),
-  async (req, res) => {
+/* ======================================================
+   🔒 GET ORDERS (Owner Only)
+====================================================== */
+router.get("/:userId/orders", requireAuth, cache((req) => makeUserOrdersKey(req.params.userId), 300), async (req, res) => {
     try {
       const { userId } = req.params;
+
+      // Basic Ownership Check
+      const requester = await db.query.usersTable.findFirst({
+          where: eq(usersTable.clerkId, req.auth.userId),
+          columns: { id: true, role: true }
+      });
+      if (requester.id !== userId && requester.role !== 'admin') {
+          return res.status(403).json({ error: "Forbidden" });
+      }
+
       const orderQuery = await db.select({
           phone: ordersTable.phone,
           orderId: ordersTable.id,

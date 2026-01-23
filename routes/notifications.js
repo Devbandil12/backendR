@@ -1,3 +1,4 @@
+// ✅ file: routes/notifications.js
 import 'dotenv/config';
 import express from 'express';
 import { db } from '../configs/index.js';
@@ -5,6 +6,9 @@ import { notificationsTable, usersTable, UserAddressTable, addToCartTable, produ
 import { eq, and, sql, desc, inArray } from 'drizzle-orm';
 import webpush from 'web-push';
 import { Resend } from 'resend';
+
+// 🔒 SECURITY: Import Middleware
+import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -26,13 +30,26 @@ const getSender = () => {
 // 2. NOTIFICATION ROUTES (Standard)
 // ------------------------------------------------------------------
 
-router.get('/user/:userId', async (req, res) => {
+/* ======================================================
+   🔒 GET USER NOTIFICATIONS (Owner Only)
+====================================================== */
+router.get('/user/:userId', requireAuth, async (req, res) => {
   const { userId } = req.params;
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID is required' });
-  }
+  const requesterClerkId = req.auth.userId;
 
   try {
+    // 1. Resolve & Verify User
+    const requester = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true, role: true }
+    });
+    if (!requester) return res.status(401).json({ error: "Unauthorized" });
+
+    // 🔒 ACL: Only Owner or Admin
+    if (requester.id !== userId && requester.role !== 'admin') {
+        return res.status(403).json({ error: "Forbidden" });
+    }
+
     const userNotifications = await db.query.notificationsTable.findMany({
       where: eq(notificationsTable.userId, userId),
       orderBy: [desc(notificationsTable.createdAt)],
@@ -58,9 +75,20 @@ router.get('/user/:userId', async (req, res) => {
   }
 });
 
-router.put('/mark-read/user/:userId', async (req, res) => {
+/* ======================================================
+   🔒 MARK AS READ (Owner Only)
+====================================================== */
+router.put('/mark-read/user/:userId', requireAuth, async (req, res) => {
   const { userId } = req.params;
+  const requesterClerkId = req.auth.userId;
+
   try {
+    // 🔒 Security: Resolve User
+    const requester = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!requester || requester.id !== userId) return res.status(403).json({ error: "Forbidden" });
+
     await db.update(notificationsTable)
       .set({ isRead: true })
       .where(and(
@@ -74,9 +102,20 @@ router.put('/mark-read/user/:userId', async (req, res) => {
   }
 });
 
-router.delete('/user/:userId', async (req, res) => {
+/* ======================================================
+   🔒 CLEAR ALL (Owner Only)
+====================================================== */
+router.delete('/user/:userId', requireAuth, async (req, res) => {
   const { userId } = req.params;
+  const requesterClerkId = req.auth.userId;
+
   try {
+    // 🔒 Security: Resolve User
+    const requester = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!requester || requester.id !== userId) return res.status(403).json({ error: "Forbidden" });
+
     await db.delete(notificationsTable)
       .where(eq(notificationsTable.userId, userId));
     res.json({ success: true, message: "All notifications cleared." });
@@ -95,11 +134,23 @@ if (publicVapidKey && privateVapidKey) {
   } catch (err) { console.error("WebPush Error", err.message); }
 }
 
-router.post('/subscribe', async (req, res) => {
+/* ======================================================
+   🔒 SUBSCRIBE PUSH (Authenticated User)
+====================================================== */
+router.post('/subscribe', requireAuth, async (req, res) => {
   const subscription = req.body;
-  const { userId } = req.query;
-  if (!userId || !subscription) return res.status(400).json({ error: "Missing data" });
+  const requesterClerkId = req.auth.userId;
+
   try {
+    // 🔒 Security: Resolve User ID
+    const user = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId)
+    });
+    if (!user) return res.status(401).json({ error: "User not found" });
+    const userId = user.id;
+
+    if (!subscription) return res.status(400).json({ error: "Missing data" });
+
     await db.update(usersTable).set({ pushSubscription: subscription }).where(eq(usersTable.id, userId));
     res.status(201).json({ success: true });
   } catch (err) { res.status(500).json({ error: "Failed" }); }
@@ -112,10 +163,11 @@ export const sendPushNotification = async (subscriptionFromDb, payload) => {
 
 
 // ------------------------------------------------------------------
-// 3. EMAIL FUNCTIONS (Refined Logic & Original Design)
+// 3. EMAIL FUNCTIONS
 // ------------------------------------------------------------------
 
 export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderItems, paymentDetails = null) => {
+  // ... (Email logic remains unchanged as it is internal/utility)
   console.log(`📩 Generating Premium Email for: ${userEmail}`);
 
   if (!userEmail) return;
@@ -143,10 +195,9 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
     }
   } catch (err) { console.error("Address Error", err); }
 
-  // --- B. FINANCIAL CALCULATIONS (With Real Product Discount) ---
+  // --- B. FINANCIAL CALCULATIONS ---
   const formatMoney = (amount) => `₹${Number(amount).toLocaleString('en-IN')}`;
   
-  // 1. Fetch MRP (Original Price)
   let mrpTotal = 0;
   const variantIds = orderItems.map(i => i.variantId).filter(Boolean);
   
@@ -168,25 +219,11 @@ export const sendOrderConfirmationEmail = async (userEmail, orderDetails, orderI
     }
   }
 
-  // 2. Sold Total (Sum of item prices)
   const itemSoldTotal = orderItems.reduce((acc, item) => acc + (parseFloat(item.totalPrice) || 0), 0);
-
-  // 3. Product Savings
   const productSavings = Math.max(0, mrpTotal - itemSoldTotal);
-
-  // 4. Coupon Discount
   const couponDiscount = parseFloat(orderDetails.discountAmount) || 0;
-
-  // 5. Wallet Deduction (🟢 Added Fix)
   const walletUsed = parseFloat(orderDetails.walletAmountUsed) || 0;
-
-  // 6. Final Paid Amount
   const finalTotal = parseFloat(orderDetails.totalAmount) || 0;
-
-  // 7. Delivery (🟢 Corrected Logic)
-  // Logic: Final = Sold - Coupon - Wallet + Delivery
-  // Therefore: Delivery = Final - Sold + Coupon + Wallet
-  // We use Math.max(0, ...) to prevent floating point errors returning -0.01
   const calculatedDelivery = Math.max(0, finalTotal - itemSoldTotal + couponDiscount + walletUsed);
   const deliveryCharge = calculatedDelivery > 1 ? calculatedDelivery : 0;
 
@@ -238,7 +275,6 @@ const theme = {
   deliveryDate.setDate(deliveryDate.getDate() + 7);
   const deliveryString = deliveryDate.toLocaleDateString("en-IN", { weekday: 'short', day: 'numeric', month: 'short' });
 
-  // Payment Display (🟢 Updated for Wallet)
   let paymentDisplay = "Online Payment";
   if (orderDetails.paymentMode === 'cod') paymentDisplay = "Cash on Delivery";
   else if (orderDetails.paymentMode === 'wallet') paymentDisplay = "Wallet Balance";
@@ -534,7 +570,10 @@ export const executeRecoveryForUsers = async (userIds) => {
   return successCount;
 };
 
-router.post('/recover-abandoned', async (req, res) => {
+/* ======================================================
+   🔒 RECOVER ABANDONED (Admin Only)
+====================================================== */
+router.post('/recover-abandoned', requireAuth, verifyAdmin, async (req, res) => {
   const { userIds } = req.body;
   if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
     return res.status(400).json({ error: "No users provided" });
@@ -548,6 +587,7 @@ router.post('/recover-abandoned', async (req, res) => {
 });
 
 export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => {
+  // ... (Abandoned Cart Email HTML logic remains unchanged)
   console.log(`📩 Sending Abandoned Cart Email to: ${userEmail}`);
 
   if (!userEmail) return;
@@ -683,6 +723,7 @@ export const sendAbandonedCartEmail = async (userEmail, userName, cartItems) => 
 };
 
 export const sendPromotionalEmail = async (userEmail, userName, couponCode, description, discountValue, discountType) => {
+  // ... (Promo Email logic remains unchanged)
   console.log(`📩 Sending Promo Email to: ${userEmail}`);
   if (!userEmail) return;
 

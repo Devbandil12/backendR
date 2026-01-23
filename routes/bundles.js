@@ -1,17 +1,24 @@
-// routes/bundles.js
+// ✅ file: routes/bundles.js
 import express from "express";
 import { db } from "../configs/index.js";
-import { productBundlesTable, productVariantsTable, activityLogsTable } from "../configs/schema.js"; // 🟢 Added activityLogsTable
+import { 
+  productBundlesTable, 
+  productVariantsTable, 
+  activityLogsTable, 
+  usersTable // 🟢 Added for Actor Resolution
+} from "../configs/schema.js"; 
 import { and, eq } from "drizzle-orm";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeAllProductsKey, makeProductKey } from "../cacheKeys.js";
+
+// 🔒 SECURITY: Import Middleware
+import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
 /**
  * GET /api/bundles/:bundleVariantId
- * Get the contents of a specific bundle
- * (Unchanged)
+ * Get the contents of a specific bundle (Public for Storefront)
  */
 router.get("/:bundleVariantId", async (req, res) => {
   const { bundleVariantId } = req.params;
@@ -34,17 +41,25 @@ router.get("/:bundleVariantId", async (req, res) => {
 });
 
 /**
- * 🟢 POST /api/bundles (Modified for Logging)
+ * 🔒 POST /api/bundles (Admin Only)
  * Add an item to a bundle.
  */
-router.post("/", async (req, res) => {
-  const { bundleVariantId, contentVariantId, quantity, actorId } = req.body; // 🟢 Extract actorId
+router.post("/", requireAuth, verifyAdmin, async (req, res) => {
+  const requesterClerkId = req.auth.userId;
+  const { bundleVariantId, contentVariantId, quantity, actorId: ignored } = req.body; 
 
   if (!bundleVariantId || !contentVariantId || !quantity) {
     return res.status(400).json({ error: "bundleVariantId, contentVariantId, and quantity are required." });
   }
 
   try {
+    // 🟢 SECURE: Resolve Actor ID
+    const adminUser = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true }
+    });
+    const actorId = adminUser?.id;
+
     // 1. Fetch details for logging (Names are better than IDs)
     const [bundleVariant, contentVariant] = await Promise.all([
         db.query.productVariantsTable.findFirst({ where: eq(productVariantsTable.id, bundleVariantId) }),
@@ -94,14 +109,21 @@ router.post("/", async (req, res) => {
 });
 
 /**
- * 🟢 DELETE /api/bundles/:bundleEntryId (Modified for Logging)
+ * 🔒 DELETE /api/bundles/:bundleEntryId (Admin Only)
  * Remove a single entry (row) from the productBundlesTable
  */
-router.delete("/:bundleEntryId", async (req, res) => {
+router.delete("/:bundleEntryId", requireAuth, verifyAdmin, async (req, res) => {
   const { bundleEntryId } = req.params;
-  const { actorId } = req.body; // 🟢 Extract actorId
+  const requesterClerkId = req.auth.userId;
 
   try {
+    // 🟢 SECURE: Resolve Actor ID
+    const adminUser = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true }
+    });
+    const actorId = adminUser?.id;
+
     // 1. Fetch entry details BEFORE deletion to get names for the log
     const entryToDelete = await db.query.productBundlesTable.findFirst({
         where: eq(productBundlesTable.id, bundleEntryId),
