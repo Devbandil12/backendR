@@ -1,9 +1,8 @@
 // ✅ file: routes/referral.js
 import express from "express";
-import fs from "fs";
-import path from "path";
 import { db } from "../configs/index.js";
-import { usersTable, referralsTable, walletTransactionsTable } from "../configs/schema.js"; 
+// 🟢 Added rewardConfigTable for dynamic settings
+import { usersTable, referralsTable, walletTransactionsTable, rewardConfigTable } from "../configs/schema.js"; 
 import { eq, desc, sql, and } from "drizzle-orm";
 
 // 🔒 SECURITY: Import Middleware
@@ -12,38 +11,24 @@ import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
 const router = express.Router();
 
 // ==========================================
-// 🟢 1. DYNAMIC SETTINGS ENGINE
+// 🟢 1. DYNAMIC SETTINGS ENGINE (DB-Based)
 // ==========================================
-const CONFIG_FILE = path.resolve("referralConfig.json");
 
-// Default Config
-const DEFAULT_CONFIG = {
-  REFEREE_BONUS: 100, // Friend (Welcome)
-  REFERRER_BONUS: 150 // You (Reward)
-};
-
-// Helper: Read Config
-const getRewards = () => {
+// Helper: Get Config from DB
+const getReferralConfig = async () => {
   try {
-    if (!fs.existsSync(CONFIG_FILE)) {
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG));
-      return DEFAULT_CONFIG;
+    const config = await db.select().from(rewardConfigTable).limit(1);
+    if (config.length > 0) {
+      return {
+        REFEREE_BONUS: config[0].refereeBonus ?? 50, // Fallback if null
+        REFERRER_BONUS: config[0].referrerBonus ?? 50
+      };
     }
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    // Default values if table is empty
+    return { REFEREE_BONUS: 50, REFERRER_BONUS: 50 };
   } catch (err) {
-    console.error("Config Read Error:", err);
-    return DEFAULT_CONFIG;
-  }
-};
-
-// Helper: Write Config
-const saveRewards = (newConfig) => {
-  try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
-    return true;
-  } catch (err) {
-    console.error("Config Write Error:", err);
-    return false;
+    console.error("Config DB Read Error:", err);
+    return { REFEREE_BONUS: 100, REFERRER_BONUS: 150 };
   }
 };
 
@@ -57,26 +42,56 @@ const generateReferralCode = (name) => {
 /* ======================================================
    🟢 GET CONFIG (Public/User)
 ====================================================== */
-router.get("/config", (req, res) => {
-  res.json(getRewards());
+router.get("/config", async (req, res) => {
+  try {
+    const config = await getReferralConfig();
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch config" });
+  }
 });
 
 /* ======================================================
    🔒 UPDATE CONFIG (Admin Only)
 ====================================================== */
-router.post("/config", requireAuth, verifyAdmin, (req, res) => {
+router.post("/config", requireAuth, verifyAdmin, async (req, res) => {
   const { refereeBonus, referrerBonus } = req.body;
+  
   if (refereeBonus === undefined || referrerBonus === undefined) {
     return res.status(400).json({ error: "Invalid values" });
   }
   
-  const newConfig = {
-    REFEREE_BONUS: parseInt(refereeBonus),
-    REFERRER_BONUS: parseInt(referrerBonus)
-  };
+  try {
+    const existing = await db.select().from(rewardConfigTable).limit(1);
+    
+    if (existing.length === 0) {
+        // Create first row if missing
+        await db.insert(rewardConfigTable).values({
+            refereeBonus: parseInt(refereeBonus),
+            referrerBonus: parseInt(referrerBonus)
+        });
+    } else {
+        // Update existing row
+        await db.update(rewardConfigTable)
+            .set({
+                refereeBonus: parseInt(refereeBonus),
+                referrerBonus: parseInt(referrerBonus),
+                updatedAt: new Date()
+            })
+            .where(eq(rewardConfigTable.id, existing[0].id));
+    }
 
-  saveRewards(newConfig);
-  res.json({ success: true, config: newConfig });
+    res.json({ 
+        success: true, 
+        config: { 
+            REFEREE_BONUS: parseInt(refereeBonus), 
+            REFERRER_BONUS: parseInt(referrerBonus) 
+        } 
+    });
+  } catch (error) {
+    console.error("Referral Config Save Error:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
 
@@ -170,7 +185,9 @@ router.post("/apply", requireAuth, async (req, res) => {
   try {
     const { code } = req.body;
     const requesterClerkId = req.auth.userId; // 🟢 Secure Identity
-    const REWARDS = getRewards();
+    
+    // 🟢 Fetch dynamic rewards from DB
+    const REWARDS = await getReferralConfig();
 
     if (!code) return res.status(400).json({ error: "Missing referral code" });
 

@@ -2,10 +2,11 @@
 import express from "express";
 import multer from "multer";
 import { createWorker } from "tesseract.js";
-import fs from 'fs';
-import path from 'path';
+import fs from 'fs'; // Kept for file cleanup only
+// import path from 'path'; // REMOVED (No longer needed for config)
 import { db } from "../configs/index.js";
-import { usersTable, walletTransactionsTable, rewardClaimsTable, reviewsTable } from "../configs/schema.js";
+// 🟢 Added rewardConfigTable
+import { usersTable, walletTransactionsTable, rewardClaimsTable, reviewsTable, rewardConfigTable } from "../configs/schema.js";
 import { eq, and, desc, sql } from "drizzle-orm";
 
 // 🔒 SECURITY: Import Middleware
@@ -15,62 +16,76 @@ const router = express.Router();
 const upload = multer({ dest: "uploads/" }); 
 
 // ==========================================
-// ⚡ 1. DYNAMIC CONFIG SYSTEM
+// ⚡ 1. DYNAMIC CONFIG SYSTEM (DB-Based)
 // ==========================================
-const CONFIG_FILE = path.resolve("rewardsConfig.json");
 
-// Default values
-const DEFAULT_REWARDS = {
-  paparazzi: 100,
-  loyal_follower: 50,
-  reviewer: 50,
-  monthly_lottery: 500
-};
-
-// Helper: Read Config
-const getRewardValues = () => {
+// Helper: Get Config from DB
+const getRewardValues = async () => {
   try {
-    if (!fs.existsSync(CONFIG_FILE)) {
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_REWARDS));
-      return DEFAULT_REWARDS;
+    const config = await db.select().from(rewardConfigTable).limit(1);
+    if (config.length > 0) {
+      return {
+        paparazzi: config[0].paparazzi ?? 20,
+        loyal_follower: config[0].loyal_follower ?? 20,
+        reviewer: config[0].reviewer ?? 10,
+        monthly_lottery: config[0].monthly_lottery ?? 100
+      };
     }
-    return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-  } catch (err) { return DEFAULT_REWARDS; }
-};
-
-// Helper: Save Config
-const saveRewardValues = (newValues) => {
-  try {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(newValues, null, 2));
-    return true;
-  } catch (err) { return false; }
+    return { paparazzi: 20, loyal_follower: 20, reviewer: 10, monthly_lottery: 100 }; // Defaults
+  } catch (err) {
+    console.error("Reward Config Read Error:", err);
+    return { paparazzi: 20, loyal_follower: 20, reviewer: 10, monthly_lottery: 100 };
+  }
 };
 
 /* ======================================================
    🟢 GET CONFIG (Public)
 ====================================================== */
-router.get("/config", (req, res) => {
-  res.json(getRewardValues());
+router.get("/config", async (req, res) => {
+  try {
+    const config = await getRewardValues();
+    res.json(config);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch config" });
+  }
 });
 
 /* ======================================================
    🔒 UPDATE CONFIG (Admin Only)
 ====================================================== */
-router.post("/config", requireAuth, verifyAdmin, (req, res) => {
+router.post("/config", requireAuth, verifyAdmin, async (req, res) => {
   const { paparazzi, loyal_follower, reviewer, monthly_lottery } = req.body;
   if (!paparazzi || !loyal_follower || !reviewer || !monthly_lottery) {
     return res.status(400).json({ error: "Missing values" });
   }
 
-  const newConfig = {
-    paparazzi: parseInt(paparazzi),
-    loyal_follower: parseInt(loyal_follower),
-    reviewer: parseInt(reviewer),
-    monthly_lottery: parseInt(monthly_lottery)
-  };
+  try {
+    const existing = await db.select().from(rewardConfigTable).limit(1);
+    
+    if (existing.length === 0) {
+        await db.insert(rewardConfigTable).values({
+            paparazzi: parseInt(paparazzi),
+            loyal_follower: parseInt(loyal_follower),
+            reviewer: parseInt(reviewer),
+            monthly_lottery: parseInt(monthly_lottery)
+        });
+    } else {
+        await db.update(rewardConfigTable)
+            .set({
+                paparazzi: parseInt(paparazzi),
+                loyal_follower: parseInt(loyal_follower),
+                reviewer: parseInt(reviewer),
+                monthly_lottery: parseInt(monthly_lottery),
+                updatedAt: new Date()
+            })
+            .where(eq(rewardConfigTable.id, existing[0].id));
+    }
 
-  saveRewardValues(newConfig);
-  res.json({ success: true, config: newConfig });
+    res.json({ success: true, config: req.body });
+  } catch (error) {
+    console.error("Reward Config Save Error:", error);
+    res.status(500).json({ error: "Database error" });
+  }
 });
 
 /* ======================================================
@@ -110,10 +125,12 @@ router.get("/my-history/:userId", requireAuth, async (req, res) => {
 ====================================================== */
 router.post("/claim", requireAuth, upload.single("proofImage"), async (req, res) => {
   let tempFilePath = null;
-  const REWARDS = getRewardValues(); 
-
+  
   try {
-    const { taskType, handle } = req.body; // userId ignored from body
+    // 🟢 Fetch dynamic rewards from DB
+    const REWARDS = await getRewardValues(); 
+
+    const { taskType, handle } = req.body; 
     const requesterClerkId = req.auth.userId;
     
     const file = req.file;

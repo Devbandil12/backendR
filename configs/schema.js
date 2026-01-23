@@ -95,6 +95,22 @@ export const rewardClaimsTable = pgTable('reward_claims', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
+export const rewardConfigTable = pgTable("reward_config", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  
+  // Referral Settings
+  refereeBonus: integer("referee_bonus").default(50), // Friend Gets
+  referrerBonus: integer("referrer_bonus").default(50), // You Get
+  
+  // Task Reward Settings
+  paparazzi: integer("paparazzi").default(20),
+  loyal_follower: integer("loyal_follower").default(20),
+  reviewer: integer("reviewer").default(10),
+  monthly_lottery: integer("monthly_lottery").default(100),
+  
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
 // --- PRODUCTS & VARIANTS ---
 export const productsTable = pgTable('products', {
   id: uuid('id').defaultRandom().primaryKey(),

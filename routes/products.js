@@ -9,7 +9,7 @@ import {
   orderItemsTable, 
   wishlistTable, 
   reviewsTable,
-  usersTable // 🟢 Added for Actor Resolution
+  usersTable 
 } from "../configs/schema.js"; 
 import { eq, inArray, notInArray, desc, sql, and, gt, ne } from "drizzle-orm";
 import { cache } from "../cacheMiddleware.js";
@@ -25,7 +25,6 @@ const router = express.Router();
 // 🧠 FRAGRANCE INTELLIGENCE ENGINE (Knowledge Base)
 // ------------------------------------------------------------------
 const SCENT_INTELLIGENCE = {
-  // --- OCCASIONS ---
   occasions: {
     "night": { 
       notes: ["vanilla", "amber", "musk", "oud", "rose", "patchouli", "sandalwood", "tobacco", "leather", "tonka", "cinnamon", "cardamom", "jasmine", "black orchid", "cocoa"],
@@ -44,8 +43,6 @@ const SCENT_INTELLIGENCE = {
       preferredFamilies: ["aquatic", "fruity", "floral", "fresh"]
     }
   },
-
-  // --- VIBES ---
   vibes: {
     "powerful": { 
       notes: ["oud", "leather", "tobacco", "black pepper", "cedarwood", "oakmoss", "patchouli", "dark musk", "civet", "birch"],
@@ -163,10 +160,7 @@ router.get("/:id", cache((req) => makeProductKey(req.params.id), 1800), async (r
    🔒 POST ADD PRODUCT (Admin Only)
 ====================================================== */
 router.post("/", requireAuth, verifyAdmin, async (req, res) => {
-  // 🟢 SECURE: Resolve Actor ID from Token
   const requesterClerkId = req.auth.userId;
-  
-  // Clean input
   const { variants, actorId: ignored, ...productData } = req.body; 
 
   if (!Array.isArray(variants) || variants.length === 0) {
@@ -174,7 +168,6 @@ router.post("/", requireAuth, verifyAdmin, async (req, res) => {
   }
 
   try {
-    // Resolve Admin DB ID
     const adminUser = await db.query.usersTable.findFirst({
         where: eq(usersTable.clerkId, requesterClerkId),
         columns: { id: true }
@@ -199,7 +192,6 @@ router.post("/", requireAuth, verifyAdmin, async (req, res) => {
 
       const insertedVariants = await tx.insert(productVariantsTable).values(variantsToInsert).returning();
 
-      // 🟢 LOG ACTIVITY
       if (actorId) {
         await tx.insert(activityLogsTable).values({
           userId: actorId, 
@@ -239,7 +231,6 @@ router.put("/:id", requireAuth, verifyAdmin, async (req, res) => {
   } = req.body;
 
   try {
-    // Resolve Admin DB ID
     const adminUser = await db.query.usersTable.findFirst({
         where: eq(usersTable.clerkId, requesterClerkId),
         columns: { id: true }
@@ -256,7 +247,6 @@ router.put("/:id", requireAuth, verifyAdmin, async (req, res) => {
 
     if (!updatedProduct) return res.status(404).json({ error: "Product not found." });
 
-    // 🟢 LOG CHANGES
     if (actorId && currentProduct) {
       const changes = [];
       if (productData.name && productData.name !== currentProduct.name) changes.push("Name");
@@ -286,7 +276,7 @@ router.put("/:id", requireAuth, verifyAdmin, async (req, res) => {
 });
 
 /* ======================================================
-   🔒 PUT ARCHIVE PRODUCT (Admin Only)
+   🔒 PUT ARCHIVE/UNARCHIVE (Admin Only)
 ====================================================== */
 router.put("/:id/archive", requireAuth, verifyAdmin, async (req, res) => {
   const { id } = req.params;
@@ -329,9 +319,6 @@ router.put("/:id/archive", requireAuth, verifyAdmin, async (req, res) => {
   }
 });
 
-/* ======================================================
-   🔒 PUT UNARCHIVE PRODUCT (Admin Only)
-====================================================== */
 router.put("/:id/unarchive", requireAuth, verifyAdmin, async (req, res) => {
   const { id } = req.params;
   const requesterClerkId = req.auth.userId;
@@ -395,14 +382,25 @@ router.post('/aura-match', async (req, res) => {
   const { occasion, vibe } = req.body;
 
   try {
-    // 1. Fetch Candidates
+    // 1. Fetch Candidates (Optimized Selection)
+    // ⚡ Optimization: Only fetch columns needed for scoring to reduce memory
     const candidates = await db.query.productsTable.findMany({
       where: and(
         eq(productsTable.isArchived, false),
         ne(productsTable.category, 'Template')
       ),
+      columns: {
+        id: true,
+        name: true,
+        description: true,
+        composition: true,
+        fragrance: true,
+        fragranceNotes: true,
+        imageurl: true
+      },
       with: {
         variants: {
+           columns: { id: true, size: true, oprice: true, discount: true, stock: true },
            where: and(
             eq(productVariantsTable.isArchived, false),
             gt(productVariantsTable.stock, 0)
@@ -500,37 +498,51 @@ router.post('/aura-match', async (req, res) => {
 });
 
 /* ======================================================
-   🟢 RECOMMENDATIONS (Public)
+   🟢 RECOMMENDATIONS (Public - SECURED)
+   - 🛡️ SECURITY FIX: Ignores req.body.userId
+   - Uses Auth Token to identify user strictly
 ====================================================== */
 router.post('/recommendations', async (req, res) => {
-  const { excludeIds, userId } = req.body;
+  const { excludeIds } = req.body; // 🔒 Removed 'userId' extraction from body
 
   try {
     // 1. SANITIZE INPUTS
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const safeExcludeIds = (excludeIds || []).filter(id => typeof id === 'string' && uuidRegex.test(id));
-    const safeUserId = (typeof userId === 'string' && uuidRegex.test(userId)) ? userId : null;
+    
+    // 2. SECURE IDENTITY RESOLUTION (From Token Only)
+    let safeDbUserId = null;
+    
+    // Check if Clerk middleware attached auth (User is logged in)
+    if (req.auth && req.auth.userId) {
+       const user = await db.query.usersTable.findFirst({
+           where: eq(usersTable.clerkId, req.auth.userId),
+           columns: { id: true }
+       });
+       if (user) safeDbUserId = user.id;
+    }
+    // If no token, safeDbUserId remains null (Guest Mode) - Secure!
 
-    // 2. AGGREGATE USER HISTORY
+    // 3. AGGREGATE USER HISTORY
     let sourceProductIds = new Set(safeExcludeIds);
 
-    if (safeUserId) {
+    if (safeDbUserId) {
       const recentOrders = await db.select({ productId: orderItemsTable.productId })
         .from(orderItemsTable)
         .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
-        .where(eq(ordersTable.userId, safeUserId))
+        .where(eq(ordersTable.userId, safeDbUserId))
         .orderBy(desc(ordersTable.createdAt))
-        .limit(10);
+        .limit(10); // ⚡ Limit history scan
       recentOrders.forEach(o => sourceProductIds.add(o.productId));
 
       const wishlist = await db.select({ productId: productVariantsTable.productId })
         .from(wishlistTable)
         .innerJoin(productVariantsTable, eq(wishlistTable.variantId, productVariantsTable.id))
-        .where(eq(wishlistTable.userId, safeUserId));
+        .where(eq(wishlistTable.userId, safeDbUserId));
       wishlist.forEach(w => sourceProductIds.add(w.productId));
     }
 
-    // 3. FETCH CANDIDATES
+    // 4. FETCH CANDIDATES
     let whereClause = and(
         eq(productsTable.isArchived, false),
         ne(productsTable.category, 'Template') 
@@ -567,7 +579,7 @@ router.post('/recommendations', async (req, res) => {
 
     if (candidates.length === 0) return res.json([]);
 
-    // 4. SCORE & RETURN
+    // 5. SCORE & RETURN
     const uniqueSourceIds = Array.from(sourceProductIds);
     const safeSourceIds = uniqueSourceIds.filter(id => uuidRegex.test(id));
 
@@ -608,4 +620,4 @@ router.post('/recommendations', async (req, res) => {
   }
 });
 
-export default router; 
+export default router;

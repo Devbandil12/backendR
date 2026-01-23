@@ -21,6 +21,36 @@ const transporter = nodemailer.createTransport({
 
 const generateTicketId = () => `SUP-${Date.now()}`;
 
+// 🛡️ SECURITY: Simple In-Memory Rate Limiter for Guest Tickets
+const rateLimitMap = new Map();
+const RATE_LIMIT_WINDOW = 60 * 60 * 1000; // 1 Hour
+const MAX_TICKETS_PER_IP = 3; // Max 3 tickets per hour per IP
+
+const checkRateLimit = (req, res, next) => {
+    const ip = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    const now = Date.now();
+    
+    if (!rateLimitMap.has(ip)) {
+        rateLimitMap.set(ip, []);
+    }
+
+    const timestamps = rateLimitMap.get(ip);
+    // Filter out old timestamps
+    const recentTimestamps = timestamps.filter(time => now - time < RATE_LIMIT_WINDOW);
+    
+    if (recentTimestamps.length >= MAX_TICKETS_PER_IP) {
+        return res.status(429).json({ error: "Too many tickets created. Please try again later." });
+    }
+
+    recentTimestamps.push(now);
+    rateLimitMap.set(ip, recentTimestamps);
+    
+    // Cleanup map periodically (optional optimization)
+    if (rateLimitMap.size > 1000) rateLimitMap.clear(); 
+
+    next();
+};
+
 /* ======================================================
    🔒 GET ALL TICKETS (Admin Only)
 ====================================================== */
@@ -57,7 +87,6 @@ router.get("/user/:email", requireAuth, async (req, res) => {
     if (!requester) return res.status(401).json({ error: "Unauthorized" });
 
     // 🔒 2. OWNERSHIP CHECK
-    // Allow if Admin OR if the email param matches the requester's email
     if (requester.email !== email && requester.role !== 'admin') {
         return res.status(403).json({ error: "Forbidden: You can only view your own tickets." });
     }
@@ -85,15 +114,18 @@ router.get("/user/:email", requireAuth, async (req, res) => {
 });
 
 /* ======================================================
-   🟢 POST CREATE TICKET (Public)
+   🟢 POST CREATE TICKET (Public - Rate Limited)
    - Allows guests to create tickets
    - Ignores body.userId to prevent spoofing
+   - 🛡️ Protected by checkRateLimit
 ====================================================== */
-router.post("/", async (req, res) => {
+router.post("/", checkRateLimit, async (req, res) => {
   // 🔒 Security: Do not extract 'userId' from body. 
   // We rely on email matching for history association.
   const { email, phone, name, subject, message } = req.body;
   
+  if (!email || !message) return res.status(400).json({ error: "Email and message are required" });
+
   try {
     // 1. Save Ticket to DB
     const [newTicket] = await db.insert(ticketsTable).values({

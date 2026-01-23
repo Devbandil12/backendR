@@ -15,6 +15,13 @@
       "when": 1768504748743,
       "tag": "0001_outgoing_vampiro",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1769186095001,
+      "tag": "0002_outstanding_talos",
+      "breakpoints": true
     }
   ]
 }
