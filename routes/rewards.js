@@ -271,31 +271,46 @@ router.get("/admin/pending", requireAuth, verifyAdmin, async (req, res) => {
 });
 
 /* ======================================================
-   🔒 PICK LOTTERY WINNER (Admin Only)
+   🔒 PICK LOTTERY WINNER (Admin Only) - SCALABLE
 ====================================================== */
 router.post("/admin/pick-lottery-winner", requireAuth, verifyAdmin, async (req, res) => {
   try {
-    const entries = await db.query.rewardClaimsTable.findMany({
-      where: and(
+    // ⚡ SCALABLE FIX: Use SQL 'ORDER BY RANDOM()' instead of loading all rows
+    const [winnerEntry] = await db
+      .select({
+        id: rewardClaimsTable.id,
+        proof: rewardClaimsTable.proof,
+        user: {
+          name: usersTable.name,
+          email: usersTable.email
+        }
+      })
+      .from(rewardClaimsTable)
+      // Join to get user details efficiently
+      .innerJoin(usersTable, eq(rewardClaimsTable.userId, usersTable.id))
+      .where(and(
         eq(rewardClaimsTable.taskType, 'monthly_lottery'),
         eq(rewardClaimsTable.status, 'pending')
-      ),
-      with: { user: { columns: { name: true, email: true } } }
-    });
+      ))
+      .orderBy(sql`RANDOM()`) // 🟢 This happens in DB, not RAM
+      .limit(1);
 
-    if (entries.length === 0) return res.status(400).json({ error: "No pending entries found." });
-
-    const winner = entries[Math.floor(Math.random() * entries.length)];
+    if (!winnerEntry) {
+        return res.status(400).json({ error: "No pending entries found." });
+    }
 
     res.json({
       message: "Winner Selected",
-      claimId: winner.id,
-      user: winner.user,
-      proof: winner.proof,
+      claimId: winnerEntry.id,
+      user: winnerEntry.user,
+      proof: winnerEntry.proof,
       instructions: "Verify user follows on Instagram before approving."
     });
 
-  } catch (error) { res.status(500).json({ error: "Failed to pick winner" }); }
+  } catch (error) { 
+      console.error("Pick Winner Error:", error);
+      res.status(500).json({ error: "Failed to pick winner" }); 
+  }
 });
 
 /* ======================================================
