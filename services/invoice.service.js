@@ -190,7 +190,7 @@ function drawTotals(doc, totals, startY) {
 }
 
 function drawFooter(doc) {
-  const bottomY = 780;
+  const bottomY = 770;
   doc.fontSize(8).fillColor('#9CA3AF');
   doc.text('Thank you for shopping with us!', 50, bottomY, { align: 'center', width: 495 });
   doc.text('This is a computer-generated invoice.', 50, bottomY + 12, { align: 'center', width: 495 });
