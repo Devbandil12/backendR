@@ -11,7 +11,8 @@ import {
   productBundlesTable,
   addToCartTable,
   usersTable,
-  walletTransactionsTable
+  walletTransactionsTable,
+  orderTimeline // 🟢 ADDED: Import Timeline
 } from '../configs/schema.js';
 import { eq, sql, and, inArray, gte } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -291,6 +292,16 @@ export const createOrder = async (req, res) => {
           progressStep: 1,
         }).returning();
 
+        // 🟢 ADD TIMELINE START
+        await tx.insert(orderTimeline).values({
+            orderId: orderId,
+            status: 'Order Placed',
+            title: 'Order Placed',
+            description: 'Order placed successfully using Wallet.',
+            timestamp: new Date()
+        });
+        // 🟢 ADD TIMELINE END
+
         // 2. Deduct from Wallet
         await tx.update(usersTable)
           .set({ walletBalance: sql`${usersTable.walletBalance} - ${walletDeduction}` })
@@ -384,6 +395,16 @@ export const createOrder = async (req, res) => {
             offerCodes: offerCodes,
             progressStep: 1,
           }).returning();
+
+          // 🟢 ADD TIMELINE START
+          await tx.insert(orderTimeline).values({
+            orderId: orderId,
+            status: 'Order Placed',
+            title: 'Order Placed',
+            description: 'Order placed successfully via Cash on Delivery.',
+            timestamp: new Date()
+          });
+          // 🟢 ADD TIMELINE END
 
           // If wallet was used, deduct it now
           if (walletDeduction > 0) {
@@ -598,6 +619,15 @@ export const verifyPayment = async (req, res) => {
           updatedAt: new Date(),
         }).where(eq(ordersTable.id, existingOrder.id)).returning();
 
+        // 🟢 ADD TIMELINE START
+        await tx.insert(orderTimeline).values({
+            orderId: existingOrder.id,
+            status: 'Order Placed',
+            title: 'Order Placed',
+            description: 'Payment verified and order placed successfully.',
+            timestamp: new Date()
+        });
+        // 🟢 ADD TIMELINE END
 
         // 🟢 B. DEDUCT WALLET BALANCE HERE (Online Flow)
         if (existingOrder.walletAmountUsed > 0) {

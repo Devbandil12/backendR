@@ -3,7 +3,7 @@
 
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
-import { ordersTable, usersTable, orderItemsTable } from '../configs/schema.js';
+import { ordersTable, usersTable, orderItemsTable, orderTimeline } from '../configs/schema.js'; // 🟢 ADDED orderTimeline
 import { eq, or } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
 import {
@@ -12,10 +12,7 @@ import {
   makeOrderKey,
 } from '../cacheKeys.js';
 import { createNotification } from '../helpers/notificationManager.js';
-import { processReferralCompletion } from './referralController.js'; // 🟢 IMPORT THIS
-
-// 🔴 REMOVED: Direct email imports
-// import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
+import { processReferralCompletion } from './referralController.js'; 
 
 // 🟢 ADDED: Import the Queue Producer
 import { addToEmailQueue } from '../services/emailQueue.js';
@@ -119,6 +116,16 @@ const razorpayWebhookHandler = async (req, res) => {
                                 updatedAt: now,
                             }).where(eq(ordersTable.id, existingOrder.id));
 
+                            // 🟢 ADD TIMELINE START
+                            await tx.insert(orderTimeline).values({
+                                orderId: existingOrder.id,
+                                status: 'Order Placed',
+                                title: 'Order Placed',
+                                description: 'Payment captured via Webhook. Order confirmed.',
+                                timestamp: new Date()
+                            });
+                            // 🟢 ADD TIMELINE END
+
                             const items = await tx.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, existingOrder.id));
                             const secureCartItems = items.map(i => ({ variantId: i.variantId, quantity: i.quantity, productId: i.productId }));
                             await reduceStock(secureCartItems, tx);
@@ -164,7 +171,6 @@ const razorpayWebhookHandler = async (req, res) => {
                 break;
 
             case 'payment.failed':
-                // ... (Existing payment failed logic - NO CHANGES NEEDED) ...
                 if (existingOrder.paymentStatus !== 'failed' && existingOrder.paymentStatus !== 'paid') {
                     await db.update(ordersTable).set({
                         paymentStatus: 'failed',
@@ -179,11 +185,8 @@ const razorpayWebhookHandler = async (req, res) => {
         }
     }
 
-    // ... (Existing Refund Logic - NO CHANGES NEEDED) ...
     if (isRefundEvent) {
-         // ... (Keep all your existing refund switch cases exactly as they are) ...
-         // Copy/paste the refund logic block from your previous file here
-         switch (event) {
+          switch (event) {
             case 'refund.created':
                 if (existingOrder.refund_status !== 'in_progress') {
                     await db.update(ordersTable).set({
@@ -197,7 +200,6 @@ const razorpayWebhookHandler = async (req, res) => {
                     cacheNeedsInvalidation = true;
                 }
                 break;
-            // ... include other refund cases ...
              case 'refund.speed_changed':
                 if (existingOrder.refund_speed !== entity.speed_processed) {
                     await db.update(ordersTable).set({
@@ -214,13 +216,26 @@ const razorpayWebhookHandler = async (req, res) => {
                 break;
             case 'refund.processed':
                 if (existingOrder.refund_status !== 'processed') {
-                    await db.update(ordersTable).set({
-                        refund_status: 'processed',
-                        refund_completed_at: safeDate(entity.processed_at),
-                        refund_speed: entity.speed_processed,
-                        paymentStatus: 'refunded',
-                        updatedAt: now,
-                    }).where(eq(ordersTable.id, existingOrder.id));
+                    await db.transaction(async (tx) => {
+                         await tx.update(ordersTable).set({
+                            refund_status: 'processed',
+                            refund_completed_at: safeDate(entity.processed_at),
+                            refund_speed: entity.speed_processed,
+                            paymentStatus: 'refunded',
+                            updatedAt: now,
+                        }).where(eq(ordersTable.id, existingOrder.id));
+
+                        // 🟢 ADD TIMELINE START
+                        await tx.insert(orderTimeline).values({
+                            orderId: existingOrder.id,
+                            status: 'Refunded',
+                            title: 'Refund Processed',
+                            description: `Refund of ₹${(entity.amount/100).toFixed(2)} processed successfully via Webhook.`,
+                            timestamp: new Date()
+                        });
+                        // 🟢 ADD TIMELINE END
+                    });
+                    
                     console.log(`✅ refund.processed → processed [${entity.id}]`);
                     cacheNeedsInvalidation = true;
                     const msg = getRefundMessage(entity.amount, entity.speed_processed);
@@ -229,10 +244,23 @@ const razorpayWebhookHandler = async (req, res) => {
                 break;
             case 'refund.failed':
                 if (existingOrder.refund_status !== 'failed') {
-                    await db.update(ordersTable).set({
-                        refund_status: 'failed',
-                        updatedAt: now,
-                    }).where(eq(ordersTable.id, existingOrder.id));
+                    await db.transaction(async (tx) => {
+                        await tx.update(ordersTable).set({
+                            refund_status: 'failed',
+                            updatedAt: now,
+                        }).where(eq(ordersTable.id, existingOrder.id));
+
+                        // 🟢 ADD TIMELINE START
+                        await tx.insert(orderTimeline).values({
+                            orderId: existingOrder.id,
+                            status: 'Refund Failed',
+                            title: 'Refund Failed',
+                            description: 'The refund attempt failed. Please contact support.',
+                            timestamp: new Date()
+                        });
+                        // 🟢 ADD TIMELINE END
+                    });
+                    
                     console.log(`❌ refund.failed → failed [${entity.id}]`);
                     cacheNeedsInvalidation = true;
                     await createNotification(existingOrder.userId, `Refund for order #${existingOrder.id} failed.`, '/myorder', 'order');

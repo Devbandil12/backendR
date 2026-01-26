@@ -1,6 +1,17 @@
 // file: configs/schema.js
 
-import { pgTable, serial, text, integer, uuid, varchar, PgSerial, timestamp, unique, boolean, index, jsonb, } from 'drizzle-orm/pg-core';
+import { 
+  pgTable, 
+  serial, 
+  text, 
+  integer, 
+  uuid, 
+  varchar, 
+  timestamp, 
+  boolean, 
+  index, 
+  jsonb
+} from 'drizzle-orm/pg-core';
 import { sql, relations } from 'drizzle-orm';
 
 const generateNumericId = () => {
@@ -97,17 +108,14 @@ export const rewardClaimsTable = pgTable('reward_claims', {
 
 export const rewardConfigTable = pgTable("reward_config", {
   id: uuid("id").defaultRandom().primaryKey(),
-  
   // Referral Settings
   refereeBonus: integer("referee_bonus").default(50), // Friend Gets
   referrerBonus: integer("referrer_bonus").default(50), // You Get
-  
   // Task Reward Settings
   paparazzi: integer("paparazzi").default(20),
   loyal_follower: integer("loyal_follower").default(20),
   reviewer: integer("reviewer").default(10),
   monthly_lottery: integer("monthly_lottery").default(100),
-  
   updatedAt: timestamp("updated_at").defaultNow(),
 });
 
@@ -202,6 +210,11 @@ export const ordersTable = pgTable('orders', {
   discountAmount: integer('discount_amount').default(0),
   offerDiscount: integer('offer_discount').default(0),
   offerCodes: jsonb('offer_codes'),
+  // Shipment Details
+  courierName: text("courier_name"),
+  trackingId: text("tracking_id"),
+  trackingUrl: text("tracking_url"),
+  expectedDeliveryDate: timestamp("expected_delivery_date", { withTimezone: true, mode: 'string' }),
 });
 
 export const orderItemsTable = pgTable('order_items', {
@@ -215,6 +228,20 @@ export const orderItemsTable = pgTable('order_items', {
   price: integer('price').notNull(),
   totalPrice: integer('total_price').notNull(),
   size: integer('size').notNull().default(0),
+});
+
+// Order Timeline Table
+export const orderTimeline = pgTable("order_timeline", {
+  id: uuid("id").defaultRandom().primaryKey().notNull(),
+  
+  orderId: text("order_id")
+    .notNull()
+    .references(() => ordersTable.id, { onDelete: "cascade" }), 
+
+  status: varchar("status", { length: 50 }).notNull(),
+  title: text("title").notNull(),
+  description: text("description"),
+  timestamp: timestamp("timestamp", { withTimezone: true, mode: 'string' }).defaultNow(),
 });
 
 // --- COUPONS, REVIEWS, TESTIMONIALS & NOTIFICATIONS ---
@@ -305,6 +332,16 @@ export const ticketsTable = pgTable("tickets", {
   priority: varchar("priority", { length: 20 }).default("medium"),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+// Ticket Messages Table
+
+export const ticketMessagesTable = pgTable("ticket_messages", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  ticketId: text("ticket_id").notNull().references(() => ticketsTable.id, { onDelete: "cascade" }),
+  senderRole: varchar("sender_role", { length: 20 }).notNull(),
+  message: text("message").notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
 export const bannersTable = pgTable('banners', {
@@ -411,7 +448,7 @@ export const referralsRelations = relations(referralsTable, ({ one }) => ({
   referrer: one(usersTable, {
     fields: [referralsTable.referrerId],
     references: [usersTable.id],
-    relationName: 'referrer_relation', 
+    relationName: 'referrer_relation',
   }),
   referee: one(usersTable, {
     fields: [referralsTable.refereeId],
@@ -507,6 +544,7 @@ export const ordersRelations = relations(ordersTable, ({ one, many }) => ({
     references: [UserAddressTable.id],
   }),
   orderItems: many(orderItemsTable),
+  timeline: many(orderTimeline),
 }));
 
 
@@ -522,6 +560,14 @@ export const orderItemsRelations = relations(orderItemsTable, ({ one }) => ({
   product: one(productsTable, {
     fields: [orderItemsTable.productId],
     references: [productsTable.id],
+  }),
+}));
+
+// Order Timeline Relations
+export const orderTimelineRelations = relations(orderTimeline, ({ one }) => ({
+  order: one(ordersTable, { // 🟢 Fixed: Changed 'orders' to 'ordersTable'
+    fields: [orderTimeline.orderId],
+    references: [ordersTable.id],
   }),
 }));
 
@@ -553,13 +599,6 @@ export const notificationsRelations = relations(notificationsTable, ({ one }) =>
 }));
 
 //  ---  TICKETS RELATIONS ---
-export const ticketMessagesTable = pgTable("ticket_messages", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  ticketId: text("ticket_id").notNull().references(() => ticketsTable.id, { onDelete: "cascade" }),
-  senderRole: varchar("sender_role", { length: 20 }).notNull(),
-  message: text("message").notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
-});
 
 export const ticketsRelations = relations(ticketsTable, ({ one, many }) => ({
   user: one(usersTable, {
@@ -590,4 +629,3 @@ export const activityLogsRelations = relations(activityLogsTable, ({ one }) => (
     relationName: "targetLogs"
   }),
 }));
-

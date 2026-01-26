@@ -10,9 +10,10 @@ import {
   productVariantsTable,
   usersTable,
   activityLogsTable, 
-  productBundlesTable 
+  productBundlesTable,
+  orderTimeline // 🟢 ADDED: Import Timeline Table
 } from "../configs/schema.js";
-import { eq, asc, sql, inArray } from "drizzle-orm";
+import { eq, asc, desc, sql, inArray } from "drizzle-orm"; // 🟢 ADDED: desc for sorting timeline
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import {
@@ -42,6 +43,20 @@ const razorpay = new Razorpay({
 const safeDate = (timestamp) => {
   if (!timestamp || isNaN(timestamp)) return null;
   return new Date(timestamp * 1000);
+};
+
+// 🟢 Helper: Default Timeline Messages
+const getDefaultMessageForStatus = (status, courier, trackingId) => {
+    switch(status) {
+        case 'Processing': return 'We have received your order and are getting it ready.';
+        case 'Packed': return 'Your order is packed and ready for handover to our delivery partner.';
+        case 'Shipped': return `Your order has been shipped via ${courier || 'our delivery partner'}. ${trackingId ? `Tracking ID: ${trackingId}` : ''}`;
+        case 'Out for Delivery': return 'Our delivery executive is out for delivery. Please keep your phone handy.';
+        case 'Delivered': return 'Package delivered successfully. Thank you for shopping with us!';
+        case 'Order Cancelled': return 'This order has been cancelled.';
+        case 'Returned': return 'Return request processed successfully.';
+        default: return `Order status updated to ${status}.`;
+    }
 };
 
 /* ======================================================
@@ -110,6 +125,10 @@ router.get("/:id", requireAuth, async (req, res) => {
               variant: true,
             },
           },
+          // 🟢 ADDED: Fetch Timeline
+          timeline: {
+            orderBy: (timeline, { desc }) => [desc(timeline.timestamp)],
+          }
         },
       });
 
@@ -152,6 +171,17 @@ router.get("/:id", requireAuth, async (req, res) => {
                 updatedAt: new Date(),
               }).where(eq(ordersTable.id, orderId));
 
+              // Insert Timeline Event for Refund
+              if (refund.status === 'processed') {
+                 await tx.insert(orderTimeline).values({
+                    orderId: order.id,
+                    status: 'Refunded',
+                    title: 'Refund Processed',
+                    description: `Refund of ₹${(refund.amount/100).toFixed(2)} completed successfully.`,
+                    timestamp: new Date()
+                 });
+              }
+
               await invalidateMultiple([
                 { key: makeOrderKey(order.id) },
                 { key: makeUserOrdersKey(order.userId) },
@@ -175,6 +205,7 @@ router.get("/:id", requireAuth, async (req, res) => {
         userName: order.user?.name,
         phone: order.user?.phone,
         shippingAddress: order.address,
+        timeline: order.timeline || [], // Pass timeline
         orderItems: order.orderItems?.map((item) => ({
           ...item.product,
           ...item.variant,
@@ -320,12 +351,6 @@ router.post("/get-my-orders", requireAuth, async (req, res) => {
 
       // Check Cache manually since we derived the key
       const cacheKey = makeUserOrdersKey(userId);
-      // (Optional: Implement manual cache check here if needed, or rely on Drizzle)
-      // For now, let's just run the query as your cache middleware wraps the route handler
-      // But since we are modifying the req.body, the cache key generator in route might fail if it relies on body.userId
-      // Note: The original route used `cache((req) => makeUserOrdersKey(req.body.userId))`
-      // Since we are inside the handler, we can't use the middleware wrapper easily without refactoring.
-      // Recommendation: For now, just fetch live data. Security > Stale Cache.
 
       const myOrders = await db.query.ordersTable.findMany({
         where: eq(ordersTable.userId, userId),
@@ -336,19 +361,40 @@ router.post("/get-my-orders", requireAuth, async (req, res) => {
               variant: true,
             },
           },
+          // 🟢 FIX: Fetch timeline for the list view too!
+          timeline: {
+            orderBy: (timeline, { desc }) => [desc(timeline.timestamp)],
+          }
         },
         orderBy: [asc(ordersTable.createdAt)],
       });
 
-      const formattedOrders = myOrders.map(order => ({
-        ...order,
-        orderItems: order.orderItems.map(item => ({
-          ...item,
-          productName: item.product?.name || 'N/A',
-          img: item.product?.imageurl?.[0] || '',
-          size: item.variant?.size || 'N/A',
-        }))
-      }));
+      const formattedOrders = myOrders.map(order => {
+        // 🟢 FIX: Apply Smart Timeline Logic to List View
+        let finalTimeline = order.timeline || [];
+        const hasPlacedEvent = finalTimeline.some(e => e.status === 'Order Placed');
+        
+        if (!hasPlacedEvent) {
+            finalTimeline.push({
+                status: 'Order Placed',
+                title: 'Order Placed',
+                description: 'Order placed successfully.',
+                timestamp: order.createdAt
+            });
+        }
+        finalTimeline.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+        return {
+            ...order,
+            timeline: finalTimeline, // 🟢 Return fixed timeline
+            orderItems: order.orderItems.map(item => ({
+            ...item,
+            productName: item.product?.name || 'N/A',
+            img: item.product?.imageurl?.[0] || '',
+            size: item.variant?.size || 'N/A',
+            }))
+        };
+      });
 
       res.json(formattedOrders);
     } catch (error) {
@@ -360,11 +406,20 @@ router.post("/get-my-orders", requireAuth, async (req, res) => {
 
 /* ======================================================
    🔒 PUT UPDATE STATUS (Admin Only)
+   🟢 UPDATED: Handles Logistics & Timeline
 ====================================================== */
 router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, actorId: ignored } = req.body; 
+    const { 
+        status, 
+        message, // Custom timeline message (optional)
+        courierName, 
+        trackingId, 
+        trackingUrl,
+        actorId: ignored 
+    } = req.body; 
+
     const requesterClerkId = req.auth.userId;
 
     if (!id || !status) return res.status(400).json({ error: "Order ID and status are required" });
@@ -382,20 +437,41 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
       .from(ordersTable)
       .where(eq(ordersTable.id, id));
 
+    if (!currentOrder) return res.status(404).json({ error: "Order not found" });
+
     const oldStatus = currentOrder?.status;
 
-    let newProgressStep = 1;
+    let newProgressStep = currentOrder.progressStep;
     if (status === "Processing") newProgressStep = 2;
     if (status === "Shipped") newProgressStep = 3;
     if (status === "Delivered") newProgressStep = 4;
+    if (status === "Order Cancelled") newProgressStep = 0;
 
+    // 1. Update Main Order Table (Status + Logistics)
     const [updatedOrder] = await db
       .update(ordersTable)
-      .set({ status: status, progressStep: newProgressStep })
+      .set({ 
+        status: status, 
+        progressStep: newProgressStep,
+        courierName: courierName || currentOrder.courierName,
+        trackingId: trackingId || currentOrder.trackingId,
+        trackingUrl: trackingUrl || currentOrder.trackingUrl,
+        updatedAt: new Date()
+      })
       .where(eq(ordersTable.id, id))
       .returning();
 
-    if (!updatedOrder) return res.status(404).json({ error: "Order not found" });
+    // 2. Insert into Timeline (The Permanent Record)
+    const timelineTitle = status; 
+    const timelineDesc = message || getDefaultMessageForStatus(status, courierName, trackingId);
+
+    await db.insert(orderTimeline).values({
+        orderId: id,
+        status: status,
+        title: timelineTitle,
+        description: timelineDesc,
+        timestamp: new Date()
+    });
 
     // 🟢 LOG ACTIVITY
     if (actorId && oldStatus !== status) {
@@ -418,13 +494,13 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
     }
 
     // Notification
-    let message = `Your order #${updatedOrder.id} is now ${status}.`;
-    if (status === 'Delivered') message = `Your order #${updatedOrder.id} has been delivered!`;
-    else if (status === 'Shipped') message = `Your order #${updatedOrder.id} has shipped.`;
+    let notifyMessage = `Your order #${updatedOrder.id} is now ${status}.`;
+    if (status === 'Delivered') notifyMessage = `Your order #${updatedOrder.id} has been delivered!`;
+    else if (status === 'Shipped') notifyMessage = `Your order #${updatedOrder.id} has shipped via ${courierName || 'our courier partner'}.`;
 
     await createNotification(
       updatedOrder.userId,
-      message,
+      notifyMessage,
       `/myorder`,
       'order'
     );
@@ -438,7 +514,7 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
 
     await invalidateMultiple(itemsToInvalidate);
 
-    res.status(200).json({ message: "Order status updated successfully", updatedOrder });
+    res.status(200).json({ message: "Order status & timeline updated successfully", updatedOrder });
   } catch (error) {
     console.error("❌ Error updating order status:", error);
     res.status(500).json({ error: "Internal Server Error" });
@@ -447,6 +523,7 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
 
 /* ======================================================
    🔒 PUT CANCEL ORDER (Admin Only)
+   🟢 UPDATED: Adds Timeline Entry
 ====================================================== */
 router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
   try {
@@ -496,6 +573,15 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
       paymentStatus: order.paymentMode === 'cod' ? 'cancelled' : 'refunded', 
       updatedAt: new Date()
     }).where(eq(ordersTable.id, id));
+
+    // 🟢 NEW: Add to Timeline
+    await db.insert(orderTimeline).values({
+        orderId: id,
+        status: 'Order Cancelled',
+        title: 'Order Cancelled',
+        description: 'Your order was cancelled by support.',
+        timestamp: new Date()
+    });
 
     // Logging
     if (actorId) {
@@ -586,6 +672,7 @@ router.get("/details/for-reports", requireAuth, verifyAdmin, cache(makeAdminOrde
 
 /* ======================================================
    🔒 BULK STATUS UPDATE (Admin Only)
+   🟢 UPDATED: Adds Timeline Entry for each order
 ====================================================== */
 router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
   try {
@@ -624,7 +711,18 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
       { key: makeAdminOrdersReportKey() }
     ];
 
+    const timelineValues = [];
+
     await Promise.all(updatedOrders.map(async (order) => {
+      // Prepare Timeline Data
+      timelineValues.push({
+        orderId: order.id,
+        status: status,
+        title: status,
+        description: getDefaultMessageForStatus(status),
+        timestamp: new Date()
+      });
+
       // Log
       if (actorId) {
         await db.insert(activityLogsTable).values({
@@ -660,6 +758,11 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
       itemsToInvalidate.push({ key: makeOrderKey(order.id) });
       itemsToInvalidate.push({ key: makeUserOrdersKey(order.userId) });
     }));
+
+    // 🟢 Bulk Insert Timeline
+    if (timelineValues.length > 0) {
+        await db.insert(orderTimeline).values(timelineValues);
+    }
 
     await invalidateMultiple(itemsToInvalidate);
 

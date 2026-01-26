@@ -10,6 +10,7 @@ import { SourceMapConsumer } from 'source-map'; // 👈 added
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url'; // 🟢 1. Import this
+import { errorHandler } from './middleware/errorHandler.js'; // 🟢 Import this
 
 // 🟢 2. Define __dirname manually
 const __filename = fileURLToPath(import.meta.url);
@@ -178,6 +179,8 @@ app.use('/api/cms', cmsRoutes);
 app.use("/api/referrals", referralRouter); // 🟢 THIS IS MISSING
 app.use("/api/rewards", rewardsRouter); // 🟢 THIS IS MISSING
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// ───── Global Error Handler (Must be after all routes) ─────
+app.use(errorHandler);
 
 // ───── Healthcheck & Root ─────
 app.get('/', (req, res) => res.send('🛠️ Payment API running'));
