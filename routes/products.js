@@ -276,6 +276,58 @@ router.put("/:id", requireAuth, verifyAdmin, async (req, res) => {
 });
 
 /* ======================================================
+   🔒 PUT BULK UPDATE VARIANTS (Admin Only)
+====================================================== */
+router.put("/variants/bulk", requireAuth, verifyAdmin, async (req, res) => {
+  const { updates } = req.body; // Expects [{ id, stock, oprice, discount }, ...]
+  const requesterClerkId = req.auth.userId;
+
+  if (!updates || !Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ error: "No updates provided." });
+  }
+
+  try {
+    const adminUser = await db.query.usersTable.findFirst({
+        where: eq(usersTable.clerkId, requesterClerkId),
+        columns: { id: true }
+    });
+    const actorId = adminUser?.id;
+
+    // Execute updates in a transaction for safety
+    await db.transaction(async (tx) => {
+      // 1. Perform Updates
+      for (const update of updates) {
+        const { id, ...fields } = update;
+        await tx.update(productVariantsTable)
+          .set(fields)
+          .where(eq(productVariantsTable.id, id));
+      }
+
+      // 2. Log Activity
+      if (actorId) {
+        await tx.insert(activityLogsTable).values({
+          userId: actorId,
+          action: 'PRODUCT_BULK_UPDATE',
+          description: `Bulk updated ${updates.length} variants (Stock/Price/Discount)`,
+          performedBy: 'admin',
+          metadata: { count: updates.length }
+        });
+      }
+    });
+
+    // 3. Invalidate Cache
+    await invalidateMultiple([
+      { key: makeAllProductsKey(), prefix: true }
+    ]);
+
+    res.json({ success: true, message: `Successfully updated ${updates.length} variants.` });
+  } catch (error) {
+    console.error("❌ Bulk Update Error:", error);
+    res.status(500).json({ error: "Server error during bulk update" });
+  }
+});
+
+/* ======================================================
    🔒 PUT ARCHIVE/UNARCHIVE (Admin Only)
 ====================================================== */
 router.put("/:id/archive", requireAuth, verifyAdmin, async (req, res) => {
