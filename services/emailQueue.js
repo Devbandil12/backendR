@@ -3,49 +3,48 @@ import Redis from "ioredis";
 import { redis as publisher, getRedisConfig } from '../configs/redis.js';
 import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
 
-// ✅ Change name to 'email_queue_v2' to ensure a clean start and avoid old keys
 const QUEUE_NAME = process.env.QUEUE_NAME || 'email_queue_v2'; 
 
 const config = getRedisConfig();
 
-// Worker connection (Polling doesn't strictly need maxRetries: null, but it's safe to keep)
 const workerClient = new Redis(config.url, {
     ...config.options,
     maxRetriesPerRequest: null 
 });
 
-workerClient.on("connect", () => console.log("👷 Email Worker: Connected to Redis"));
-workerClient.on("error", (err) => console.error("❌ Email Worker Connection Error:", err.message));
+// 🛠️ 1. Fix the Logging Spam
+workerClient.once("connect", () => console.log("👷 Email Worker: Connected to Redis"));
+workerClient.on("reconnecting", () => console.warn("🔄 Email Worker: Reconnecting to Redis... (Network drop detected)"));
+workerClient.on("error", (err) => console.error("❌ Email Worker Error:", err.message));
 
+// 🛠️ 2. Upgrade to a Recursive Blocking Pop (brpop)
 export const startEmailWorker = () => {
-  console.log(`🚜 Email Poller Started on '${QUEUE_NAME}' (Checking every 2s)...`);
-  
-  // 🔄 THE FIX: Polling Loop
-  // Check for new emails every 2000ms (2 seconds) instead of keeping a blocked connection
-  setInterval(processNextJob, 2000);
+  console.log(`🚜 Email Worker Started on '${QUEUE_NAME}' (Listening actively)...`);
+  processNextJob(); // Start the loop
 };
 
 const processNextJob = async () => {
   try {
-    // ⚡ 'rpop' is Non-Blocking. It asks "Do you have mail?" and returns immediately.
-    // This prevents Render/AWS from thinking the connection is "idle" and cutting it.
-    const result = await workerClient.rpop(QUEUE_NAME);
+    // ⚡ 'brpop' (Blocking Pop) tells Redis: "Hold this connection open for 5 seconds. 
+    // If a job arrives, give it to me instantly. If not, release and I'll ask again."
+    // This keeps the TCP connection actively alive, preventing the server from dropping it!
+    const result = await workerClient.brpop(QUEUE_NAME, 5);
     
     if (result) {
       console.log("📬 FOUND A JOB! Processing...");
-      const jobData = JSON.parse(result);
+      // result is an array: [queueName, value]
+      const jobString = result[1]; 
+      const jobData = JSON.parse(jobString);
       
       const { userEmail, orderDetails, orderItems, paymentDetails } = jobData;
 
       console.log(`📨 Processing Order #${orderDetails?.id || 'Unknown'}`);
 
-      // Run email tasks
       const results = await Promise.allSettled([
           sendOrderConfirmationEmail(userEmail, orderDetails, orderItems, paymentDetails),
           sendAdminOrderAlert(orderDetails, orderItems)
       ]);
 
-      // Log success/failure
       results.forEach((res, index) => {
         if (res.status === 'rejected') {
             console.error(`❌ Task ${index + 1} Failed:`, res.reason);
@@ -55,13 +54,24 @@ const processNextJob = async () => {
       });
     }
   } catch (error) {
-    console.error("⚠️ Worker Error:", error.message);
+    // Ignore harmless timeout errors from the blocking pop
+    if (error.message && !error.message.includes("Connection is closed")) {
+      console.error("⚠️ Worker Error:", error.message);
+    }
+  } finally {
+    // 🔄 Loop back around to listen again immediately
+    // We use setTimeout with 0ms to prevent Node.js Call Stack overflow
+    if (workerClient.status === "ready") {
+      setTimeout(processNextJob, 0);
+    } else {
+      // If disconnected, wait 2 seconds before trying to loop again
+      setTimeout(processNextJob, 2000);
+    }
   }
 };
 
 export const addToEmailQueue = async (data) => {
   try {
-    // Push to the new queue name
     await publisher.lpush(QUEUE_NAME, JSON.stringify(data));
     console.log(`✅ Email job added to ${QUEUE_NAME}`);
   } catch (error) {

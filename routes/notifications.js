@@ -398,7 +398,7 @@ const theme = {
                           </tr>` : ''}
 
                           <tr>
-                            <td style="padding: 5px 0; color: #666; font-size: 13px;">Delivery</td>
+                            <td style="padding: 5px 0; color: #666; font-size: 13px;">Shipping Charge</td>
                             <td style="padding: 5px 0; color: #111; font-size: 13px; text-align: right; font-weight: 600;">
                                 ${deliveryCharge === 0 ? '<span style="color: #2e7d32;">Free</span>' : formatMoney(deliveryCharge)}
                             </td>

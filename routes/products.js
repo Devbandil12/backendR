@@ -175,6 +175,7 @@ router.post("/", requireAuth, verifyAdmin, async (req, res) => {
     const actorId = adminUser?.id;
 
     const newProduct = await db.transaction(async (tx) => {
+      // 1. Create Product
       const [product] = await tx.insert(productsTable).values({
         name: productData.name,
         description: productData.description,
@@ -185,6 +186,8 @@ router.post("/", requireAuth, verifyAdmin, async (req, res) => {
         imageurl: productData.imageurl,
       }).returning();
 
+      // 2. Create Variants
+      // Supports weight, length, breadth, height via spread
       const variantsToInsert = variants.map((variant) => ({
         ...variant,
         productId: product.id,
@@ -227,6 +230,8 @@ router.put("/:id", requireAuth, verifyAdmin, async (req, res) => {
   const {
     variants, oprice, discount, size, stock,
     costPrice, sold, sku, isArchived, actorId: ignored, 
+    // 🟢 EXCLUDE Variant Fields from Main Product Update
+    weight, length, breadth, height, 
     ...productData
   } = req.body;
 
@@ -256,7 +261,7 @@ router.put("/:id", requireAuth, verifyAdmin, async (req, res) => {
         await db.insert(activityLogsTable).values({
           userId: actorId,
           action: 'PRODUCT_UPDATE',
-          description: `Updated product ${updatedProduct.name}: ${changes.length > 0 ? changes.join(', ') : 'Variants updated'}`,
+          description: `Updated product ${updatedProduct.name}: ${changes.length > 0 ? changes.join(', ') : 'Details updated'}`,
           performedBy: 'admin',
           metadata: { productId: id, changes }
         });
@@ -277,9 +282,11 @@ router.put("/:id", requireAuth, verifyAdmin, async (req, res) => {
 
 /* ======================================================
    🔒 PUT BULK UPDATE VARIANTS (Admin Only)
+   🟢 UPDATED: Supports Logistics fields
 ====================================================== */
 router.put("/variants/bulk", requireAuth, verifyAdmin, async (req, res) => {
-  const { updates } = req.body; // Expects [{ id, stock, oprice, discount }, ...]
+  const { updates } = req.body; 
+  // Expects [{ id, stock, oprice, discount, weight, length, breadth, height }, ...]
   const requesterClerkId = req.auth.userId;
 
   if (!updates || !Array.isArray(updates) || updates.length === 0) {
@@ -308,7 +315,7 @@ router.put("/variants/bulk", requireAuth, verifyAdmin, async (req, res) => {
         await tx.insert(activityLogsTable).values({
           userId: actorId,
           action: 'PRODUCT_BULK_UPDATE',
-          description: `Bulk updated ${updates.length} variants (Stock/Price/Discount)`,
+          description: `Bulk updated ${updates.length} variants (Price/Stock/Logistics)`,
           performedBy: 'admin',
           metadata: { count: updates.length }
         });
@@ -435,7 +442,6 @@ router.post('/aura-match', async (req, res) => {
 
   try {
     // 1. Fetch Candidates (Optimized Selection)
-    // ⚡ Optimization: Only fetch columns needed for scoring to reduce memory
     const candidates = await db.query.productsTable.findMany({
       where: and(
         eq(productsTable.isArchived, false),
@@ -551,11 +557,9 @@ router.post('/aura-match', async (req, res) => {
 
 /* ======================================================
    🟢 RECOMMENDATIONS (Public - SECURED)
-   - 🛡️ SECURITY FIX: Ignores req.body.userId
-   - Uses Auth Token to identify user strictly
 ====================================================== */
 router.post('/recommendations', async (req, res) => {
-  const { excludeIds } = req.body; // 🔒 Removed 'userId' extraction from body
+  const { excludeIds } = req.body; 
 
   try {
     // 1. SANITIZE INPUTS
@@ -565,7 +569,6 @@ router.post('/recommendations', async (req, res) => {
     // 2. SECURE IDENTITY RESOLUTION (From Token Only)
     let safeDbUserId = null;
     
-    // Check if Clerk middleware attached auth (User is logged in)
     if (req.auth && req.auth.userId) {
        const user = await db.query.usersTable.findFirst({
            where: eq(usersTable.clerkId, req.auth.userId),
@@ -573,7 +576,6 @@ router.post('/recommendations', async (req, res) => {
        });
        if (user) safeDbUserId = user.id;
     }
-    // If no token, safeDbUserId remains null (Guest Mode) - Secure!
 
     // 3. AGGREGATE USER HISTORY
     let sourceProductIds = new Set(safeExcludeIds);
@@ -584,7 +586,7 @@ router.post('/recommendations', async (req, res) => {
         .innerJoin(ordersTable, eq(orderItemsTable.orderId, ordersTable.id))
         .where(eq(ordersTable.userId, safeDbUserId))
         .orderBy(desc(ordersTable.createdAt))
-        .limit(10); // ⚡ Limit history scan
+        .limit(10); 
       recentOrders.forEach(o => sourceProductIds.add(o.productId));
 
       const wishlist = await db.select({ productId: productVariantsTable.productId })

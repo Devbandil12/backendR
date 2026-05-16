@@ -448,6 +448,9 @@ export const orders = pgTable("orders", {
 	offerDiscount: integer("offer_discount").default(0),
 	offerCodes: jsonb("offer_codes"),
 	walletAmountUsed: integer("wallet_amount_used").default(0),
+	shiprocketOrderId: text("shiprocket_order_id"),
+	shiprocketShipmentId: text("shiprocket_shipment_id"),
+	shiprocketAwb: text("shiprocket_awb"),
 }, (table) => [
 	foreignKey({
 			columns: [table.userId],

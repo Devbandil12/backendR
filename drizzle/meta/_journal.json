@@ -29,6 +29,27 @@
       "when": 1769361974949,
       "tag": "0003_fixed_aqueduct",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1769678507586,
+      "tag": "0004_tense_black_bird",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1770059454556,
+      "tag": "0005_bright_captain_britain",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1776674014775,
+      "tag": "0006_moaning_rattler",
+      "breakpoints": true
     }
   ]
 }

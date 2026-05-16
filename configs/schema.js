@@ -10,7 +10,8 @@ import {
   timestamp, 
   boolean, 
   index, 
-  jsonb
+  jsonb,
+  real
 } from 'drizzle-orm/pg-core';
 import { sql, relations } from 'drizzle-orm';
 
@@ -145,6 +146,11 @@ export const productVariantsTable = pgTable('product_variants', {
   sold: integer('sold').default(0),
   isArchived: boolean('is_archived').default(false).notNull(),
   sku: varchar('sku', { length: 100 }).unique(),
+  weight: real('weight').default(0.5).notNull(), // Weight in Kg (e.g. 0.5)
+  length: real('length').default(10), // cm
+  breadth: real('breadth').default(10), // cm
+  height: real('height').default(10), // cm
+  is_active: boolean('is_active').default(true),
 });
 
 
@@ -210,11 +216,16 @@ export const ordersTable = pgTable('orders', {
   discountAmount: integer('discount_amount').default(0),
   offerDiscount: integer('offer_discount').default(0),
   offerCodes: jsonb('offer_codes'),
-  // Shipment Details
+  // Shipment Details (generic)
   courierName: text("courier_name"),
   trackingId: text("tracking_id"),
   trackingUrl: text("tracking_url"),
   expectedDeliveryDate: timestamp("expected_delivery_date", { withTimezone: true, mode: 'string' }),
+
+  // Shiprocket-specific identifiers
+  shiprocketOrderId: text('shiprocket_order_id'),
+  shiprocketShipmentId: text('shiprocket_shipment_id'),
+  shiprocketAwb: text('shiprocket_awb'),
 });
 
 export const orderItemsTable = pgTable('order_items', {

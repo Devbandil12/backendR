@@ -1,107 +1,118 @@
 // cacheMiddleware.js
 import { redis } from "./configs/redis.js";
+import crypto from "crypto";
+
+/**
+ * Utility: Generate an ETag hash for the response body
+ */
+const generateETag = (bodyString) => {
+  return `"${crypto.createHash("md5").update(bodyString).digest("hex")}"`;
+};
 
 /**
  * cache(keyOrFn, ttlSeconds, opts)
  * - keyOrFn: string or function(req) => string
  * - ttlSeconds: number
  * - opts.onlyStatus: array of statuses to cache (default [200])
+ * - opts.enableEtag: boolean (default true)
  */
 export function cache(keyOrFn, ttlSeconds = 60, opts = {}) {
-  const onlyStatus = opts.onlyStatus ?? [200];
+  const { onlyStatus = [200], enableEtag = true } = opts;
 
   return async (req, res, next) => {
     try {
-      // Only cache GET requests
       if (req.method !== "GET") return next();
 
-      // Bypass if client asked not to cache
+      // Bypass cache if requested by client
       if (
         req.headers["cache-control"]?.includes("no-cache") ||
         req.query?.noCache === "1" ||
         req.query?.nocache === "1"
       ) {
+        res.setHeader("X-Cache", "BYPASS");
         return next();
       }
 
-      // Compute key
+      // Compute dynamic key
       const key = typeof keyOrFn === "function" ? keyOrFn(req) : keyOrFn;
-      if (!key || typeof key !== "string" || key.trim() === "") {
-        console.warn("Cache middleware: empty key — skipping cache");
+      if (!key || typeof key !== "string" || !key.trim()) {
         return next();
       }
 
-      // Try read from cache
-      const cached = await redis.get(key);
-      if (cached) {
-        try {
+      // 🛡️ Circuit Breaker: Only try to read if Redis is connected
+      if (redis.status === "ready") {
+        const cached = await redis.get(key);
+        
+        if (cached) {
           const parsed = JSON.parse(cached);
-          // restore headers
+
+          // 🚀 ETag Optimization: If client already has this exact data, send 304 Not Modified
+          if (enableEtag && parsed.etag && req.headers["if-none-match"] === parsed.etag) {
+            res.setHeader("X-Cache", "HIT");
+            return res.status(304).end(); 
+          }
+
+          // Restore Headers
           if (parsed.headers) {
             Object.entries(parsed.headers).forEach(([k, v]) => {
-              // don't override content-length
               if (k.toLowerCase() !== "content-length") res.setHeader(k, v);
             });
           }
-          res.status(parsed.status || 200).json(parsed.body);
-          console.log(`✅ Cache hit: ${key}`);
-          return;
-        } catch (err) {
-          console.warn("Cache parse error — proceeding to origin:", err.message);
-          // fallthrough to origin
+
+          if (enableEtag && parsed.etag) res.setHeader("ETag", parsed.etag);
+          res.setHeader("X-Cache", "HIT");
+          
+          return res.status(parsed.status || 200).json(parsed.body);
         }
       }
 
-      // Wrap res.json (and res.send for safety) to cache result after origin responds
+      // Intercept Response for Cache Miss
       const originalJson = res.json.bind(res);
       const originalSend = res.send.bind(res);
 
-      let didRespond = false;
+      res.setHeader("X-Cache", "MISS");
 
       res.json = (body) => {
-        didRespond = true;
         try {
           const status = res.statusCode || 200;
-          if (onlyStatus.includes(status)) {
-            // gather headers we want to persist
+          
+          // 🛡️ Circuit Breaker: Only write if Redis is connected
+          if (onlyStatus.includes(status) && redis.status === "ready") {
             const headersToCache = {};
             ["content-type", "cache-control"].forEach((h) => {
               const v = res.getHeader(h);
               if (v !== undefined) headersToCache[h] = String(v);
             });
 
-            // compose payload
-            const payload = {
+            const bodyString = JSON.stringify(body);
+            let etag = null;
+
+            if (enableEtag) {
+              etag = generateETag(bodyString);
+              res.setHeader("ETag", etag);
+            }
+
+            const cachePayload = JSON.stringify({
               status,
               headers: headersToCache,
+              etag,
               body,
-            };
+            });
 
-            // safe stringify
-            let str;
-            try {
-              str = JSON.stringify(payload);
-            } catch (err) {
-              console.warn("Cache skip stringify failed:", err.message);
-              str = null;
-            }
-
-            if (str) {
-              // set but don't await (fire-and-forget)
-              redis.set(key, str, "EX", ttlSeconds).catch((e) =>
-                console.error("Cache set failed:", e && e.message ? e.message : e)
-              );
-            }
+            // Fire and forget (don't await)
+            redis.set(key, cachePayload, "EX", ttlSeconds).catch((e) =>
+              console.error(`[Cache] Set failed for ${key}:`, e.message)
+            );
           }
         } catch (err) {
-          console.error("Cache error while storing:", err.message);
+          console.error("[Cache] Intercept error:", err.message);
         }
         return originalJson(body);
       };
 
-      // For non-object sends, route through res.json when possible
+      // Safely route objects through res.json, ignore buffers/streams
       res.send = (body) => {
-        if (typeof body === "object" && body !== null) {
+        if (typeof body === "object" && body !== null && !Buffer.isBuffer(body)) {
           return res.json(body);
         }
         return originalSend(body);
@@ -109,61 +120,48 @@ export function cache(keyOrFn, ttlSeconds = 60, opts = {}) {
 
       next();
     } catch (err) {
-      console.error("Cache middleware unexpected error:", err && err.message ? err.message : err);
-      next();
+      console.error("[Cache] Middleware error:", err.message);
+      next(); // Always fail gracefully back to the database
     }
   };
 }
 
 /**
  * invalidateCache(key, prefix = false)
- * - if prefix === true: deletes keys that start with `key` using scanStream (safe).
- * - otherwise deletes exact key.
+ * Highly optimized, non-blocking cache invalidation.
  */
 export async function invalidateCache(key, prefix = false) {
+  if (!key || redis.status !== "ready") return;
+
   try {
-    if (!key) return;
+    const unlinkFn = typeof redis.unlink === "function" ? redis.unlink.bind(redis) : redis.del.bind(redis);
 
     if (!prefix) {
-      // ioredis supports UNLINK; if not available, DEL is fine
-      if (typeof redis.unlink === "function") {
-        await redis.unlink(key);
-      } else {
-        await redis.del(key);
+      await unlinkFn(key);
+      console.log(`♻️ [Cache] Invalidated (single): ${key}`);
+      return;
+    }
+
+    // 🚀 High-Performance Prefix Deletion using Native SCAN & UNLINK
+    let cursor = "0";
+    let totalDeleted = 0;
+
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, "MATCH", `${key}*`, "COUNT", 1000);
+      cursor = nextCursor;
+
+      if (keys.length > 0) {
+        const pipeline = redis.pipeline();
+        keys.forEach((k) => pipeline.unlink(k)); // UNLINK deletes in the background
+        await pipeline.exec();
+        totalDeleted += keys.length;
       }
-      console.log(`♻️ Cache invalidated (single): ${key}`);
-      return;
+    } while (cursor !== "0");
+
+    if (totalDeleted > 0) {
+      console.log(`♻️ [Cache] Invalidated (prefix): ${key}* (${totalDeleted} keys)`);
     }
-
-    // prefix invalidation — use scanStream to avoid blocking Redis
-    const pattern = `${key}*`;
-    const keysToDelete = [];
-
-    await new Promise((resolve, reject) => {
-      const stream = redis.scanStream({ match: pattern, count: 1000 });
-      stream.on("data", (resultKeys = []) => {
-        for (const k of resultKeys) keysToDelete.push(k);
-      });
-      stream.on("end", resolve);
-      stream.on("error", reject);
-    });
-
-    if (keysToDelete.length === 0) {
-      console.log(`♻️ Cache invalidation (prefix): no keys for prefix ${key}`);
-      return;
-    }
-
-    // delete in chunks using pipeline
-    const pipeline = redis.pipeline();
-    const CHUNK = 500;
-    for (let i = 0; i < keysToDelete.length; i += CHUNK) {
-      const slice = keysToDelete.slice(i, i + CHUNK);
-      slice.forEach((k) => pipeline.del(k));
-      // exec per chunk to keep pipeline size bounded
-      await pipeline.exec();
-    }
-    console.log(`♻️ Cache invalidated (prefix): ${key} -> ${keysToDelete.length} keys`);
   } catch (err) {
-    console.error("⚠️ Failed to invalidate cache:", err && err.message ? err.message : err);
+    console.error("⚠️ [Cache] Invalidation failed:", err.message);
   }
 }

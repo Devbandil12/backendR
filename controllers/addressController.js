@@ -545,6 +545,144 @@ export async function checkPincodeServiceability(req, res) {
   }
 }
 
+
+/* 🟢 NEW: BULK UPDATE PINCODES */
+export async function bulkUpdatePincodes(req, res) {
+  try {
+    const { pincodes, updates } = req.body; // updates = { deliveryCharge, isServiceable, codAvailable }
+    
+    if (!Array.isArray(pincodes) || pincodes.length === 0) {
+      return res.status(400).json({ success: false, msg: "No pincodes selected" });
+    }
+
+    // Filter only valid keys to allow partial updates
+    const validUpdates = {};
+    if (updates.deliveryCharge !== undefined && updates.deliveryCharge !== "") validUpdates.deliveryCharge = parseInt(updates.deliveryCharge);
+    if (updates.isServiceable !== undefined) validUpdates.isServiceable = updates.isServiceable;
+    if (updates.codAvailable !== undefined) validUpdates.codAvailable = updates.codAvailable;
+
+    if (Object.keys(validUpdates).length === 0) {
+      return res.status(400).json({ success: false, msg: "No valid updates provided" });
+    }
+
+    // Execute Bulk Update
+    await db.update(pincodeServiceabilityTable)
+      .set(validUpdates)
+      .where(inArray(pincodeServiceabilityTable.pincode, pincodes));
+
+    return res.json({ success: true, msg: `Updated ${pincodes.length} pincodes successfully` });
+  } catch (err) {
+    console.error("bulkUpdatePincodes error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+
+/* 🟢 NEW: BULK DELETE PINCODES */
+export async function bulkDeletePincodes(req, res) {
+  try {
+    const { pincodes } = req.body;
+    
+    if (!Array.isArray(pincodes) || pincodes.length === 0) {
+      return res.status(400).json({ success: false, msg: "No pincodes selected" });
+    }
+
+    // Execute Bulk Delete
+    await db.delete(pincodeServiceabilityTable)
+      .where(inArray(pincodeServiceabilityTable.pincode, pincodes));
+
+    return res.json({ success: true, msg: `Deleted ${pincodes.length} pincodes successfully` });
+  } catch (err) {
+    console.error("bulkDeletePincodes error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+
+/* 🟢 NEW: BULK UPDATE BY REGION (State or City) */
+/* 🟢 UPDATED: BULK UPDATE (Supports Region OR Global) */
+export async function bulkUpdateRegion(req, res) {
+  try {
+    const { state, city, updates, isGlobal } = req.body; 
+    
+    // Safety: Require State OR isGlobal flag
+    if (!isGlobal && !state) {
+      return res.status(400).json({ success: false, msg: "State is required for regional updates" });
+    }
+
+    const validUpdates = {};
+    if (updates.deliveryCharge !== undefined && updates.deliveryCharge !== "") 
+        validUpdates.deliveryCharge = parseInt(updates.deliveryCharge);
+    if (updates.isServiceable !== undefined) validUpdates.isServiceable = updates.isServiceable;
+    if (updates.codAvailable !== undefined) validUpdates.codAvailable = updates.codAvailable;
+
+    if (Object.keys(validUpdates).length === 0) {
+      return res.status(400).json({ success: false, msg: "No valid updates provided" });
+    }
+
+    // 🟢 LOGIC: Construct Query
+    let query = db.update(pincodeServiceabilityTable).set(validUpdates);
+
+    // Apply filters only if NOT global
+    if (!isGlobal) {
+        const whereClause = city 
+            ? and(
+                eq(pincodeServiceabilityTable.state, state),
+                eq(pincodeServiceabilityTable.city, city)
+              )
+            : eq(pincodeServiceabilityTable.state, state);
+        
+        query = query.where(whereClause);
+    }
+
+    const result = await query.returning({ pincode: pincodeServiceabilityTable.pincode });
+
+    const targetName = isGlobal ? "Entire Database" : (city ? `${city}, ${state}` : state);
+
+    return res.json({ 
+        success: true, 
+        msg: `Updated ${result.length} pincodes in ${targetName}` 
+    });
+
+  } catch (err) {
+    console.error("bulkUpdateRegion error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+
+/* 🟢 UPDATED: BULK DELETE (Supports Region OR Global) */
+export async function bulkDeleteRegion(req, res) {
+  try {
+    const { state, city, isGlobal } = req.body;
+
+    if (!isGlobal && !state) {
+      return res.status(400).json({ success: false, msg: "State is required" });
+    }
+
+    let query = db.delete(pincodeServiceabilityTable);
+
+    if (!isGlobal) {
+        const whereClause = city 
+            ? and(
+                eq(pincodeServiceabilityTable.state, state),
+                eq(pincodeServiceabilityTable.city, city)
+              )
+            : eq(pincodeServiceabilityTable.state, state);
+        query = query.where(whereClause);
+    }
+
+    const result = await query.returning({ pincode: pincodeServiceabilityTable.pincode });
+    const targetName = isGlobal ? "Entire Database" : (city ? `${city}, ${state}` : state);
+
+    return res.json({ 
+        success: true, 
+        msg: `Deleted ${result.length} pincodes from ${targetName}` 
+    });
+
+  } catch (err) {
+    console.error("bulkDeleteRegion error:", err);
+    return res.status(500).json({ success: false, msg: "Server error" });
+  }
+}
+
 export async function getPincodeDetails(pincode) {
   const defaults = { isServiceable: false, codAvailable: false, deliveryCharge: 100 };
   if (!pincode || !/^\d{6}$/.test(pincode)) return defaults;

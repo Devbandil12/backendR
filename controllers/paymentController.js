@@ -28,8 +28,115 @@ import { calculatePriceBreakdown } from '../helpers/priceEngine.js';
 import { createNotification } from '../helpers/notificationManager.js';
 import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
 import { addToEmailQueue } from '../services/emailQueue.js';
+import { createOrder as createShiprocketOrder } from '../services/shiprocket.service.js';
 
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
+
+export async function createShiprocketOrderForExistingOrder(orderId) {
+  try {
+    const order = await db.query.ordersTable.findFirst({
+      where: eq(ordersTable.id, orderId),
+      with: {
+        user: true,
+        address: true,
+        orderItems: {
+          with: {
+            variant: true, // 🟢 We need variant details for weight
+            product: true
+          }
+        }
+      }
+    });
+
+    if (!order) {
+      console.error(`❌ Order ${orderId} not found for Shiprocket sync.`);
+      return;
+    }
+
+    if (!order.address) {
+      console.error(`❌ Order ${orderId} has no address.`);
+      return;
+    }
+
+    // 🟢 DYNAMIC WEIGHT CALCULATION
+    let totalWeight = 0;
+    let maxLength = 10;
+    let maxBreadth = 10;
+    let maxHeight = 10;
+
+    const shiprocketItems = order.orderItems.map(item => {
+      const variant = item.variant;
+      
+      // Calculate weight for this line item
+      // Default to 0.5kg if missing
+      const itemWeight = variant?.weight ? parseFloat(variant.weight) : 0.5; 
+      totalWeight += (itemWeight * item.quantity);
+
+      // Determine Package Dimensions (Simple Logic: Max dimension of any item)
+      if (variant) {
+        if (variant.length > maxLength) maxLength = parseFloat(variant.length);
+        if (variant.breadth > maxBreadth) maxBreadth = parseFloat(variant.breadth);
+        if (variant.height > maxHeight) maxHeight = parseFloat(variant.height);
+      }
+
+      return {
+        name: item.product.name,
+        sku: variant?.sku || item.product.id,
+        units: item.quantity,
+        selling_price: item.price,
+        discount: 0,
+        tax: 0,
+      };
+    });
+
+    // Ensure minimum weight of 0.05kg to avoid API errors
+    if (totalWeight <= 0) totalWeight = 0.5;
+
+    const orderPayload = {
+      order_id: order.id,
+      order_date: new Date(order.createdAt).toISOString().split('T')[0], // YYYY-MM-DD
+      pickup_location: process.env.SHIPROCKET_PICKUP_LOCATION || 'Primary',
+      billing_customer_name: order.user.name || 'Guest',
+      billing_last_name: '',
+      billing_address: order.address.address,
+      billing_city: order.address.city,
+      billing_pincode: order.address.postalCode,
+      billing_state: order.address.state,
+      billing_country: 'India',
+      billing_email: order.user.email || 'noreply@example.com',
+      billing_phone: order.address.phone || order.user.phone,
+      shipping_is_billing: true,
+      order_items: shiprocketItems,
+      payment_method: order.paymentMode === 'cod' ? 'COD' : 'Prepaid',
+      sub_total: order.totalAmount, // Total value to collect/declare
+      length: maxLength,
+      breadth: maxBreadth,
+      height: maxHeight,
+      weight: parseFloat(totalWeight.toFixed(2)), // 🟢 Send calculated weight
+    };
+
+    console.log(`🚀 Creating Shiprocket Order for #${order.id} with Weight: ${totalWeight}kg`);
+
+    const srResponse = await createShiprocketOrder(orderPayload);
+
+    if (srResponse.order_id) {
+      await db.update(ordersTable)
+        .set({
+          shiprocketOrderId: String(srResponse.order_id),
+          shiprocketShipmentId: String(srResponse.shipment_id),
+          updatedAt: new Date()
+        })
+        .where(eq(ordersTable.id, orderId));
+      
+      console.log(`✅ Shiprocket Order Created: ${srResponse.order_id}`);
+    } else {
+      console.error("⚠️ Shiprocket Error:", srResponse);
+    }
+
+  } catch (error) {
+    console.error("❌ Failed to sync order to Shiprocket:", error);
+  }
+}
 
 const razorpay = new Razorpay({
   key_id: RAZORPAY_ID_KEY,
@@ -443,7 +550,6 @@ export const createOrder = async (req, res) => {
 
       const { insertedOrder, affectedProductIds } = transactionResult;
 
-
       // ⚡ FAST COD RESPONSE: Everything below runs in the background
 
       // 1. Notification (Background)
@@ -682,7 +788,6 @@ export const verifyPayment = async (req, res) => {
     }
 
     const { updatedOrder, affectedProductIds } = transactionResult;
-
 
     // ⚡ FAST ONLINE RESPONSE: Side effects run in background
 

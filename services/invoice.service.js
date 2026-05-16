@@ -163,7 +163,7 @@ function drawTotals(doc, totals, startY) {
   const lines = [
     { label: 'Subtotal', value: totals.subtotal },
     { label: 'Discount', value: totals.discount, isNegative: true },
-    { label: 'Delivery', value: totals.delivery },
+    { label: 'Shipping', value: totals.delivery },
     { label: 'Wallet Used', value: totals.walletUsed, isNegative: true }, // 🟢 Added this line
   ];
 

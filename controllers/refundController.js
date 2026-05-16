@@ -20,6 +20,7 @@ import {
     makeOrderKey,
 } from '../cacheKeys.js';
 import { createNotification } from '../helpers/notificationManager.js';
+import { cancelOrder as cancelShiprocketOrder } from '../services/shiprocket.service.js';
 
 // 🟢 Helper: Safely convert timestamp to Date object
 const safeDate = (timestamp) => {
@@ -53,7 +54,9 @@ export const refundOrder = async (req, res) => {
                 refundId: ordersTable.refund_id,
                 userId: ordersTable.userId,
                 paymentMode: ordersTable.paymentMode,
-                totalAmount: ordersTable.totalAmount
+                totalAmount: ordersTable.totalAmount,
+                shiprocketOrderId: ordersTable.shiprocketOrderId,
+                shiprocketShipmentId: ordersTable.shiprocketShipmentId,
             })
             .from(ordersTable)
             .where(eq(ordersTable.id, orderId));
@@ -139,6 +142,16 @@ export const refundOrder = async (req, res) => {
                     updatedAt: new Date(),
                 })
                 .where(eq(ordersTable.id, orderId));
+        }
+
+        // 🟢 Attempt Shiprocket cancellation (non-blocking, best-effort)
+        try {
+            const shipId = order.shiprocketShipmentId || order.shiprocketOrderId;
+            if (shipId) {
+                await cancelShiprocketOrder(shipId);
+            }
+        } catch (shipErr) {
+            console.error("Shiprocket cancel (user) warning:", shipErr.message);
         }
 
         const notifMessage = refund

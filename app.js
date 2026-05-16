@@ -40,6 +40,7 @@ import cmsRoutes from './routes/cms.js';
 import { startEmailWorker } from './services/emailQueue.js';
 import referralRouter from "./routes/referral.js";
 import rewardsRouter from "./routes/rewards.js";
+import shiprocketRoutes from "./routes/shiprocket.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -178,6 +179,7 @@ app.use('/api/promos', promoRoutes);
 app.use('/api/cms', cmsRoutes);
 app.use("/api/referrals", referralRouter); // 🟢 THIS IS MISSING
 app.use("/api/rewards", rewardsRouter); // 🟢 THIS IS MISSING
+app.use("/api/shipping/shiprocket", shiprocketRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // ───── Global Error Handler (Must be after all routes) ─────
 app.use(errorHandler);

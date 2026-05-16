@@ -9,11 +9,11 @@ import {
   productsTable,
   productVariantsTable,
   usersTable,
-  activityLogsTable, 
+  activityLogsTable,
   productBundlesTable,
-  orderTimeline // 🟢 ADDED: Import Timeline Table
+  orderTimeline
 } from "../configs/schema.js";
-import { eq, asc, desc, sql, inArray } from "drizzle-orm"; // 🟢 ADDED: desc for sorting timeline
+import { eq, asc, desc, sql, inArray } from "drizzle-orm";
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import {
@@ -27,13 +27,13 @@ import {
 import { createNotification } from '../helpers/notificationManager.js';
 import { generateInvoicePDF } from "../services/invoice.service.js";
 import { processReferralCompletion } from "../controllers/referralController.js";
+import { cancelOrder as cancelShiprocketOrder } from "../services/shiprocket.service.js";
 
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// Initialize Razorpay for Auto-Sync
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_ID_KEY,
   key_secret: process.env.RAZORPAY_SECRET_KEY,
@@ -45,18 +45,18 @@ const safeDate = (timestamp) => {
   return new Date(timestamp * 1000);
 };
 
-// 🟢 Helper: Default Timeline Messages
+// Helper: Default Timeline Messages
 const getDefaultMessageForStatus = (status, courier, trackingId) => {
-    switch(status) {
-        case 'Processing': return 'We have received your order and are getting it ready.';
-        case 'Packed': return 'Your order is packed and ready for handover to our delivery partner.';
-        case 'Shipped': return `Your order has been shipped via ${courier || 'our delivery partner'}. ${trackingId ? `Tracking ID: ${trackingId}` : ''}`;
-        case 'Out for Delivery': return 'Our delivery executive is out for delivery. Please keep your phone handy.';
-        case 'Delivered': return 'Package delivered successfully. Thank you for shopping with us!';
-        case 'Order Cancelled': return 'This order has been cancelled.';
-        case 'Returned': return 'Return request processed successfully.';
-        default: return `Order status updated to ${status}.`;
-    }
+  switch (status) {
+    case 'Processing': return 'We have received your order and are getting it ready.';
+    case 'Packed': return 'Your order is packed and ready for handover to our delivery partner.';
+    case 'Shipped': return `Your order has been shipped via ${courier || 'Shiprocket'}. ${trackingId ? `AWB: ${trackingId}` : ''}`;
+    case 'Out for Delivery': return 'Our delivery executive is out for delivery. Please keep your phone handy.';
+    case 'Delivered': return 'Package delivered successfully. Thank you for shopping with us!';
+    case 'Order Cancelled': return 'This order has been cancelled.';
+    case 'Returned': return 'Return request processed successfully.';
+    default: return `Order status updated to ${status}.`;
+  }
 };
 
 /* ======================================================
@@ -75,6 +75,8 @@ router.get("/", requireAuth, verifyAdmin, cache(makeAllOrdersKey(), 600), async 
         paymentMode: ordersTable.paymentMode,
         paymentStatus: ordersTable.paymentStatus,
         walletAmountUsed: ordersTable.walletAmountUsed,
+        shiprocketOrderId: ordersTable.shiprocketOrderId,
+        shiprocketAwb: ordersTable.shiprocketAwb,
       })
       .from(ordersTable)
       .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
@@ -89,144 +91,138 @@ router.get("/", requireAuth, verifyAdmin, cache(makeAllOrdersKey(), 600), async 
 
 /* ======================================================
    🔒 GET SINGLE ORDER (User & Admin)
-   - Checks ownership
 ====================================================== */
 router.get("/:id", requireAuth, async (req, res) => {
-    try {
-      const orderId = req.params.id;
-      const requesterClerkId = req.auth.userId;
+  try {
+    const orderId = req.params.id;
+    const requesterClerkId = req.auth.userId;
 
-      // 1. Resolve Requester
-      const requester = await db.query.usersTable.findFirst({
-          where: eq(usersTable.clerkId, requesterClerkId),
-          columns: { id: true, role: true }
-      });
-      if (!requester) return res.status(401).json({ error: "Unauthorized" });
+    const requester = await db.query.usersTable.findFirst({
+      where: eq(usersTable.clerkId, requesterClerkId),
+      columns: { id: true, role: true }
+    });
+    if (!requester) return res.status(401).json({ error: "Unauthorized" });
 
-      // 2. Fetch Order
-      let order = await db.query.ordersTable.findFirst({
-        where: eq(ordersTable.id, orderId),
-        with: {
-          user: { columns: { name: true, phone: true } },
-          address: {
-            columns: {
-              address: true,
-              landmark: true,
-              city: true,
-              state: true,
-              postalCode: true,
-              country: true,
-              phone: true,
-            },
+    let order = await db.query.ordersTable.findFirst({
+      where: eq(ordersTable.id, orderId),
+      with: {
+        user: { columns: { name: true, phone: true } },
+        address: {
+          columns: {
+            address: true,
+            landmark: true,
+            city: true,
+            state: true,
+            postalCode: true,
+            country: true,
+            phone: true,
           },
-          orderItems: {
-            with: {
-              product: true,
-              variant: true,
-            },
-          },
-          // 🟢 ADDED: Fetch Timeline
-          timeline: {
-            orderBy: (timeline, { desc }) => [desc(timeline.timestamp)],
-          }
         },
-      });
+        orderItems: {
+          with: {
+            product: true,
+            variant: true,
+          },
+        },
+        timeline: {
+          orderBy: (timeline, { desc }) => [desc(timeline.timestamp)],
+        }
+      },
+    });
 
-      if (!order) return res.status(404).json({ error: "Order not found" });
+    if (!order) return res.status(404).json({ error: "Order not found" });
 
-      // 🔒 3. OWNERSHIP CHECK
-      if (order.userId !== requester.id && requester.role !== 'admin') {
-          return res.status(403).json({ error: "Forbidden: You cannot view this order." });
-      }
+    if (order.userId !== requester.id && requester.role !== 'admin') {
+      return res.status(403).json({ error: "Forbidden: You cannot view this order." });
+    }
 
-      // 🟢 4. AUTO-SYNC LOGIC (Keep existing logic)
-      const isRefundActive = order.refund_id;
-      const isMissingData =
-        (order.refund_status !== 'processed' && order.refund_status !== 'failed') ||
-        (order.refund_status === 'processed' && !order.refund_completed_at);
+    // Auto-Sync Logic
+    const isRefundActive = order.refund_id;
+    const isMissingData =
+      (order.refund_status !== 'processed' && order.refund_status !== 'failed') ||
+      (order.refund_status === 'processed' && !order.refund_completed_at);
 
-      if (isRefundActive && isMissingData) {
-        try {
-          console.log(`🔄 Syncing refund status for ${order.refund_id}...`);
-          const refund = await razorpay.refunds.fetch(order.refund_id);
+    if (isRefundActive && isMissingData) {
+      try {
+        const refund = await razorpay.refunds.fetch(order.refund_id);
+        if (refund.status !== order.refund_status || (refund.status === 'processed' && !order.refund_completed_at)) {
+          let completedAt = refund.status === 'processed' ? (refund.processed_at ? safeDate(refund.processed_at) : new Date()) : null;
 
-          if (refund.status !== order.refund_status || (refund.status === 'processed' && !order.refund_completed_at)) {
-            let completedAt;
+          await db.transaction(async (tx) => {
+            await tx.update(ordersTable).set({
+              refund_status: refund.status,
+              refund_speed: refund.speed_processed || order.refund_speed,
+              refund_completed_at: completedAt,
+              paymentStatus: refund.status === 'processed' ? 'refunded' : order.paymentStatus,
+              updatedAt: new Date(),
+            }).where(eq(ordersTable.id, orderId));
+
             if (refund.status === 'processed') {
-              if (refund.processed_at) {
-                completedAt = safeDate(refund.processed_at);
-              } else {
-                completedAt = new Date();
-              }
-            } else {
-              completedAt = null;
+              await tx.insert(orderTimeline).values({
+                orderId: order.id,
+                status: 'Refunded',
+                title: 'Refund Processed',
+                description: `Refund of ₹${(refund.amount / 100).toFixed(2)} completed successfully.`,
+                timestamp: new Date()
+              });
             }
 
-            await db.transaction(async (tx) => {
-              await tx.update(ordersTable).set({
-                refund_status: refund.status,
-                refund_speed: refund.speed_processed || order.refund_speed,
-                refund_completed_at: completedAt, 
-                paymentStatus: refund.status === 'processed' ? 'refunded' : order.paymentStatus,
-                updatedAt: new Date(),
-              }).where(eq(ordersTable.id, orderId));
+            await invalidateMultiple([
+              { key: makeOrderKey(order.id) },
+              { key: makeUserOrdersKey(order.userId) },
+              { key: makeAllOrdersKey() },
+            ]);
+          });
 
-              // Insert Timeline Event for Refund
-              if (refund.status === 'processed') {
-                 await tx.insert(orderTimeline).values({
-                    orderId: order.id,
-                    status: 'Refunded',
-                    title: 'Refund Processed',
-                    description: `Refund of ₹${(refund.amount/100).toFixed(2)} completed successfully.`,
-                    timestamp: new Date()
-                 });
-              }
-
-              await invalidateMultiple([
-                { key: makeOrderKey(order.id) },
-                { key: makeUserOrdersKey(order.userId) },
-                { key: makeAllOrdersKey() },
-              ]);
-            });
-
-            order.refund_status = refund.status;
+          order.refund_status = refund.status;
             order.refund_speed = refund.speed_processed || order.refund_speed;
-            order.refund_completed_at = completedAt;
-            if (refund.status === 'processed') order.paymentStatus = 'refunded';
-          }
-        } catch (syncErr) {
-          console.warn("⚠️ Failed to sync with Razorpay:", syncErr.message);
+          order.refund_completed_at = completedAt;
+          if (refund.status === 'processed') order.paymentStatus = 'refunded';
         }
+      } catch (syncErr) {
+        console.warn("⚠️ Failed to sync with Razorpay:", syncErr.message);
       }
-
-      // 5. Format Response
-      const formattedOrder = {
-        ...order,
-        userName: order.user?.name,
-        phone: order.user?.phone,
-        shippingAddress: order.address,
-        timeline: order.timeline || [], // Pass timeline
-        orderItems: order.orderItems?.map((item) => ({
-          ...item.product,
-          ...item.variant,
-          productName: item.product.name,
-          variantName: item.variant.name,
-          quantity: item.quantity,
-          price: item.price,
-          img: item.product?.imageurl?.[0] || '',
-          size: item.variant?.size || 'N/A',
-        })),
-        user: undefined,
-        address: undefined,
-      };
-
-      res.json(formattedOrder);
-    } catch (error) {
-      console.error("❌ Error fetching order details:", error);
-      res.status(500).json({ error: "Internal Server Error" });
     }
+
+    // Prepare Timeline
+    let finalTimeline = [...(order.timeline || [])];
+    const hasPlacedEvent = finalTimeline.some(e => e.status === 'Order Placed');
+    if (!hasPlacedEvent) {
+      finalTimeline.push({
+        status: 'Order Placed',
+        title: 'Order Placed',
+        description: 'Order placed successfully.',
+        timestamp: order.createdAt
+      });
+    }
+    finalTimeline.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    const formattedOrder = {
+      ...order,
+      userName: order.user?.name,
+      phone: order.user?.phone,
+      shippingAddress: order.address,
+      timeline: finalTimeline,
+      orderItems: order.orderItems?.map((item) => ({
+        ...item.product,
+        ...item.variant,
+        productName: item.product.name,
+        variantName: item.variant.name,
+        quantity: item.quantity,
+        price: item.price,
+        img: item.product?.imageurl?.[0] || '',
+        size: item.variant?.size || 'N/A',
+      })),
+      user: undefined,
+      address: undefined,
+    };
+
+    res.json(formattedOrder);
+  } catch (error) {
+    console.error("❌ Error fetching order details:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
-);
+});
 
 /* ======================================================
    🔒 GET INVOICE (User & Admin)
@@ -236,14 +232,12 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
     const orderId = req.params.id;
     const requesterClerkId = req.auth.userId;
 
-    // 1. Resolve Requester
     const requester = await db.query.usersTable.findFirst({
-        where: eq(usersTable.clerkId, requesterClerkId),
-        columns: { id: true, role: true }
+      where: eq(usersTable.clerkId, requesterClerkId),
+      columns: { id: true, role: true }
     });
     if (!requester) return res.status(401).json({ error: "Unauthorized" });
 
-    // 2. Fetch Order
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.id, orderId),
       with: {
@@ -260,12 +254,10 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
 
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    // 🔒 3. OWNERSHIP CHECK
     if (order.userId !== requester.id && requester.role !== 'admin') {
-        return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "Forbidden" });
     }
 
-    // 4. Generate Invoice (Existing Logic)
     const addr = order.address || {};
     const formattedAddress = [
       addr.address,
@@ -333,150 +325,130 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
 
 /* ======================================================
    🔒 POST GET MY ORDERS (User Only)
-   - Ignores body.userId, uses Token
 ====================================================== */
 router.post("/get-my-orders", requireAuth, async (req, res) => {
-    try {
-      // 🟢 SECURE: Use Token
-      const requesterClerkId = req.auth.userId;
-      
-      const user = await db.query.usersTable.findFirst({
-          where: eq(usersTable.clerkId, requesterClerkId),
-          columns: { id: true }
-      });
+  try {
+    const requesterClerkId = req.auth.userId;
+    const user = await db.query.usersTable.findFirst({
+      where: eq(usersTable.clerkId, requesterClerkId),
+      columns: { id: true }
+    });
 
-      if (!user) return res.status(404).json({ error: "User not found" });
+    if (!user) return res.status(404).json({ error: "User not found" });
 
-      const userId = user.id;
+    const myOrders = await db.query.ordersTable.findMany({
+      where: eq(ordersTable.userId, user.id),
+      with: {
+        orderItems: { with: { product: true, variant: true } },
+        timeline: { orderBy: (timeline, { desc }) => [desc(timeline.timestamp)] }
+      },
+      orderBy: [asc(ordersTable.createdAt)],
+    });
 
-      // Check Cache manually since we derived the key
-      const cacheKey = makeUserOrdersKey(userId);
+    const formattedOrders = myOrders.map(order => {
+      let finalTimeline = order.timeline || [];
+      const hasPlacedEvent = finalTimeline.some(e => e.status === 'Order Placed');
+      if (!hasPlacedEvent) {
+        finalTimeline.push({
+          status: 'Order Placed',
+          title: 'Order Placed',
+          description: 'Order placed successfully.',
+          timestamp: order.createdAt
+        });
+      }
+      finalTimeline.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
-      const myOrders = await db.query.ordersTable.findMany({
-        where: eq(ordersTable.userId, userId),
-        with: {
-          orderItems: {
-            with: {
-              product: true,
-              variant: true,
-            },
-          },
-          // 🟢 FIX: Fetch timeline for the list view too!
-          timeline: {
-            orderBy: (timeline, { desc }) => [desc(timeline.timestamp)],
-          }
-        },
-        orderBy: [asc(ordersTable.createdAt)],
-      });
+      return {
+        ...order,
+        timeline: finalTimeline,
+        orderItems: order.orderItems.map(item => ({
+          ...item,
+          productName: item.product?.name || 'N/A',
+          img: item.product?.imageurl?.[0] || '',
+          size: item.variant?.size || 'N/A',
+        }))
+      };
+    });
 
-      const formattedOrders = myOrders.map(order => {
-        // 🟢 FIX: Apply Smart Timeline Logic to List View
-        let finalTimeline = order.timeline || [];
-        const hasPlacedEvent = finalTimeline.some(e => e.status === 'Order Placed');
-        
-        if (!hasPlacedEvent) {
-            finalTimeline.push({
-                status: 'Order Placed',
-                title: 'Order Placed',
-                description: 'Order placed successfully.',
-                timestamp: order.createdAt
-            });
-        }
-        finalTimeline.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-        return {
-            ...order,
-            timeline: finalTimeline, // 🟢 Return fixed timeline
-            orderItems: order.orderItems.map(item => ({
-            ...item,
-            productName: item.product?.name || 'N/A',
-            img: item.product?.imageurl?.[0] || '',
-            size: item.variant?.size || 'N/A',
-            }))
-        };
-      });
-
-      res.json(formattedOrders);
-    } catch (error) {
-      console.error("❌ Error fetching user's orders:", error);
-      res.status(500).json({ error: "Internal Server Error" });
-    }
+    res.json(formattedOrders);
+  } catch (error) {
+    console.error("❌ Error fetching user's orders:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
-);
+});
 
 /* ======================================================
    🔒 PUT UPDATE STATUS (Admin Only)
-   🟢 UPDATED: Handles Logistics & Timeline
+   ❌ REMOVED: Manual Courier Inputs
 ====================================================== */
 router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { 
-        status, 
-        message, // Custom timeline message (optional)
-        courierName, 
-        trackingId, 
-        trackingUrl,
-        actorId: ignored 
-    } = req.body; 
+    const {
+      status,
+      message,
+      actorId: ignored
+    } = req.body;
 
     const requesterClerkId = req.auth.userId;
 
     if (!id || !status) return res.status(400).json({ error: "Order ID and status are required" });
 
-    // 🟢 SECURE: Resolve Admin ID
     const adminUser = await db.query.usersTable.findFirst({
-        where: eq(usersTable.clerkId, requesterClerkId),
-        columns: { id: true }
+      where: eq(usersTable.clerkId, requesterClerkId),
+      columns: { id: true }
     });
     const actorId = adminUser?.id;
 
-    // Fetch current status
-    const [currentOrder] = await db
-      .select()
-      .from(ordersTable)
-      .where(eq(ordersTable.id, id));
-
+    const [currentOrder] = await db.select().from(ordersTable).where(eq(ordersTable.id, id));
     if (!currentOrder) return res.status(404).json({ error: "Order not found" });
 
-    const oldStatus = currentOrder?.status;
+    // 🟢 SHIPROCKET SAFEGUARD
+    // Cannot manually mark as Shipped if no AWB is assigned yet
+    if (status === "Shipped" && !currentOrder.shiprocketAwb) {
+        return res.status(400).json({ 
+            error: "Action Blocked: No Shiprocket AWB Found. Please generate a label in the dashboard first." 
+        });
+    }
 
+    const oldStatus = currentOrder?.status;
     let newProgressStep = currentOrder.progressStep;
     if (status === "Processing") newProgressStep = 2;
     if (status === "Shipped") newProgressStep = 3;
     if (status === "Delivered") newProgressStep = 4;
     if (status === "Order Cancelled") newProgressStep = 0;
 
-    // 1. Update Main Order Table (Status + Logistics)
+    // 1. Update Order
     const [updatedOrder] = await db
       .update(ordersTable)
-      .set({ 
-        status: status, 
+      .set({
+        status: status,
         progressStep: newProgressStep,
-        courierName: courierName || currentOrder.courierName,
-        trackingId: trackingId || currentOrder.trackingId,
-        trackingUrl: trackingUrl || currentOrder.trackingUrl,
         updatedAt: new Date()
       })
       .where(eq(ordersTable.id, id))
       .returning();
 
-    // 2. Insert into Timeline (The Permanent Record)
-    const timelineTitle = status; 
-    const timelineDesc = message || getDefaultMessageForStatus(status, courierName, trackingId);
+    // 2. Timeline
+    const timelineTitle = status;
+    const timelineDesc = message || getDefaultMessageForStatus(
+        status, 
+        currentOrder.courierName, 
+        currentOrder.shiprocketAwb
+    );
 
     await db.insert(orderTimeline).values({
-        orderId: id,
-        status: status,
-        title: timelineTitle,
-        description: timelineDesc,
-        timestamp: new Date()
+      orderId: id,
+      status: status,
+      title: timelineTitle,
+      description: timelineDesc,
+      timestamp: new Date()
     });
 
-    // 🟢 LOG ACTIVITY
+    // 🟢 Log Activity
     if (actorId && oldStatus !== status) {
       await db.insert(activityLogsTable).values({
-        userId: actorId, 
+        userId: actorId,
         action: 'ORDER_STATUS_UPDATE',
         description: `Updated Order #${id} status: ${oldStatus} → ${status}`,
         performedBy: 'admin',
@@ -496,7 +468,7 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
     // Notification
     let notifyMessage = `Your order #${updatedOrder.id} is now ${status}.`;
     if (status === 'Delivered') notifyMessage = `Your order #${updatedOrder.id} has been delivered!`;
-    else if (status === 'Shipped') notifyMessage = `Your order #${updatedOrder.id} has shipped via ${courierName || 'our courier partner'}.`;
+    else if (status === 'Shipped') notifyMessage = `Your order #${updatedOrder.id} has shipped.`;
 
     await createNotification(
       updatedOrder.userId,
@@ -505,16 +477,14 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
       'order'
     );
 
-    const itemsToInvalidate = [
-       { key: makeAllOrdersKey() },
-       { key: makeOrderKey(updatedOrder.id) },
-       { key: makeUserOrdersKey(updatedOrder.userId) },
-       { key: makeAdminOrdersReportKey() }
-    ];
+    await invalidateMultiple([
+      { key: makeAllOrdersKey() },
+      { key: makeOrderKey(updatedOrder.id) },
+      { key: makeUserOrdersKey(updatedOrder.userId) },
+      { key: makeAdminOrdersReportKey() }
+    ]);
 
-    await invalidateMultiple(itemsToInvalidate);
-
-    res.status(200).json({ message: "Order status & timeline updated successfully", updatedOrder });
+    res.status(200).json({ message: "Order status updated", updatedOrder });
   } catch (error) {
     console.error("❌ Error updating order status:", error);
     res.status(500).json({ error: "Internal Server Error" });
@@ -523,7 +493,6 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
 
 /* ======================================================
    🔒 PUT CANCEL ORDER (Admin Only)
-   🟢 UPDATED: Adds Timeline Entry
 ====================================================== */
 router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
   try {
@@ -532,10 +501,9 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
 
     if (!id) return res.status(400).json({ error: "Order ID is required" });
 
-    // 🟢 SECURE: Resolve Admin ID
     const adminUser = await db.query.usersTable.findFirst({
-        where: eq(usersTable.clerkId, requesterClerkId),
-        columns: { id: true }
+      where: eq(usersTable.clerkId, requesterClerkId),
+      columns: { id: true }
     });
     const actorId = adminUser?.id;
 
@@ -568,19 +536,29 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
       }
     }
 
+    // 🟢 Shiprocket Cancel Integration
+    try {
+      if (order.shiprocketShipmentId || order.shiprocketOrderId) {
+        const shiprocketId = order.shiprocketShipmentId || order.shiprocketOrderId;
+        await cancelShiprocketOrder(shiprocketId);
+      }
+    } catch (shipErr) {
+      console.error("Shiprocket cancel warning:", shipErr.message);
+    }
+
     await db.update(ordersTable).set({
       status: "Order Cancelled",
-      paymentStatus: order.paymentMode === 'cod' ? 'cancelled' : 'refunded', 
+      paymentStatus: order.paymentMode === 'cod' ? 'cancelled' : 'refunded',
       updatedAt: new Date()
     }).where(eq(ordersTable.id, id));
 
-    // 🟢 NEW: Add to Timeline
+    // Timeline Entry
     await db.insert(orderTimeline).values({
-        orderId: id,
-        status: 'Order Cancelled',
-        title: 'Order Cancelled',
-        description: 'Your order was cancelled by support.',
-        timestamp: new Date()
+      orderId: id,
+      status: 'Order Cancelled',
+      title: 'Order Cancelled',
+      description: 'Your order was cancelled by support.',
+      timestamp: new Date()
     });
 
     // Logging
@@ -609,7 +587,6 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
         sold: sql`${productVariantsTable.sold} - ${item.quantity}`
       }).where(eq(productVariantsTable.id, item.variantId));
 
-      // Handle Bundles
       const bundleContents = await db.select().from(productBundlesTable)
         .where(eq(productBundlesTable.bundleVariantId, item.variantId));
 
@@ -672,7 +649,7 @@ router.get("/details/for-reports", requireAuth, verifyAdmin, cache(makeAdminOrde
 
 /* ======================================================
    🔒 BULK STATUS UPDATE (Admin Only)
-   🟢 UPDATED: Adds Timeline Entry for each order
+   ❌ REMOVED: Manual Courier Inputs
 ====================================================== */
 router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
   try {
@@ -684,10 +661,20 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
     }
     if (!status) return res.status(400).json({ error: "Status is required" });
 
-    // 🟢 SECURE: Resolve Admin ID
+    // 🟢 SHIPROCKET BULK SAFEGUARD
+    if (status === "Shipped") {
+        const selectedOrders = await db.select().from(ordersTable).where(inArray(ordersTable.id, orderIds));
+        const invalidOrder = selectedOrders.find(o => !o.shiprocketAwb);
+        if (invalidOrder) {
+            return res.status(400).json({ 
+                error: `Cannot bulk ship. Order #${invalidOrder.id} missing AWB. Generate labels first.` 
+            });
+        }
+    }
+
     const adminUser = await db.query.usersTable.findFirst({
-        where: eq(usersTable.clerkId, requesterClerkId),
-        columns: { id: true }
+      where: eq(usersTable.clerkId, requesterClerkId),
+      columns: { id: true }
     });
     const actorId = adminUser?.id;
 
@@ -698,8 +685,8 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
 
     const updatedOrders = await db
       .update(ordersTable)
-      .set({ 
-        status: status, 
+      .set({
+        status: status,
         progressStep: newProgressStep,
         updatedAt: new Date()
       })
@@ -714,16 +701,14 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
     const timelineValues = [];
 
     await Promise.all(updatedOrders.map(async (order) => {
-      // Prepare Timeline Data
       timelineValues.push({
         orderId: order.id,
         status: status,
         title: status,
-        description: getDefaultMessageForStatus(status),
+        description: getDefaultMessageForStatus(status, order.courierName, order.shiprocketAwb),
         timestamp: new Date()
       });
 
-      // Log
       if (actorId) {
         await db.insert(activityLogsTable).values({
           userId: actorId,
@@ -734,7 +719,6 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
         });
       }
 
-      // Referral
       if (status.toLowerCase() === 'delivered') {
         try {
           await processReferralCompletion(order.userId);
@@ -743,7 +727,6 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
         }
       }
 
-      // Notification
       let message = `Your order #${order.id} is now ${status}.`;
       if (status === 'Delivered') message = `Your order #${order.id} has been delivered!`;
       else if (status === 'Shipped') message = `Your order #${order.id} has shipped.`;
@@ -759,17 +742,16 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
       itemsToInvalidate.push({ key: makeUserOrdersKey(order.userId) });
     }));
 
-    // 🟢 Bulk Insert Timeline
     if (timelineValues.length > 0) {
-        await db.insert(orderTimeline).values(timelineValues);
+      await db.insert(orderTimeline).values(timelineValues);
     }
 
     await invalidateMultiple(itemsToInvalidate);
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: `Successfully updated ${updatedOrders.length} orders to ${status}`,
-      count: updatedOrders.length 
+      count: updatedOrders.length
     });
 
   } catch (error) {

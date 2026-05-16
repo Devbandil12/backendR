@@ -14,7 +14,11 @@ import {
   deletePincode,
   reverseGeocodeController,
   searchCitiesByState, 
-  listPincodesByStateAndCityDB
+  listPincodesByStateAndCityDB,
+  bulkUpdatePincodes,
+  bulkDeletePincodes,
+  bulkUpdateRegion,
+  bulkDeleteRegion
 } from "../controllers/addressController.js";
 
 import { db } from "../configs/index.js";
@@ -113,7 +117,19 @@ router.put(
   setDefaultAddress
 );
 
+router.put(
+  "/pincodes/region/update", 
+  requireAuth, 
+  verifyAdmin, 
+  bulkUpdateRegion
+);
 
+router.post(
+  "/pincodes/region/delete", 
+  requireAuth, 
+  verifyAdmin, 
+  bulkDeleteRegion
+);
 /* ======================================================
    🛡️ ADMIN PINCODE MANAGEMENT (Strictly Secured)
 ====================================================== */
@@ -160,6 +176,21 @@ router.delete(
   requireAuth, 
   verifyAdmin, 
   deletePincode
+);
+
+// 🟢 ADD THESE NEW ROUTES (Under Admin Pincode Management)
+router.put(
+  "/pincodes/bulk-update", 
+  requireAuth, 
+  verifyAdmin, 
+  bulkUpdatePincodes
+);
+
+router.post( // Using POST for delete to safely carry body data
+  "/pincodes/bulk-delete", 
+  requireAuth, 
+  verifyAdmin, 
+  bulkDeletePincodes
 );
 
 

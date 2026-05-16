@@ -4,7 +4,7 @@ import { db } from "../configs/index.js";
 import { 
   productVariantsTable, 
   activityLogsTable, 
-  usersTable // 🟢 Added for Actor Resolution
+  usersTable 
 } from "../configs/schema.js"; 
 import { eq } from "drizzle-orm";
 import { invalidateMultiple } from "../invalidateHelpers.js";
@@ -26,10 +26,15 @@ router.put("/:variantId", requireAuth, verifyAdmin, async (req, res) => {
   // Destructure data (ignore insecure actorId from body)
   const {
     name, size, oprice, discount, costPrice, stock, sold, sku, isArchived, 
+    // 🟢 Logistics fields
+    weight, length, breadth, height,
     actorId: ignored 
   } = req.body;
 
-  const variantData = { name, size, oprice, discount, costPrice, stock, sold, sku, isArchived };
+  const variantData = { 
+      name, size, oprice, discount, costPrice, stock, sold, sku, isArchived,
+      weight, length, breadth, height
+  };
 
   // Remove undefined fields
   Object.keys(variantData).forEach(key => 
@@ -68,6 +73,7 @@ router.put("/:variantId", requireAuth, verifyAdmin, async (req, res) => {
         if (variantData.oprice && variantData.oprice !== currentVariant.oprice) changes.push("Price");
         if (variantData.stock && variantData.stock !== currentVariant.stock) changes.push("Stock");
         if (variantData.name && variantData.name !== currentVariant.name) changes.push("Name");
+        if (variantData.weight && variantData.weight !== currentVariant.weight) changes.push("Weight");
 
         if (changes.length > 0) {
             await db.insert(activityLogsTable).values({
@@ -124,6 +130,11 @@ router.post("/", requireAuth, verifyAdmin, async (req, res) => {
         costPrice: variantData.costPrice,
         stock: variantData.stock,
         sku: variantData.sku,
+        // 🟢 Logistics
+        weight: variantData.weight || 0.5,
+        length: variantData.length || 10,
+        breadth: variantData.breadth || 10,
+        height: variantData.height || 10,
       })
       .returning();
 
