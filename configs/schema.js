@@ -11,7 +11,8 @@ import {
   boolean, 
   index, 
   jsonb,
-  real
+  real,
+  json
 } from 'drizzle-orm/pg-core';
 import { sql, relations } from 'drizzle-orm';
 
@@ -371,6 +372,8 @@ export const bannersTable = pgTable('banners', {
   isActive: boolean('is_active').default(true),
   order: integer('order').default(0),
   createdAt: timestamp('created_at').defaultNow(),
+  templateType: text('template_type').default('standard'),
+  config: json('config').default({}),
 });
 
 export const aboutUsTable = pgTable('about_us', {

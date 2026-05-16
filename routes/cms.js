@@ -34,12 +34,25 @@ router.get('/banners', cache(() => BANNERS_CACHE_KEY, 3600), async (req, res) =>
    🔒 CREATE BANNER (Admin Only)
 ====================================================== */
 router.post('/banners', requireAuth, verifyAdmin, async (req, res) => {
-  const { title, subtitle, imageUrl, link, buttonText, type, layout } = req.body;
+  // 🚀 EXTRACT ALL NEW FIELDS FROM THE FRONTEND REQUEST
+  const { 
+    title, subtitle, imageUrl, link, buttonText, type, layout,
+    imageLayer1, imageLayer2, poeticLine, description, 
+    templateType, config // <-- New Fields
+  } = req.body;
+  
   try {
     const [newBanner] = await db.insert(bannersTable).values({
       title, subtitle, imageUrl, link, buttonText,
       type: type || 'hero',
-      layout: layout || 'split'
+      layout: layout || 'split',
+      // 🚀 INSERT NEW FIELDS INTO THE DATABASE
+      imageLayer1,
+      imageLayer2,
+      poeticLine,
+      description,
+      templateType: templateType || 'standard',
+      config: config || {}
     }).returning();
 
     // Invalidate Cache
