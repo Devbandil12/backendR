@@ -27,7 +27,7 @@ import {
 import { createNotification } from '../helpers/notificationManager.js';
 import { generateInvoicePDF } from "../services/invoice.service.js";
 import { processReferralCompletion } from "../controllers/referralController.js";
-import { cancelOrder as cancelShiprocketOrder } from "../services/shiprocket.service.js";
+import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../services/shiprocket.service.js"; // ✅ Modified this line to import createReturnOrder
 
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
@@ -757,6 +757,98 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
   } catch (error) {
     console.error("❌ Bulk update error:", error);
     res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+/* ======================================================
+   🔒 POST INITIATE RETURN (User/Admin)
+====================================================== */
+router.post("/:id/return", requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // 1. Fetch the order
+    const order = await db.query.ordersTable.findFirst({
+      where: eq(ordersTable.id, id),
+      with: {
+        user: true,
+        address: true,
+        orderItems: { with: { variant: true } },
+      }
+    });
+
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    if (order.status !== 'Delivered') {
+      return res.status(400).json({ error: "Only delivered orders can be returned." });
+    }
+
+    // 2. Build Shiprocket Return Payload
+    const formattedItems = order.orderItems.map(item => ({
+      name: item.productName,
+      sku: item.variant?.sku || `SKU-${item.variantId.substring(0, 8)}`,
+      units: item.quantity,
+      selling_price: item.price,
+    }));
+
+    const returnPayload = {
+      order_id: `RET-${order.id}`, // Prefix internal order ID to denote a return
+      order_date: new Date().toISOString().split('T')[0],
+      
+      // 🚚 1. PICKUP FROM CUSTOMER
+      pickup_customer_name: order.user.name,
+      pickup_address: order.address.address,
+      pickup_city: order.address.city,
+      pickup_state: order.address.state,
+      pickup_country: order.address.country || "India",
+      pickup_pincode: order.address.postalCode,
+      pickup_email: order.user.email,
+      pickup_phone: order.address.phone || order.user.phone,
+      
+      // 🏢 2. DELIVER BACK TO WAREHOUSE (Pulled from .env or fallback)
+      shipping_customer_name: process.env.RETURN_CUSTOMER_NAME || "harsh harsh",
+      shipping_phone: process.env.RETURN_PHONE || "6264553588",
+      shipping_address: process.env.RETURN_ADDRESS || "121-B Mayur Nagar, Thatipur", 
+      shipping_city: process.env.RETURN_CITY || "Gwalior",
+      shipping_state: process.env.RETURN_STATE || "Madhya Pradesh",
+      shipping_pincode: process.env.RETURN_PINCODE || "474011",
+      shipping_country: process.env.RETURN_COUNTRY || "India",
+      
+      order_items: formattedItems,
+      payment_method: "Prepaid",
+      sub_total: order.totalAmount,
+      length: 10, breadth: 10, height: 10, weight: 0.5 // Default dimensions
+    };
+
+    // 3. Push to Shiprocket
+    const shiprocketRes = await createReturnOrder(returnPayload);
+
+    // 4. Update Database Status
+    await db.update(ordersTable).set({
+      status: "Return Initiated",
+      updatedAt: new Date()
+    }).where(eq(ordersTable.id, id));
+
+    // 5. Add Timeline Event
+    await db.insert(orderTimeline).values({
+      orderId: order.id,
+      status: 'Return Initiated',
+      title: 'Return Initiated',
+      description: `Reverse pickup generated. AWB: ${shiprocketRes.awb_code || 'Pending'}`,
+      timestamp: new Date()
+    });
+
+    // 6. Invalidate Caches
+    await invalidateMultiple([
+      { key: makeOrderKey(order.id) },
+      { key: makeUserOrdersKey(order.userId) },
+      { key: makeAllOrdersKey() }
+    ]);
+
+    res.json({ message: "Return initiated successfully", shiprocketRes });
+
+  } catch (error) {
+    console.error("❌ Return initiation failed:", error.message);
+    res.status(500).json({ error: "Failed to initiate return. " + error.message });
   }
 });
 

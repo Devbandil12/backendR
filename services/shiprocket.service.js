@@ -107,6 +107,14 @@ export async function cancelOrder(orderId) {
   });
 }
 
+// ✅ NEW: Added Return Order (Reverse Pickup) Logic
+export async function createReturnOrder(returnPayload) {
+  return shiprocketRequest('/v1/external/orders/create/return', {
+    method: 'POST',
+    body: returnPayload,
+  });
+}
+
 export async function trackByAwb(awbCode) {
   return shiprocketRequest(`/v1/external/courier/track/awb/${encodeURIComponent(awbCode)}`, {
     method: 'GET',
@@ -139,9 +147,9 @@ export async function getPickupLocations() {
 export const ShiprocketService = {
   createOrder,
   cancelOrder,
+  createReturnOrder, // ✅ NEW: Exported the return function
   trackByAwb,
   trackByShipment,
   getServiceability,
   getPickupLocations,
 };
-

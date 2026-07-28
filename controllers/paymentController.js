@@ -475,6 +475,9 @@ export const createOrder = async (req, res) => {
 
       invalidateMultiple(itemsToInvalidate).catch(err => console.error("Cache invalidate fail:", err));
 
+      // 🟢 ADDED: Shiprocket Sync (Background)
+      createShiprocketOrderForExistingOrder(orderId).catch(err => console.error("Shiprocket sync fail:", err));
+
       return res.json({ success: true, orderId, message: "Order placed using Wallet Balance!" });
     }
 
@@ -586,6 +589,9 @@ export const createOrder = async (req, res) => {
       );
 
       invalidateMultiple(itemsToInvalidate).catch(err => console.error("Cache invalidate fail:", err));
+
+      // 🟢 ADDED: Shiprocket Sync (Background)
+      createShiprocketOrderForExistingOrder(orderId).catch(err => console.error("Shiprocket sync fail:", err));
 
       // 🚀 IMMEDIATE RESPONSE
       return res.json({
@@ -826,6 +832,9 @@ export const verifyPayment = async (req, res) => {
         });
       }
     }).catch(e => console.error("Queue error:", e));
+
+    // 🟢 ADDED: Shiprocket Sync (Background)
+    createShiprocketOrderForExistingOrder(existingOrder.id).catch(err => console.error("Shiprocket sync fail:", err));
 
     // 🚀 IMMEDIATE RESPONSE
     return res.json({ success: true, message: "Payment verified & order placed." });

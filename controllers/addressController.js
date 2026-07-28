@@ -120,6 +120,17 @@ export async function saveAddress(req, res) {
       return res.status(400).json({ success: false, msg: "Missing required fields: userId, name, or phone" });
     }
 
+    // --- 🟢 STRICT PHONE VALIDATION START ---
+    const phoneRegex = /^[6-9]\d{9}$/;
+    if (!phoneRegex.test(phone.trim())) {
+      return res.status(400).json({ success: false, msg: "A valid 10-digit mobile number is required." });
+    }
+
+    if (altPhone && altPhone.trim() !== "" && !phoneRegex.test(altPhone.trim())) {
+      return res.status(400).json({ success: false, msg: "A valid 10-digit alternate mobile number is required." });
+    }
+    // --- 🟢 STRICT PHONE VALIDATION END ---
+
     if ((!address || !city || !state || !postalCode || !country) && latitude && longitude) {
       const geoData = await reverseGeocode(latitude, longitude);
       address = address || geoData.address;
@@ -185,6 +196,22 @@ export async function updateAddress(req, res) {
       latitude, longitude, geoAccuracy,
       isDefault, isVerified, isDeleted
     } = req.body;
+
+    // --- 🟢 STRICT PHONE VALIDATION START ---
+    const phoneRegex = /^[6-9]\d{9}$/;
+    
+    if (req.body.hasOwnProperty('phone')) {
+      if (!phone || !phoneRegex.test(phone.trim())) {
+        return res.status(400).json({ success: false, msg: "A valid 10-digit mobile number is required." });
+      }
+    }
+
+    if (req.body.hasOwnProperty('altPhone') && altPhone && altPhone.trim() !== "") {
+      if (!phoneRegex.test(altPhone.trim())) {
+        return res.status(400).json({ success: false, msg: "A valid 10-digit alternate mobile number is required." });
+      }
+    }
+    // --- 🟢 STRICT PHONE VALIDATION END ---
 
     if ((!address || !city || !state || !postalCode || !country) && latitude && longitude) {
       const geoData = await reverseGeocode(latitude, longitude);

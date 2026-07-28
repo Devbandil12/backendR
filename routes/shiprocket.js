@@ -2,6 +2,7 @@
 
 import express from 'express';
 import crypto from 'crypto'; // Required for security verification
+import Razorpay from 'razorpay'; // ✅ ADDED: Required for auto-refunds
 import {
   createOrder,
   cancelOrder,
@@ -18,6 +19,12 @@ import { invalidateMultiple } from '../invalidateHelpers.js';
 import { makeAllOrdersKey, makeOrderKey, makeUserOrdersKey } from '../cacheKeys.js';
 
 const router = express.Router();
+
+// ✅ ADDED: Initialize Razorpay
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_ID_KEY,
+  key_secret: process.env.RAZORPAY_SECRET_KEY,
+});
 
 /**
  * 🔒 SECURITY MIDDLEWARE
@@ -118,6 +125,7 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
 
     // --- MAP SHIPROCKET STATUS TO INTERNAL STATUS ---
     let mappedStatus = null;
+    let shouldTriggerRefund = false; // ✅ ADDED: Flag for auto-refund
     
     switch (rawStatus) {
         case 'AWB ASSIGNED':
@@ -145,7 +153,9 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
             mappedStatus = 'RTO Initiated';
             break;
         case 'RTO DELIVERED':
+        case 'RETURN DELIVERED': // ✅ ADDED: Return Delivered Status
             mappedStatus = 'Returned';
+            shouldTriggerRefund = true; // ✅ ADDED: Trigger refund upon successful return
             break;
         default:
             // For unknown statuses, we generally don't change the main status 
@@ -210,11 +220,44 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
       });
     });
 
-    // 3. Send User Notification (Only for major status changes)
+    // ✅ ADDED: 3. Process Automatic Refunds for Returns / RTOs
+    if (shouldTriggerRefund && order.paymentMode === 'online' && order.paymentStatus === 'paid' && order.transactionId) {
+      try {
+        console.log(`Processing automatic refund for Order ${order.id}...`);
+        
+        const payment = await razorpay.payments.fetch(order.transactionId);
+        const refundInit = await razorpay.payments.refund(order.transactionId, {
+          amount: payment.amount,
+          speed: 'optimum',
+        });
+        
+        await db.update(ordersTable).set({
+          paymentStatus: 'refunded',
+          refundId: refundInit.id,
+          refundAmount: refundInit.amount,
+          refundStatus: refundInit.status,
+          updatedAt: new Date()
+        }).where(eq(ordersTable.id, order.id));
+
+        await db.insert(orderTimeline).values({
+          orderId: order.id,
+          status: 'Refunded',
+          title: 'Refund Initiated',
+          description: `Your refund of ₹${(refundInit.amount / 100).toFixed(2)} has been initiated.`,
+          timestamp: new Date()
+        });
+
+      } catch (refundError) {
+        console.error(`⚠️ Webhook Auto-Refund Failed for Order ${order.id}:`, refundError.message);
+      }
+    }
+
+    // 4. Send User Notification (Only for major status changes)
     if (mappedStatus && mappedStatus !== order.status) {
       let notifyMessage = `Your order #${order.id} status is now ${mappedStatus}.`;
       if (mappedStatus === 'Out for Delivery') notifyMessage = `Out for delivery! Your order #${order.id} will reach you soon.`;
       if (mappedStatus === 'Delivered') notifyMessage = `Order #${order.id} Delivered. Enjoy your purchase!`;
+      if (mappedStatus === 'Returned') notifyMessage = `Order #${order.id} has been returned successfully to our warehouse.`; // Added Return notification
 
       await createNotification(
           order.userId, 
@@ -224,7 +267,7 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
       );
     }
 
-    // 4. Invalidate Cache
+    // 5. Invalidate Cache
     await invalidateMultiple([
       { key: makeAllOrdersKey() },
       { key: makeOrderKey(order.id) },
