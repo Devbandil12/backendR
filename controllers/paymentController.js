@@ -2,7 +2,7 @@
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
-import { redis as redisClient } from '../configs/redis.js'; // 🟢 FIXED: Correctly aliased named export
+import { redis as redisClient } from '../configs/redis.js'; 
 import {
   ordersTable,
   productsTable,
@@ -14,9 +14,9 @@ import {
   usersTable,
   walletTransactionsTable,
   orderTimeline,
-  couponRedemptionsTable // 🟢 ADDED: For tracking coupon redemptions
+  couponRedemptionsTable
 } from '../configs/schema.js';
-import { eq, sql, and, inArray, gte, desc } from 'drizzle-orm'; // 🟢 ADDED: desc for invoice sorting
+import { eq, sql, and, inArray, gte, desc } from 'drizzle-orm'; 
 import { invalidateMultiple } from '../invalidateHelpers.js';
 import {
   makeAllOrdersKey,
@@ -35,7 +35,6 @@ import { createOrder as createShiprocketOrder } from '../services/shiprocket.ser
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
 // 🟢 FIX 2.6: ATOMIC INVOICE GENERATOR
-// Queries the last invoice number for the year inside the transaction and safely increments it.
 async function getNextInvoiceNumber(tx) {
   const year = new Date().getFullYear();
   const prefix = `INV-${year}-`;
@@ -133,8 +132,6 @@ export async function createShiprocketOrderForExistingOrder(orderId) {
       height: maxHeight,
       weight: parseFloat(totalWeight.toFixed(2)),
     };
-
-    console.log(`🚀 Creating Shiprocket Order for #${order.id} with Weight: ${totalWeight}kg`);
 
     const srResponse = await createShiprocketOrder(orderPayload);
 
@@ -267,7 +264,7 @@ export async function reduceStock(cartItems, tx) {
 // 🟢 3. SECURE CREATE ORDER
 export const createOrder = async (req, res) => {
   try {
-    const {
+    let {
       phone,
       paymentMode = 'online',
       cartItems,
@@ -275,6 +272,11 @@ export const createOrder = async (req, res) => {
       couponCode = null,
       useWallet = false
     } = req.body;
+
+    // 🟢 SAFEGUARD: Ensure couponCode is a strict string (Fixes React object-passing bugs)
+    if (couponCode && typeof couponCode === 'object') {
+        couponCode = couponCode.code;
+    }
 
     // 🔒 RESOLVE USER FROM TOKEN
     const requesterClerkId = req.auth.userId;
@@ -317,7 +319,6 @@ export const createOrder = async (req, res) => {
       return res.status(404).json({ success: false, msg: "Address not found." });
     }
 
-    // 🟢 FIX 2.1: ENFORCE BUSINESS RULES (passing user.id to calculatePriceBreakdown)
     const breakdown = await calculatePriceBreakdown(
       secureCartItems,
       couponCode,
@@ -343,7 +344,7 @@ export const createOrder = async (req, res) => {
       });
     }
 
-    // 🟢 FIX 2.4: SERVER-SIDE IDEMPOTENCY LOCK
+    // 🟢 SERVER-SIDE IDEMPOTENCY LOCK
     const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey;
     if (idempotencyKey && redisClient) {
       const isDuplicate = await redisClient.get(`idemp:order:${idempotencyKey}`);
@@ -397,7 +398,7 @@ export const createOrder = async (req, res) => {
     if (walletDeduction > 0 && finalAmount === 0) {
 
       const { insertedOrder, affectedProductIds } = await db.transaction(async (tx) => {
-        const newInvoiceNumber = await getNextInvoiceNumber(tx); // 🟢 Generate atomic invoice number
+        const newInvoiceNumber = await getNextInvoiceNumber(tx); 
 
         const [orderResult] = await tx.insert(ordersTable).values({
           id: orderId,
@@ -410,15 +411,15 @@ export const createOrder = async (req, res) => {
           paymentStatus: 'paid',
           transactionId: `WALLET-${Date.now()}`,
           phone,
-          couponCode,
+          couponId: breakdown.appliedCouponId || null, // 🟢 FIXED: Replaced removed couponCode column with couponId
           discountAmount: breakdown.discountAmount,
           offerDiscount: breakdown.offerDiscount,
           offerCodes: breakdown.appliedOffers.map(o => o.title),
           progressStep: 1,
-          invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
+          invoiceNumber: newInvoiceNumber 
         }).returning();
 
-        // 🟢 STEP 4: Record Coupon Redemption as 'completed' for Wallet Orders
+        // Record Coupon Redemption as 'completed'
         if (breakdown.appliedCouponId) {
           await tx.insert(couponRedemptionsTable).values({
             couponId: breakdown.appliedCouponId,
@@ -498,7 +499,7 @@ export const createOrder = async (req, res) => {
       let transactionResult;
       try {
         transactionResult = await db.transaction(async (tx) => {
-          const newInvoiceNumber = await getNextInvoiceNumber(tx); // 🟢 Generate atomic invoice number
+          const newInvoiceNumber = await getNextInvoiceNumber(tx); 
 
           const [insertedOrder] = await tx.insert(ordersTable).values({
             id: orderId,
@@ -512,15 +513,15 @@ export const createOrder = async (req, res) => {
             transactionId: null,
             paymentStatus: 'pending',
             phone,
-            couponCode: couponCode,
+            couponId: breakdown.appliedCouponId || null, // 🟢 FIXED: Replaced removed couponCode column with couponId
             discountAmount: discountAmount,
             offerDiscount: offerDiscount,
             offerCodes: offerCodes,
             progressStep: 1,
-            invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
+            invoiceNumber: newInvoiceNumber 
           }).returning();
 
-          // 🟢 STEP 4: Record Coupon Redemption as 'completed' for COD Orders
+          // Record Coupon Redemption as 'completed'
           if (breakdown.appliedCouponId) {
             await tx.insert(couponRedemptionsTable).values({
               couponId: breakdown.appliedCouponId,
@@ -565,7 +566,6 @@ export const createOrder = async (req, res) => {
         });
       } catch (err) {
         console.error("COD Order Failed (Stock/DB):", err.message);
-        // Clean up idempotency lock on failure so user can retry
         const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey;
         if (idempotencyKey && redisClient) await redisClient.del(`idemp:order:${idempotencyKey}`);
         return res.status(400).json({ success: false, msg: err.message || "Order failed" });
@@ -617,7 +617,7 @@ export const createOrder = async (req, res) => {
     const razorOrder = await razorpay.orders.create({
       amount: finalAmount * 100,
       currency: 'INR',
-      receipt: user.id,
+      receipt: user.id.slice(0, 40), // Safety clip for Razorpay limits
     });
 
     await db.transaction(async (tx) => {
@@ -633,15 +633,14 @@ export const createOrder = async (req, res) => {
         transactionId: null,
         paymentStatus: 'pending',
         phone,
-        couponCode,
+        couponId: breakdown.appliedCouponId || null, // 🟢 FIXED: Replaced removed couponCode column with couponId
         discountAmount,
         offerDiscount,
         offerCodes,
         progressStep: 0,
-        // Invoice number will be generated during verifyPayment when payment succeeds
       });
 
-      // 🟢 STEP 4: Record Coupon Redemption as 'pending' for Online Orders
+      // Record Coupon Redemption as 'pending'
       if (breakdown.appliedCouponId) {
         await tx.insert(couponRedemptionsTable).values({
           couponId: breakdown.appliedCouponId,
@@ -665,7 +664,6 @@ export const createOrder = async (req, res) => {
 
   } catch (err) {
     console.error('createOrder error:', err);
-    // 🛑 Release lock on validation/server errors so user can retry
     const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey;
     if (idempotencyKey && redisClient) {
        await redisClient.del(`idemp:order:${idempotencyKey}`);
@@ -749,7 +747,6 @@ export const verifyPayment = async (req, res) => {
       transactionResult = await db.transaction(async (tx) => {
         
         // 🟢 FIX 2.2: FRESH READ INSIDE TRANSACTION
-        // Lock the row to prevent race conditions on double webhook/callback firing
         const [lockedOrder] = await tx.select()
           .from(ordersTable)
           .where(eq(ordersTable.id, existingOrder.id));
@@ -758,7 +755,7 @@ export const verifyPayment = async (req, res) => {
           return { alreadyPaid: true };
         }
 
-        const newInvoiceNumber = await getNextInvoiceNumber(tx); // 🟢 Generate atomic invoice number on success
+        const newInvoiceNumber = await getNextInvoiceNumber(tx);
 
         const [updatedOrder] = await tx.update(ordersTable).set({
           status: 'Order Placed',
@@ -766,10 +763,10 @@ export const verifyPayment = async (req, res) => {
           transactionId: razorpay_payment_id,
           progressStep: 1,
           updatedAt: new Date(),
-          invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
+          invoiceNumber: newInvoiceNumber 
         }).where(eq(ordersTable.id, existingOrder.id)).returning();
 
-        // 🟢 STEP 4: Lock in the Coupon Redemption status to 'completed' upon successful payment verification
+        // Lock in the Coupon Redemption status to 'completed'
         await tx.update(couponRedemptionsTable)
           .set({ status: 'completed' })
           .where(eq(couponRedemptionsTable.orderId, existingOrder.id));
@@ -833,7 +830,6 @@ export const verifyPayment = async (req, res) => {
       return res.status(500).json({ success: false, error: error.message || "Server error" });
     }
 
-    // Early exit if the transaction determined the order was already paid
     if (transactionResult.alreadyPaid) {
       return res.json({ success: true, message: "Payment already verified & processed." });
     }
@@ -841,7 +837,6 @@ export const verifyPayment = async (req, res) => {
     const { updatedOrder, affectedProductIds } = transactionResult;
 
     // ⚡ FAST ONLINE RESPONSE: Side effects run in background
-
     const itemsToInvalidate = [
       { key: makeAllOrdersKey(), prefix: true },
       { key: makeUserOrdersKey(user.id), prefix: true },
