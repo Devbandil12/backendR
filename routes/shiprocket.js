@@ -12,11 +12,11 @@ import {
   getPickupLocations,
 } from '../services/shiprocket.service.js';
 import { db } from '../configs/index.js';
-import { ordersTable, orderTimeline } from '../configs/schema.js';
-import { eq, or } from 'drizzle-orm'; // ✅ FIXED: Imported 'or' for the webhook lookup
+import { ordersTable, orderTimeline, orderItemsTable, productVariantsTable, productBundlesTable } from '../configs/schema.js'; // 🟢 ADDED: Required tables for stock restoration
+import { eq, or, sql } from 'drizzle-orm'; // ✅ FIXED: Imported 'or' and 'sql'
 import { createNotification } from '../helpers/notificationManager.js';
 import { invalidateMultiple } from '../invalidateHelpers.js';
-import { makeAllOrdersKey, makeOrderKey, makeUserOrdersKey } from '../cacheKeys.js';
+import { makeAllOrdersKey, makeOrderKey, makeUserOrdersKey, makeAllProductsKey, makeProductKey } from '../cacheKeys.js'; // 🟢 ADDED: Product cache keys
 
 const router = express.Router();
 
@@ -185,6 +185,13 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
       return res.status(200).json({ message: "Order not found" });
     }
 
+    // Prepare an array for cache keys that might need invalidation due to stock changes
+    const cacheKeysToInvalidate = [
+      { key: makeAllOrdersKey() },
+      { key: makeOrderKey(order.id) },
+      { key: makeUserOrdersKey(order.userId) },
+    ];
+
     // 2. Transaction: Update Order & Add Timeline
     await db.transaction(async (tx) => {
       // Update Main Order Details
@@ -222,6 +229,38 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
         description: `${activityDescription} (Location: ${payload.scans?.[0]?.location || 'N/A'})`,
         timestamp: new Date(),
       });
+
+      // 🟢 FIX 2.3: RESTORE STOCK ON RETURN/RTO DELIVERED
+      if (mappedStatus === 'Returned') {
+        console.log(`📦 Restoring stock for returned order ${order.id}...`);
+        
+        const orderItems = await tx.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, order.id));
+        
+        cacheKeysToInvalidate.push({ key: makeAllProductsKey() }); // Need to refresh product lists
+
+        for (const item of orderItems) {
+          // 1. Restore main variant stock
+          await tx.update(productVariantsTable).set({
+            stock: sql`${productVariantsTable.stock} + ${item.quantity}`,
+            sold: sql`${productVariantsTable.sold} - ${item.quantity}`
+          }).where(eq(productVariantsTable.id, item.variantId));
+
+          // 2. Restore bundle contents if applicable
+          const bundleContents = await tx.select().from(productBundlesTable)
+            .where(eq(productBundlesTable.bundleVariantId, item.variantId));
+
+          for (const content of bundleContents) {
+            const qtyToRestore = item.quantity * content.quantity;
+            await tx.update(productVariantsTable).set({
+              stock: sql`${productVariantsTable.stock} + ${qtyToRestore}`,
+              sold: sql`${productVariantsTable.sold} - ${qtyToRestore}`
+            }).where(eq(productVariantsTable.id, content.contentVariantId));
+          }
+
+          cacheKeysToInvalidate.push({ key: makeProductKey(item.productId) });
+        }
+      }
+
     });
 
     // 3. Process Automatic Refunds for Returns / RTOs
@@ -272,11 +311,7 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
     }
 
     // 5. Invalidate Cache
-    await invalidateMultiple([
-      { key: makeAllOrdersKey() },
-      { key: makeOrderKey(order.id) },
-      { key: makeUserOrdersKey(order.userId) },
-    ]);
+    await invalidateMultiple(cacheKeysToInvalidate);
 
     console.log(`✅ Webhook processed for Order #${order.id}: ${rawStatus} -> ${mappedStatus}`);
     res.json({ success: true });

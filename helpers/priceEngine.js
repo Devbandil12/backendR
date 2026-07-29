@@ -1,10 +1,10 @@
 // server/helpers/priceEngine.js
 import { db } from '../configs/index.js';
-import { couponsTable, productVariantsTable } from '../configs/schema.js';
-import { eq, inArray, and, isNull, gte, lte, or } from 'drizzle-orm';
+import { couponsTable, productVariantsTable, ordersTable } from '../configs/schema.js';
+import { eq, inArray, and, isNull, gte, lte, or, sql } from 'drizzle-orm';
 import { getPincodeDetails } from '../controllers/addressController.js'; 
 
-export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) => {
+export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, userId) => {
   // 1. Initialize totals
   let originalTotal = 0;
   let productTotal = 0;
@@ -29,12 +29,12 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
   // 3. Get full cart item details from DB
   const variantIds = cartItems.map(item => item.variantId);
   if (variantIds.length === 0) {
-     // Return zeroed out structure if empty
-     return { 
-       originalTotal: 0, productTotal: 0, deliveryCharge: 0, 
-       offerDiscount: 0, appliedOffers: [], discountAmount: 0, 
-       total: 0, codAvailable: false, walletUsed: 0 
-     };
+      // Return zeroed out structure if empty
+      return { 
+        originalTotal: 0, productTotal: 0, deliveryCharge: 0, 
+        offerDiscount: 0, appliedOffers: [], discountAmount: 0, 
+        total: 0, codAvailable: false, walletUsed: 0 
+      };
   }
   
   const fullCart = await db.query.productVariantsTable.findMany({
@@ -173,6 +173,28 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
       );
       
       if (c) {
+          // 🔒 SECURITY FIX: ENFORCE First Order Only
+          if (c.firstOrderOnly && userId) {
+            const [prevOrder] = await db.select().from(ordersTable).where(eq(ordersTable.userId, userId));
+            if (prevOrder) throw new Error("This coupon is only valid for your first order.");
+          }
+
+          // 🔒 SECURITY FIX: ENFORCE Max Usage Per User
+          if (c.maxUsagePerUser && userId) {
+            const usageQuery = await db.select({ count: sql`count(*)` })
+              .from(ordersTable)
+              .where(and(eq(ordersTable.userId, userId), eq(ordersTable.couponCode, couponCode)));
+            
+            if (Number(usageQuery[0].count) >= c.maxUsagePerUser) {
+              throw new Error("You have reached the maximum usage limit for this coupon.");
+            }
+          }
+
+          // 🔒 SECURITY FIX: ENFORCE Targeted User
+          if (c.targetUserId && c.targetUserId !== userId) {
+            throw new Error("This coupon is not valid for your account.");
+          }
+
           const now = new Date();
           if (
               !(c.validFrom && now < c.validFrom) &&
@@ -190,7 +212,11 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode) =>
                 couponDiscount = c.discountValue;
               }
               manualCoupon = { amount: couponDiscount };
+          } else {
+              throw new Error("Cart does not meet the minimum requirements for this coupon or it has expired.");
           }
+      } else {
+          throw new Error("Invalid or unrecognized coupon code.");
       }
   }
 

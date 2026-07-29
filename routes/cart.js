@@ -110,18 +110,37 @@ router.post("/", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
-    const [newItem] = await db
-      .insert(addToCartTable)
-      .values({ 
-        userId, // 🔒 Forced
-        variantId, 
-        quantity 
-      })
-      .returning();
+    // 🟢 FIX 2.5: Server-Side Cart Deduplication
+    const [existingItem] = await db.select().from(addToCartTable)
+      .where(and(
+        eq(addToCartTable.userId, userId),
+        eq(addToCartTable.variantId, variantId)
+      ));
+
+    let resultItem;
+
+    if (existingItem) {
+      // Update quantity if item already exists in cart
+      [resultItem] = await db
+        .update(addToCartTable)
+        .set({ quantity: sql`${addToCartTable.quantity} + ${quantity}` })
+        .where(eq(addToCartTable.id, existingItem.id))
+        .returning();
+    } else {
+      // Insert new item if it doesn't exist
+      [resultItem] = await db
+        .insert(addToCartTable)
+        .values({ 
+          userId, // 🔒 Forced
+          variantId, 
+          quantity 
+        })
+        .returning();
+    }
 
     await invalidateMultiple([{ key: keys.makeCartKey(userId) }]);
 
-    res.json(newItem);
+    res.json(resultItem);
   } catch (error) {
     console.error("❌ Error adding to cart:", error);
     res.status(500).json({ error: "Server error" });

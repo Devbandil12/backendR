@@ -2,6 +2,7 @@
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
+import { redis as redisClient } from '../configs/redis.js'; // 🟢 ADDED: Import Redis for Idempotency
 import {
   ordersTable,
   productsTable,
@@ -12,7 +13,7 @@ import {
   addToCartTable,
   usersTable,
   walletTransactionsTable,
-  orderTimeline // 🟢 ADDED: Import Timeline
+  orderTimeline
 } from '../configs/schema.js';
 import { eq, sql, and, inArray, gte } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -41,7 +42,7 @@ export async function createShiprocketOrderForExistingOrder(orderId) {
         address: true,
         orderItems: {
           with: {
-            variant: true, // 🟢 We need variant details for weight
+            variant: true,
             product: true
           }
         }
@@ -58,7 +59,6 @@ export async function createShiprocketOrderForExistingOrder(orderId) {
       return;
     }
 
-    // 🟢 DYNAMIC WEIGHT CALCULATION
     let totalWeight = 0;
     let maxLength = 10;
     let maxBreadth = 10;
@@ -67,12 +67,9 @@ export async function createShiprocketOrderForExistingOrder(orderId) {
     const shiprocketItems = order.orderItems.map(item => {
       const variant = item.variant;
       
-      // Calculate weight for this line item
-      // Default to 0.5kg if missing
       const itemWeight = variant?.weight ? parseFloat(variant.weight) : 0.5; 
       totalWeight += (itemWeight * item.quantity);
 
-      // Determine Package Dimensions (Simple Logic: Max dimension of any item)
       if (variant) {
         if (variant.length > maxLength) maxLength = parseFloat(variant.length);
         if (variant.breadth > maxBreadth) maxBreadth = parseFloat(variant.breadth);
@@ -89,12 +86,11 @@ export async function createShiprocketOrderForExistingOrder(orderId) {
       };
     });
 
-    // Ensure minimum weight of 0.05kg to avoid API errors
     if (totalWeight <= 0) totalWeight = 0.5;
 
     const orderPayload = {
       order_id: order.id,
-      order_date: new Date(order.createdAt).toISOString().split('T')[0], // YYYY-MM-DD
+      order_date: new Date(order.createdAt).toISOString().split('T')[0],
       pickup_location: process.env.SHIPROCKET_PICKUP_LOCATION || 'Primary',
       billing_customer_name: order.user.name || 'Guest',
       billing_last_name: '',
@@ -108,11 +104,11 @@ export async function createShiprocketOrderForExistingOrder(orderId) {
       shipping_is_billing: true,
       order_items: shiprocketItems,
       payment_method: order.paymentMode === 'cod' ? 'COD' : 'Prepaid',
-      sub_total: order.totalAmount, // Total value to collect/declare
+      sub_total: order.totalAmount,
       length: maxLength,
       breadth: maxBreadth,
       height: maxHeight,
-      weight: parseFloat(totalWeight.toFixed(2)), // 🟢 Send calculated weight
+      weight: parseFloat(totalWeight.toFixed(2)),
     };
 
     console.log(`🚀 Creating Shiprocket Order for #${order.id} with Weight: ${totalWeight}kg`);
@@ -131,13 +127,11 @@ export async function createShiprocketOrderForExistingOrder(orderId) {
       console.log(`✅ Shiprocket Order Created: ${srResponse.order_id}`);
     } else {
       console.error("⚠️ Shiprocket Error:", srResponse);
-      // 🛑 CRITICAL FIX: Throw explicitly so the cron job's catch block executes and rolls back the order
       throw new Error(`Shiprocket API rejected payload: ${JSON.stringify(srResponse)}`);
     }
 
   } catch (error) {
     console.error("❌ Failed to sync order to Shiprocket:", error);
-    // 🛑 CRITICAL FIX: Rethrow the error so it doesn't get swallowed
     throw error;
   }
 }
@@ -147,11 +141,8 @@ const razorpay = new Razorpay({
   key_secret: RAZORPAY_SECRET_KEY,
 });
 
-// 🟢 1. PRE-CHECK HELPER (Read-Only)
-// Runs BEFORE payment to prevent opening Razorpay if stock is 0.
 export async function checkStockAvailability(cartItems) {
   for (const item of cartItems) {
-    // 1. Check Main Variant
     const [variant] = await db
       .select({ stock: productVariantsTable.stock, name: productVariantsTable.name })
       .from(productVariantsTable)
@@ -161,7 +152,6 @@ export async function checkStockAvailability(cartItems) {
       throw new Error(`Sorry, ${variant?.name || 'Item'} is currently out of stock.`);
     }
 
-    // 2. Check Bundle Contents (if it's a combo)
     const bundleContents = await db
       .select()
       .from(productBundlesTable)
@@ -181,27 +171,20 @@ export async function checkStockAvailability(cartItems) {
   }
 }
 
-// 🟢 2. ATOMIC REDUCE HELPER (Write)
-// Runs AFTER payment inside a Transaction.
 export async function reduceStock(cartItems, tx) {
   const affectedProductIds = new Set();
 
-  // Sort items to prevent Deadlocks
   const sortedItems = [...cartItems].sort((a, b) => a.variantId.localeCompare(b.variantId));
 
   for (const item of sortedItems) {
     affectedProductIds.add(item.productId);
 
-    // Check if Bundle
     const bundleContents = await tx
       .select()
       .from(productBundlesTable)
       .where(eq(productBundlesTable.bundleVariantId, item.variantId));
 
     if (bundleContents.length > 0) {
-      // --- Bundle Logic ---
-
-      // A. Reduce Bundle Parent
       const [updatedBundle] = await tx.update(productVariantsTable)
         .set({
           stock: sql`${productVariantsTable.stock} - ${item.quantity}`,
@@ -218,7 +201,6 @@ export async function reduceStock(cartItems, tx) {
       }
       affectedProductIds.add(updatedBundle.productId);
 
-      // B. Reduce Bundle Children
       for (const content of bundleContents) {
         const stockToReduce = content.quantity * item.quantity;
         const [updatedChild] = await tx.update(productVariantsTable)
@@ -239,7 +221,6 @@ export async function reduceStock(cartItems, tx) {
       }
 
     } else {
-      // --- Standard Product Logic ---
       const [updatedVariant] = await tx.update(productVariantsTable)
         .set({
           stock: sql`${productVariantsTable.stock} - ${item.quantity}`,
@@ -264,7 +245,6 @@ export async function reduceStock(cartItems, tx) {
 export const createOrder = async (req, res) => {
   try {
     const {
-      // user, // 🛑 SECURITY: Ignore user from body
       phone,
       paymentMode = 'online',
       cartItems,
@@ -314,17 +294,18 @@ export const createOrder = async (req, res) => {
       return res.status(404).json({ success: false, msg: "Address not found." });
     }
 
+    // 🟢 FIX 2.1: Enforce Business Rules on Coupons by passing user.id
     const breakdown = await calculatePriceBreakdown(
       secureCartItems,
       couponCode,
-      address.postalCode
+      address.postalCode,
+      user.id
     );
 
     let finalAmount = breakdown.total;
     let walletDeduction = 0;
 
     if (useWallet && user.walletBalance > 0) {
-      // Deduct whichever is smaller: The Bill Amount OR The Wallet Balance
       walletDeduction = Math.min(finalAmount, user.walletBalance);
       finalAmount = finalAmount - walletDeduction;
     }
@@ -337,6 +318,17 @@ export const createOrder = async (req, res) => {
         success: false,
         msg: "Cash on Delivery is not available for this address."
       });
+    }
+
+    // 🟢 FIX 2.4: SERVER-SIDE IDEMPOTENCY LOCK
+    // Applied right before DB mutation. Lock expires in 24h to prevent double-charges.
+    const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey;
+    if (idempotencyKey && redisClient) {
+      const isDuplicate = await redisClient.get(`idemp:order:${idempotencyKey}`);
+      if (isDuplicate) {
+        return res.status(409).json({ success: false, msg: 'Order request is already processing.' });
+      }
+      await redisClient.setex(`idemp:order:${idempotencyKey}`, 86400, 'locked');
     }
 
     const orderId = `DA${Date.now()}`;
@@ -382,14 +374,12 @@ export const createOrder = async (req, res) => {
     // SCENARIO A: Fully Paid via Wallet (finalAmount is 0)
     if (walletDeduction > 0 && finalAmount === 0) {
 
-      // 🟢 FIX 1: Capture the result from the transaction
       const { insertedOrder, affectedProductIds } = await db.transaction(async (tx) => {
-        // 1. Create Order as PAID
         const [orderResult] = await tx.insert(ordersTable).values({
           id: orderId,
           userId: user.id,
           userAddressId,
-          totalAmount: 0, // Paid fully by wallet
+          totalAmount: 0,
           walletAmountUsed: walletDeduction,
           status: 'Order Placed',
           paymentMode: 'wallet',
@@ -403,7 +393,6 @@ export const createOrder = async (req, res) => {
           progressStep: 1,
         }).returning();
 
-        // 🟢 ADD TIMELINE START
         await tx.insert(orderTimeline).values({
             orderId: orderId,
             status: 'Order Placed',
@@ -411,9 +400,7 @@ export const createOrder = async (req, res) => {
             description: 'Order placed successfully using Wallet.',
             timestamp: new Date()
         });
-        // 🟢 ADD TIMELINE END
 
-        // 2. Deduct from Wallet
         await tx.update(usersTable)
           .set({ walletBalance: sql`${usersTable.walletBalance} - ${walletDeduction}` })
           .where(eq(usersTable.id, user.id));
@@ -425,23 +412,13 @@ export const createOrder = async (req, res) => {
           description: `Used for Order #${orderId}`
         });
 
-        // 3. Insert Items & Reduce Stock
         await tx.insert(orderItemsTable).values(enrichedItems);
-
-        // Capture affected IDs
         const stockIds = await reduceStock(secureCartItems, tx);
-
-        // 4. Clear Cart
         await tx.delete(addToCartTable).where(eq(addToCartTable.userId, user.id));
 
-        // Return data to outer scope
         return { insertedOrder: orderResult, affectedProductIds: stockIds };
       });
 
-
-      // ⚡ FAST RESPONSE LOGIC
-
-      // 1. Notification (Background)
       createNotification(
         user.id,
         `Your order #${orderId} has been placed successfully.`,
@@ -449,7 +426,6 @@ export const createOrder = async (req, res) => {
         'order'
       ).catch(err => console.error("Notification fail:", err));
 
-      // 2. Emails (Via Redis Queue)
       db.select().from(usersTable).where(eq(usersTable.id, user.id))
         .then(([dbUser]) => {
           if (dbUser?.email) {
@@ -462,7 +438,6 @@ export const createOrder = async (req, res) => {
           }
         }).catch(err => console.error("Queue error:", err));
 
-      // 3. Cache Invalidation (Background)
       const itemsToInvalidate = [
         { key: makeAllOrdersKey(), prefix: true },
         { key: makeUserOrdersKey(user.id), prefix: true },
@@ -478,8 +453,6 @@ export const createOrder = async (req, res) => {
       }
 
       invalidateMultiple(itemsToInvalidate).catch(err => console.error("Cache invalidate fail:", err));
-
-      // 🟢 ADDED: Shiprocket Sync (Background)
       createShiprocketOrderForExistingOrder(orderId).catch(err => console.error("Shiprocket sync fail:", err));
 
       return res.json({ success: true, orderId, message: "Order placed using Wallet Balance!" });
@@ -490,7 +463,6 @@ export const createOrder = async (req, res) => {
       let transactionResult;
       try {
         transactionResult = await db.transaction(async (tx) => {
-          // A. Insert Order
           const [insertedOrder] = await tx.insert(ordersTable).values({
             id: orderId,
             userId: user.id,
@@ -510,7 +482,6 @@ export const createOrder = async (req, res) => {
             progressStep: 1,
           }).returning();
 
-          // 🟢 ADD TIMELINE START
           await tx.insert(orderTimeline).values({
             orderId: orderId,
             status: 'Order Placed',
@@ -518,9 +489,7 @@ export const createOrder = async (req, res) => {
             description: 'Order placed successfully via Cash on Delivery.',
             timestamp: new Date()
           });
-          // 🟢 ADD TIMELINE END
 
-          // If wallet was used, deduct it now
           if (walletDeduction > 0) {
             await tx.update(usersTable)
               .set({ walletBalance: sql`${usersTable.walletBalance} - ${walletDeduction}` })
@@ -534,14 +503,10 @@ export const createOrder = async (req, res) => {
             });
           }
 
-          // B. Insert Items
           await tx.insert(orderItemsTable).values(enrichedItems);
-
-          // C. Atomic Reduce
           const affectedProductIds = await reduceStock(secureCartItems, tx);
-
-          // D. Clear Cart
           const variantIdsToClear = secureCartItems.map(item => item.variantId);
+          
           await tx.delete(addToCartTable)
             .where(and(
               eq(addToCartTable.userId, user.id),
@@ -552,14 +517,14 @@ export const createOrder = async (req, res) => {
         });
       } catch (err) {
         console.error("COD Order Failed (Stock/DB):", err.message);
+        // Clean up idempotency lock on failure so user can retry
+        const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey;
+        if (idempotencyKey && redisClient) await redisClient.del(`idemp:order:${idempotencyKey}`);
         return res.status(400).json({ success: false, msg: err.message || "Order failed" });
       }
 
       const { insertedOrder, affectedProductIds } = transactionResult;
 
-      // ⚡ FAST COD RESPONSE: Everything below runs in the background
-
-      // 1. Notification (Background)
       createNotification(
         user.id,
         `Your order #${orderId} has been placed successfully.`,
@@ -567,7 +532,6 @@ export const createOrder = async (req, res) => {
         'order'
       ).catch(err => console.error("Notification fail:", err));
 
-      // 2. Emails (Via Redis Queue)
       db.select().from(usersTable).where(eq(usersTable.id, user.id))
         .then(([dbUser]) => {
           if (dbUser?.email) {
@@ -580,7 +544,6 @@ export const createOrder = async (req, res) => {
           }
         }).catch(err => console.error("Queue error:", err));
 
-      // 3. Cache Invalidation (Background)
       const itemsToInvalidate = [
         { key: makeAllOrdersKey(), prefix: true },
         { key: makeUserOrdersKey(user.id), prefix: true },
@@ -593,11 +556,8 @@ export const createOrder = async (req, res) => {
       );
 
       invalidateMultiple(itemsToInvalidate).catch(err => console.error("Cache invalidate fail:", err));
-
-      // 🟢 ADDED: Shiprocket Sync (Background)
       createShiprocketOrderForExistingOrder(orderId).catch(err => console.error("Shiprocket sync fail:", err));
 
-      // 🚀 IMMEDIATE RESPONSE
       return res.json({
         success: true,
         orderId,
@@ -646,6 +606,11 @@ export const createOrder = async (req, res) => {
 
   } catch (err) {
     console.error('createOrder error:', err);
+    // 🛑 Release lock on validation/server errors so user can retry
+    const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey;
+    if (idempotencyKey && redisClient) {
+       await redisClient.del(`idemp:order:${idempotencyKey}`);
+    }
     return res.status(500).json({ success: false, msg: err.message || 'Server error' });
   }
 };
@@ -657,13 +622,11 @@ export const verifyPayment = async (req, res) => {
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
-      // user, // 🛑 SECURITY: Ignore user from body
       cartItems,
       couponCode = null,
       userAddressId,
     } = req.body;
 
-    // 🔒 RESOLVE USER FROM TOKEN
     const requesterClerkId = req.auth.userId;
     const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, requesterClerkId));
     
@@ -693,7 +656,6 @@ export const verifyPayment = async (req, res) => {
       return res.status(404).json({ success: false, error: "Order not found." });
     }
     
-    // 🔒 Additional check: Ensure order belongs to logged-in user
     if (existingOrder.userId !== user.id) {
         return res.status(403).json({ success: false, error: "Forbidden: Not your order." });
     }
@@ -710,7 +672,6 @@ export const verifyPayment = async (req, res) => {
 
     const payment = await razorpay.payments.fetch(razorpay_payment_id);
 
-    // Compare Amount
     if (payment.amount !== existingOrder.totalAmount * 100) {
       console.error(`Mismatch: Razorpay Paid ${payment.amount} !== DB Expected ${existingOrder.totalAmount * 100}`);
       await razorpay.payments.refund(
@@ -727,6 +688,17 @@ export const verifyPayment = async (req, res) => {
 
     try {
       transactionResult = await db.transaction(async (tx) => {
+        
+        // 🟢 FIX 2.2: FRESH READ INSIDE TRANSACTION
+        // Lock the row to prevent race conditions on double webhook/callback firing
+        const [lockedOrder] = await tx.select()
+          .from(ordersTable)
+          .where(eq(ordersTable.id, existingOrder.id));
+
+        if (lockedOrder.paymentStatus === 'paid') {
+          return { alreadyPaid: true };
+        }
+
         const [updatedOrder] = await tx.update(ordersTable).set({
           status: 'Order Placed',
           paymentStatus: 'paid',
@@ -735,7 +707,6 @@ export const verifyPayment = async (req, res) => {
           updatedAt: new Date(),
         }).where(eq(ordersTable.id, existingOrder.id)).returning();
 
-        // 🟢 ADD TIMELINE START
         await tx.insert(orderTimeline).values({
             orderId: existingOrder.id,
             status: 'Order Placed',
@@ -743,9 +714,7 @@ export const verifyPayment = async (req, res) => {
             description: 'Payment verified and order placed successfully.',
             timestamp: new Date()
         });
-        // 🟢 ADD TIMELINE END
 
-        // 🟢 B. DEDUCT WALLET BALANCE HERE (Online Flow)
         if (existingOrder.walletAmountUsed > 0) {
             await tx.update(usersTable)
                 .set({ walletBalance: sql`${usersTable.walletBalance} - ${existingOrder.walletAmountUsed}` })
@@ -797,11 +766,15 @@ export const verifyPayment = async (req, res) => {
       return res.status(500).json({ success: false, error: error.message || "Server error" });
     }
 
+    // Early exit if the transaction determined the order was already paid
+    if (transactionResult.alreadyPaid) {
+      return res.json({ success: true, message: "Payment already verified & processed." });
+    }
+
     const { updatedOrder, affectedProductIds } = transactionResult;
 
     // ⚡ FAST ONLINE RESPONSE: Side effects run in background
 
-    // 1. Cache Invalidation (Background)
     const itemsToInvalidate = [
       { key: makeAllOrdersKey(), prefix: true },
       { key: makeUserOrdersKey(user.id), prefix: true },
@@ -814,7 +787,6 @@ export const verifyPayment = async (req, res) => {
     );
     invalidateMultiple(itemsToInvalidate).catch(err => console.error("Cache invalidate fail:", err));
 
-    // 2. Notification (Background)
     createNotification(
       user.id,
       `Your order #${existingOrder.id} has been placed successfully.`,
@@ -822,7 +794,6 @@ export const verifyPayment = async (req, res) => {
       'order'
     ).catch(err => console.error("Notification fail:", err));
 
-    // 3. Emails (Background)
     Promise.all([
       db.select().from(usersTable).where(eq(usersTable.id, user.id)),
       db.select().from(orderItemsTable).where(eq(orderItemsTable.orderId, existingOrder.id))
@@ -831,16 +802,14 @@ export const verifyPayment = async (req, res) => {
         addToEmailQueue({
           userEmail: dbUser.email,
           orderDetails: updatedOrder,
-          orderItems: dbOrderItems, // ✅ Passes full items
+          orderItems: dbOrderItems, 
           paymentDetails: req.body
         });
       }
     }).catch(e => console.error("Queue error:", e));
 
-    // 🟢 ADDED: Shiprocket Sync (Background)
     createShiprocketOrderForExistingOrder(existingOrder.id).catch(err => console.error("Shiprocket sync fail:", err));
 
-    // 🚀 IMMEDIATE RESPONSE
     return res.json({ success: true, message: "Payment verified & order placed." });
 
   } catch (error) {

@@ -13,7 +13,7 @@ import {
   productBundlesTable,
   orderTimeline
 } from "../configs/schema.js";
-import { eq, asc, desc, sql, inArray } from "drizzle-orm";
+import { eq, asc, desc, sql, inArray, and, gte } from "drizzle-orm"; // 🟢 ADDED: and, gte
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import {
@@ -25,7 +25,7 @@ import {
   makeAdminOrdersReportKey,
 } from "../cacheKeys.js";
 import { createNotification } from '../helpers/notificationManager.js';
-import { generateInvoicePDF } from "../services/invoice.service.js";
+import { generateInvoiceBuffer } from "../services/invoice.service.js"; // 🟢 FIXED: Using Buffer Generator
 import { processReferralCompletion } from "../controllers/referralController.js";
 import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../services/shiprocket.service.js"; 
 
@@ -300,8 +300,15 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
       txnId = null;
     }
 
+    // 🟢 FIX 2.6: Sequential, GST-compliant Invoice Numbers
     const orderYear = new Date(order.createdAt).getFullYear();
-    const invoiceNo = `INV-${orderYear}-${order.id}`;
+    const countQuery = await db.select({ count: sql`count(*)` })
+      .from(ordersTable)
+      .where(gte(ordersTable.createdAt, new Date(orderYear, 0, 1)));
+      
+    // Generates a sequence padded to 5 digits (e.g., INV-2026-00015)
+    const sequence = String(Number(countQuery[0].count)).padStart(5, '0');
+    const invoiceNo = `INV-${orderYear}-${sequence}`;
 
     const orderData = {
       id: order.id,
@@ -319,13 +326,16 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
       }
     };
 
-    const { filePath } = await generateInvoicePDF({
+    // 🟢 FIX 2.7: Generate PDF in memory buffer (no local disk writes)
+    const pdfBuffer = await generateInvoiceBuffer({
       order: orderData,
       items: items,
       billing: billing
     });
 
-    res.download(filePath, `Invoice-${order.id}.pdf`);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${invoiceNo}.pdf"`);
+    return res.send(pdfBuffer);
 
   } catch (error) {
     console.error("❌ Error generating invoice:", error);
@@ -389,7 +399,6 @@ router.post("/get-my-orders", requireAuth, async (req, res) => {
 
 /* ======================================================
    🔒 PUT UPDATE STATUS (Admin Only)
-   ❌ REMOVED: Manual Courier Inputs
 ====================================================== */
 router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
   try {
@@ -414,7 +423,6 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
     if (!currentOrder) return res.status(404).json({ error: "Order not found" });
 
     // 🟢 SHIPROCKET SAFEGUARD
-    // Cannot manually mark as Shipped if no AWB is assigned yet
     if (status === "Shipped" && !currentOrder.shiprocketAwb) {
         return res.status(400).json({ 
             error: "Action Blocked: No Shiprocket AWB Found. Please generate a label in the dashboard first." 
@@ -546,16 +554,13 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
       }
     }
 
-    // 🟢 Shiprocket Cancel Integration (CRITICAL FIX APPLIED)
     const shiprocketIdToCancel = order.shiprocketOrderId || order.shiprocketShipmentId;
 
     if (shiprocketIdToCancel) {
       try {
         console.log(`Attempting to cancel Shiprocket order ID: ${shiprocketIdToCancel}`);
-        // Shiprocket cancel API expects an array of order IDs
         await cancelShiprocketOrder([shiprocketIdToCancel]);
         
-        // Optional: Add a success note to the timeline
         await db.insert(orderTimeline).values({
           orderId: id,
           status: 'Order Cancelled',
@@ -567,7 +572,6 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
       } catch (shiprocketError) {
         console.error(`🚨 Shiprocket Cancellation Failed for Order ${id}:`, shiprocketError.message);
 
-        // CRITICAL FIX: Log the failure to the timeline so admins see it
         await db.insert(orderTimeline).values({
           orderId: id,
           status: 'Order Cancelled',
@@ -681,7 +685,6 @@ router.get("/details/for-reports", requireAuth, verifyAdmin, cache(makeAdminOrde
 
 /* ======================================================
    🔒 BULK STATUS UPDATE (Admin Only)
-   ❌ REMOVED: Manual Courier Inputs
 ====================================================== */
 router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
   try {
@@ -824,73 +827,93 @@ router.post("/:id/return", requireAuth, async (req, res) => {
       return res.status(403).json({ error: "Forbidden: You cannot initiate a return for this order." });
     }
 
-    if (order.status !== 'Delivered') {
-      return res.status(400).json({ error: "Only delivered orders can be returned." });
+    // 🟢 FIX 2.8: ATOMIC LOCK for Race Condition
+    // Lock the row by transitioning from 'Delivered' -> 'Processing Return' immediately
+    const [lockedOrder] = await db.update(ordersTable)
+      .set({ status: 'Processing Return', updatedAt: new Date() })
+      .where(and(
+        eq(ordersTable.id, id),
+        eq(ordersTable.status, 'Delivered')
+      ))
+      .returning();
+
+    if (!lockedOrder) {
+      return res.status(400).json({ error: "Order is not delivered or a return is already in progress." });
     }
 
-    // 4. Build Shiprocket Return Payload
-    const formattedItems = order.orderItems.map(item => ({
-      name: item.productName,
-      sku: item.variant?.sku || `SKU-${item.variantId.substring(0, 8)}`,
-      units: item.quantity,
-      selling_price: item.price,
-    }));
+    try {
+      // 4. Build Shiprocket Return Payload
+      const formattedItems = order.orderItems.map(item => ({
+        name: item.productName,
+        sku: item.variant?.sku || `SKU-${item.variantId.substring(0, 8)}`,
+        units: item.quantity,
+        selling_price: item.price,
+      }));
 
-    const returnPayload = {
-      order_id: `RET-${order.id}`, // Prefix internal order ID to denote a return
-      order_date: new Date().toISOString().split('T')[0],
-      
-      // 🚚 1. PICKUP FROM CUSTOMER
-      pickup_customer_name: order.user.name,
-      pickup_address: order.address.address,
-      pickup_city: order.address.city,
-      pickup_state: order.address.state,
-      pickup_country: order.address.country || "India",
-      pickup_pincode: order.address.postalCode,
-      pickup_email: order.user.email,
-      pickup_phone: order.address.phone || order.user.phone,
-      
-      // 🏢 2. DELIVER BACK TO WAREHOUSE (Strictly from env vars - no hardcoded fallbacks)
-      shipping_customer_name: process.env.RETURN_CUSTOMER_NAME,
-      shipping_phone: process.env.RETURN_PHONE,
-      shipping_address: process.env.RETURN_ADDRESS,
-      shipping_city: process.env.RETURN_CITY,
-      shipping_state: process.env.RETURN_STATE,
-      shipping_pincode: process.env.RETURN_PINCODE,
-      shipping_country: process.env.RETURN_COUNTRY,
-      
-      order_items: formattedItems,
-      payment_method: "Prepaid",
-      sub_total: order.totalAmount,
-      length: 10, breadth: 10, height: 10, weight: 0.5 // Default dimensions
-    };
+      const returnPayload = {
+        order_id: `RET-${order.id}`, // Prefix internal order ID to denote a return
+        order_date: new Date().toISOString().split('T')[0],
+        
+        // 🚚 1. PICKUP FROM CUSTOMER
+        pickup_customer_name: order.user.name,
+        pickup_address: order.address.address,
+        pickup_city: order.address.city,
+        pickup_state: order.address.state,
+        pickup_country: order.address.country || "India",
+        pickup_pincode: order.address.postalCode,
+        pickup_email: order.user.email,
+        pickup_phone: order.address.phone || order.user.phone,
+        
+        // 🏢 2. DELIVER BACK TO WAREHOUSE (Strictly from env vars)
+        shipping_customer_name: process.env.RETURN_CUSTOMER_NAME,
+        shipping_phone: process.env.RETURN_PHONE,
+        shipping_address: process.env.RETURN_ADDRESS,
+        shipping_city: process.env.RETURN_CITY,
+        shipping_state: process.env.RETURN_STATE,
+        shipping_pincode: process.env.RETURN_PINCODE,
+        shipping_country: process.env.RETURN_COUNTRY,
+        
+        order_items: formattedItems,
+        payment_method: "Prepaid",
+        sub_total: order.totalAmount,
+        length: 10, breadth: 10, height: 10, weight: 0.5 // Default dimensions
+      };
 
-    // 5. Push to Shiprocket
-    const shiprocketRes = await createReturnOrder(returnPayload);
+      // 5. Push to Shiprocket
+      const shiprocketRes = await createReturnOrder(returnPayload);
 
-    // 6. Update Database Status
-    await db.update(ordersTable).set({
-      status: "Return Initiated",
-      updatedAt: new Date()
-    }).where(eq(ordersTable.id, id));
+      // 6. Update Database Status
+      await db.update(ordersTable).set({
+        status: "Return Initiated",
+        updatedAt: new Date()
+      }).where(eq(ordersTable.id, id));
 
-    // 7. Add Timeline Event
-    await db.insert(orderTimeline).values({
-      orderId: order.id,
-      status: 'Return Initiated',
-      title: 'Return Initiated',
-      description: `Reverse pickup generated. AWB: ${shiprocketRes.awb_code || 'Pending'}`,
-      timestamp: new Date()
-    });
+      // 7. Add Timeline Event
+      await db.insert(orderTimeline).values({
+        orderId: order.id,
+        status: 'Return Initiated',
+        title: 'Return Initiated',
+        description: `Reverse pickup generated. AWB: ${shiprocketRes.awb_code || 'Pending'}`,
+        timestamp: new Date()
+      });
 
-    // 8. Invalidate Caches
-    await invalidateMultiple([
-      { key: makeOrderKey(order.id) },
-      { key: makeUserOrdersKey(order.userId) },
-      { key: makeAllOrdersKey() }
-    ]);
+      // 8. Invalidate Caches
+      await invalidateMultiple([
+        { key: makeOrderKey(order.id) },
+        { key: makeUserOrdersKey(order.userId) },
+        { key: makeAllOrdersKey() }
+      ]);
 
-    res.json({ message: "Return initiated successfully", shiprocketRes });
+      res.json({ message: "Return initiated successfully", shiprocketRes });
+
+    } catch (shiprocketError) {
+      // 🛑 ROLLBACK: If Shiprocket API fails, unlock the order so the user can try again
+      await db.update(ordersTable)
+        .set({ status: "Delivered", updatedAt: new Date() })
+        .where(eq(ordersTable.id, id));
+
+      throw shiprocketError;
+    }
 
   } catch (error) {
     console.error("❌ Return initiation failed:", error.message);
