@@ -27,14 +27,14 @@ import {
 import { createNotification } from '../helpers/notificationManager.js';
 import { generateInvoiceBuffer } from "../services/invoice.service.js"; // 🟢 FIXED: Using Buffer Generator
 import { processReferralCompletion } from "../controllers/referralController.js";
-import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../services/shiprocket.service.js"; 
+import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../services/shiprocket.service.js";
 
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
 
 // 🛑 CRITICAL STARTUP CHECK: Ensure return logistics environment variables exist
 const requiredReturnEnvs = [
-  'RETURN_CUSTOMER_NAME', 'RETURN_PHONE', 'RETURN_ADDRESS', 
+  'RETURN_CUSTOMER_NAME', 'RETURN_PHONE', 'RETURN_ADDRESS',
   'RETURN_CITY', 'RETURN_STATE', 'RETURN_PINCODE', 'RETURN_COUNTRY'
 ];
 const missingEnvs = requiredReturnEnvs.filter(env => !process.env[env]);
@@ -185,7 +185,7 @@ router.get("/:id", requireAuth, async (req, res) => {
           });
 
           order.refund_status = refund.status;
-            order.refund_speed = refund.speed_processed || order.refund_speed;
+          order.refund_speed = refund.speed_processed || order.refund_speed;
           order.refund_completed_at = completedAt;
           if (refund.status === 'processed') order.paymentStatus = 'refunded';
         }
@@ -254,10 +254,7 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
         user: { columns: { name: true, phone: true, email: true } },
         address: true,
         orderItems: {
-          with: {
-            product: true,
-            variant: true,
-          },
+          with: { product: true, variant: true },
         },
       },
     });
@@ -270,10 +267,7 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
 
     const addr = order.address || {};
     const formattedAddress = [
-      addr.address,
-      addr.landmark,
-      `${addr.city}, ${addr.state}`,
-      `${addr.country} - ${addr.postalCode}`
+      addr.address, addr.landmark, `${addr.city}, ${addr.state}`, `${addr.country} - ${addr.postalCode}`
     ].filter(Boolean).join(", ");
 
     const billing = {
@@ -296,19 +290,10 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
     const deliveryCharge = Math.max(0, order.totalAmount - subtotal + totalDiscount + walletUsed);
 
     let txnId = order.transactionId;
-    if (!txnId || txnId === "null" || txnId === "undefined") {
-      txnId = null;
-    }
+    if (!txnId || txnId === "null" || txnId === "undefined") txnId = null;
 
-    // 🟢 FIX 2.6: Sequential, GST-compliant Invoice Numbers
-    const orderYear = new Date(order.createdAt).getFullYear();
-    const countQuery = await db.select({ count: sql`count(*)` })
-      .from(ordersTable)
-      .where(gte(ordersTable.createdAt, new Date(orderYear, 0, 1)));
-      
-    // Generates a sequence padded to 5 digits (e.g., INV-2026-00015)
-    const sequence = String(Number(countQuery[0].count)).padStart(5, '0');
-    const invoiceNo = `INV-${orderYear}-${sequence}`;
+    // 🟢 READ PERSISTED INVOICE NUMBER (Fallback for legacy orders before this update)
+    const invoiceNo = order.invoiceNumber || `INV-LEGACY-${order.id.slice(0, 8)}`;
 
     const orderData = {
       id: order.id,
@@ -317,6 +302,7 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
       paymentMode: order.paymentMode,
       transactionId: txnId,
       invoiceNumber: invoiceNo,
+      shippingState: addr.state, // 🟢 Passed down to calculate IGST vs CGST/SGST
       totals: {
         subtotal: subtotal,
         discount: totalDiscount,
@@ -326,7 +312,6 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
       }
     };
 
-    // 🟢 FIX 2.7: Generate PDF in memory buffer (no local disk writes)
     const pdfBuffer = await generateInvoiceBuffer({
       order: orderData,
       items: items,
@@ -342,6 +327,7 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to generate invoice" });
   }
 });
+
 
 /* ======================================================
    🔒 POST GET MY ORDERS (User Only)
@@ -424,9 +410,9 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
 
     // 🟢 SHIPROCKET SAFEGUARD
     if (status === "Shipped" && !currentOrder.shiprocketAwb) {
-        return res.status(400).json({ 
-            error: "Action Blocked: No Shiprocket AWB Found. Please generate a label in the dashboard first." 
-        });
+      return res.status(400).json({
+        error: "Action Blocked: No Shiprocket AWB Found. Please generate a label in the dashboard first."
+      });
     }
 
     const oldStatus = currentOrder?.status;
@@ -450,9 +436,9 @@ router.put("/:id/status", requireAuth, verifyAdmin, async (req, res) => {
     // 2. Timeline
     const timelineTitle = status;
     const timelineDesc = message || getDefaultMessageForStatus(
-        status, 
-        currentOrder.courierName, 
-        currentOrder.shiprocketAwb
+      status,
+      currentOrder.courierName,
+      currentOrder.shiprocketAwb
     );
 
     await db.insert(orderTimeline).values({
@@ -560,7 +546,7 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
       try {
         console.log(`Attempting to cancel Shiprocket order ID: ${shiprocketIdToCancel}`);
         await cancelShiprocketOrder([shiprocketIdToCancel]);
-        
+
         await db.insert(orderTimeline).values({
           orderId: id,
           status: 'Order Cancelled',
@@ -698,13 +684,13 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
 
     // 🟢 SHIPROCKET BULK SAFEGUARD
     if (status === "Shipped") {
-        const selectedOrders = await db.select().from(ordersTable).where(inArray(ordersTable.id, orderIds));
-        const invalidOrder = selectedOrders.find(o => !o.shiprocketAwb);
-        if (invalidOrder) {
-            return res.status(400).json({ 
-                error: `Cannot bulk ship. Order #${invalidOrder.id} missing AWB. Generate labels first.` 
-            });
-        }
+      const selectedOrders = await db.select().from(ordersTable).where(inArray(ordersTable.id, orderIds));
+      const invalidOrder = selectedOrders.find(o => !o.shiprocketAwb);
+      if (invalidOrder) {
+        return res.status(400).json({
+          error: `Cannot bulk ship. Order #${invalidOrder.id} missing AWB. Generate labels first.`
+        });
+      }
     }
 
     const adminUser = await db.query.usersTable.findFirst({
@@ -802,14 +788,14 @@ router.post("/:id/return", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const requesterClerkId = req.auth.userId;
-    
+
     // 1. Fetch requester to verify identity & role
     const requester = await db.query.usersTable.findFirst({
       where: eq(usersTable.clerkId, requesterClerkId),
       columns: { id: true, role: true }
     });
     if (!requester) return res.status(401).json({ error: "Unauthorized" });
-    
+
     // 2. Fetch the order
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.id, id),
@@ -853,7 +839,7 @@ router.post("/:id/return", requireAuth, async (req, res) => {
       const returnPayload = {
         order_id: `RET-${order.id}`, // Prefix internal order ID to denote a return
         order_date: new Date().toISOString().split('T')[0],
-        
+
         // 🚚 1. PICKUP FROM CUSTOMER
         pickup_customer_name: order.user.name,
         pickup_address: order.address.address,
@@ -863,7 +849,7 @@ router.post("/:id/return", requireAuth, async (req, res) => {
         pickup_pincode: order.address.postalCode,
         pickup_email: order.user.email,
         pickup_phone: order.address.phone || order.user.phone,
-        
+
         // 🏢 2. DELIVER BACK TO WAREHOUSE (Strictly from env vars)
         shipping_customer_name: process.env.RETURN_CUSTOMER_NAME,
         shipping_phone: process.env.RETURN_PHONE,
@@ -872,7 +858,7 @@ router.post("/:id/return", requireAuth, async (req, res) => {
         shipping_state: process.env.RETURN_STATE,
         shipping_pincode: process.env.RETURN_PINCODE,
         shipping_country: process.env.RETURN_COUNTRY,
-        
+
         order_items: formattedItems,
         payment_method: "Prepaid",
         sub_total: order.totalAmount,

@@ -2,7 +2,7 @@
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import { db } from '../configs/index.js';
-import { redis as redisClient } from '../configs/redis.js'; // 🟢 ADDED: Import Redis for Idempotency
+import { redis as redisClient } from '../configs/redis.js'; // 🟢 FIXED: Correctly aliased named export
 import {
   ordersTable,
   productsTable,
@@ -15,7 +15,7 @@ import {
   walletTransactionsTable,
   orderTimeline
 } from '../configs/schema.js';
-import { eq, sql, and, inArray, gte } from 'drizzle-orm';
+import { eq, sql, and, inArray, gte, desc } from 'drizzle-orm'; // 🟢 ADDED: desc for invoice sorting
 import { invalidateMultiple } from '../invalidateHelpers.js';
 import {
   makeAllOrdersKey,
@@ -32,6 +32,28 @@ import { addToEmailQueue } from '../services/emailQueue.js';
 import { createOrder as createShiprocketOrder } from '../services/shiprocket.service.js';
 
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
+
+// 🟢 FIX 2.6: ATOMIC INVOICE GENERATOR
+// Queries the last invoice number for the year inside the transaction and safely increments it.
+async function getNextInvoiceNumber(tx) {
+  const year = new Date().getFullYear();
+  const prefix = `INV-${year}-`;
+  
+  const [lastOrder] = await tx.select({ invoiceNumber: ordersTable.invoiceNumber })
+    .from(ordersTable)
+    .where(sql`${ordersTable.invoiceNumber} LIKE ${prefix + '%'}`)
+    .orderBy(desc(ordersTable.invoiceNumber))
+    .limit(1);
+
+  let nextSeq = 1;
+  if (lastOrder?.invoiceNumber) {
+    const parts = lastOrder.invoiceNumber.split('-');
+    if (parts.length === 3) {
+      nextSeq = parseInt(parts[2], 10) + 1;
+    }
+  }
+  return `${prefix}${String(nextSeq).padStart(5, '0')}`;
+}
 
 export async function createShiprocketOrderForExistingOrder(orderId) {
   try {
@@ -294,7 +316,7 @@ export const createOrder = async (req, res) => {
       return res.status(404).json({ success: false, msg: "Address not found." });
     }
 
-    // 🟢 FIX 2.1: Enforce Business Rules on Coupons by passing user.id
+    // 🟢 FIX 2.1: ENFORCE BUSINESS RULES (passing user.id to calculatePriceBreakdown)
     const breakdown = await calculatePriceBreakdown(
       secureCartItems,
       couponCode,
@@ -321,7 +343,6 @@ export const createOrder = async (req, res) => {
     }
 
     // 🟢 FIX 2.4: SERVER-SIDE IDEMPOTENCY LOCK
-    // Applied right before DB mutation. Lock expires in 24h to prevent double-charges.
     const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey;
     if (idempotencyKey && redisClient) {
       const isDuplicate = await redisClient.get(`idemp:order:${idempotencyKey}`);
@@ -375,6 +396,8 @@ export const createOrder = async (req, res) => {
     if (walletDeduction > 0 && finalAmount === 0) {
 
       const { insertedOrder, affectedProductIds } = await db.transaction(async (tx) => {
+        const newInvoiceNumber = await getNextInvoiceNumber(tx); // 🟢 Generate atomic invoice number
+
         const [orderResult] = await tx.insert(ordersTable).values({
           id: orderId,
           userId: user.id,
@@ -391,6 +414,7 @@ export const createOrder = async (req, res) => {
           offerDiscount: breakdown.offerDiscount,
           offerCodes: breakdown.appliedOffers.map(o => o.title),
           progressStep: 1,
+          invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
         }).returning();
 
         await tx.insert(orderTimeline).values({
@@ -463,6 +487,8 @@ export const createOrder = async (req, res) => {
       let transactionResult;
       try {
         transactionResult = await db.transaction(async (tx) => {
+          const newInvoiceNumber = await getNextInvoiceNumber(tx); // 🟢 Generate atomic invoice number
+
           const [insertedOrder] = await tx.insert(ordersTable).values({
             id: orderId,
             userId: user.id,
@@ -480,6 +506,7 @@ export const createOrder = async (req, res) => {
             offerDiscount: offerDiscount,
             offerCodes: offerCodes,
             progressStep: 1,
+            invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
           }).returning();
 
           await tx.insert(orderTimeline).values({
@@ -590,6 +617,7 @@ export const createOrder = async (req, res) => {
         offerDiscount,
         offerCodes,
         progressStep: 0,
+        // Invoice number will be generated during verifyPayment when payment succeeds
       });
 
       await tx.insert(orderItemsTable).values(enrichedItems);
@@ -699,12 +727,15 @@ export const verifyPayment = async (req, res) => {
           return { alreadyPaid: true };
         }
 
+        const newInvoiceNumber = await getNextInvoiceNumber(tx); // 🟢 Generate atomic invoice number on success
+
         const [updatedOrder] = await tx.update(ordersTable).set({
           status: 'Order Placed',
           paymentStatus: 'paid',
           transactionId: razorpay_payment_id,
           progressStep: 1,
           updatedAt: new Date(),
+          invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
         }).where(eq(ordersTable.id, existingOrder.id)).returning();
 
         await tx.insert(orderTimeline).values({

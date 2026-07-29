@@ -211,6 +211,7 @@ export const ordersTable = pgTable('orders', {
   refund_initiated_at: timestamp('refund_initiated_at'),
   refund_completed_at: timestamp('refund_completed_at'),
   walletAmountUsed: integer('wallet_amount_used').default(0),
+  invoiceNumber: varchar('invoice_number', { length: 50 }).unique(),
 
   // Coupons & Offers
   couponCode: varchar('coupon_code', { length: 50 }),
