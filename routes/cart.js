@@ -15,6 +15,7 @@ import { and, eq, inArray, sql, desc, count, gt, lt } from "drizzle-orm";
 
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import * as keys from "../cacheKeys.js";
+import { calculatePriceBreakdown } from "../helpers/priceEngine.js"; // 🟢 ADDED: For Step 4.2 Price Preview
 
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
@@ -92,6 +93,42 @@ router.get("/:userId", requireAuth, async (req, res) => {
     }
   }
 );
+
+/* =========================================================
+   🟢 STEP 4.2: PRICE PREVIEW ROUTE
+========================================================= */
+router.post("/price-preview", requireAuth, async (req, res) => {
+    try {
+        const { cartItems, couponCode, pincode, userId } = req.body;
+        
+        const requesterClerkId = req.auth.userId;
+        const user = await db.query.usersTable.findFirst({
+            where: eq(usersTable.clerkId, requesterClerkId),
+            columns: { id: true }
+        });
+        if (!user) return res.status(401).json({ error: "User not found" });
+
+        const targetUserId = userId || user.id;
+
+        // Calls our newly secured price engine
+        const breakdown = await calculatePriceBreakdown(cartItems, couponCode, pincode, targetUserId);
+        
+        res.json({ 
+            success: true, 
+            breakdown,
+            message: breakdown.rejectionMessage || null 
+        });
+
+    } catch (error) {
+        // Captures strict engine throws (segment failures, usage limits, expired codes)
+        res.json({ 
+            success: false, 
+            error: true, 
+            message: error.message, 
+            breakdown: null 
+        });
+    }
+});
 
 // POST /api/cart — Add product
 router.post("/", requireAuth, async (req, res) => {

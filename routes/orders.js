@@ -13,7 +13,7 @@ import {
   productBundlesTable,
   orderTimeline
 } from "../configs/schema.js";
-import { eq, asc, desc, sql, inArray, and, gte } from "drizzle-orm"; // 🟢 ADDED: and, gte
+import { eq, asc, desc, sql, inArray, and, gte } from "drizzle-orm"; 
 import { cache } from "../cacheMiddleware.js";
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import {
@@ -25,7 +25,7 @@ import {
   makeAdminOrdersReportKey,
 } from "../cacheKeys.js";
 import { createNotification } from '../helpers/notificationManager.js';
-import { generateInvoiceBuffer } from "../services/invoice.service.js"; // 🟢 FIXED: Using Buffer Generator
+import { generateInvoiceBuffer } from "../services/invoice.service.js"; 
 import { processReferralCompletion } from "../controllers/referralController.js";
 import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../services/shiprocket.service.js";
 
@@ -292,7 +292,6 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
     let txnId = order.transactionId;
     if (!txnId || txnId === "null" || txnId === "undefined") txnId = null;
 
-    // 🟢 READ PERSISTED INVOICE NUMBER (Fallback for legacy orders before this update)
     const invoiceNo = order.invoiceNumber || `INV-LEGACY-${order.id.slice(0, 8)}`;
 
     const orderData = {
@@ -302,7 +301,7 @@ router.get("/:id/invoice", requireAuth, async (req, res) => {
       paymentMode: order.paymentMode,
       transactionId: txnId,
       invoiceNumber: invoiceNo,
-      shippingState: addr.state, // 🟢 Passed down to calculate IGST vs CGST/SGST
+      shippingState: addr.state,
       totals: {
         subtotal: subtotal,
         discount: totalDiscount,

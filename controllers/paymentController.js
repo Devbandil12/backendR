@@ -13,7 +13,8 @@ import {
   addToCartTable,
   usersTable,
   walletTransactionsTable,
-  orderTimeline
+  orderTimeline,
+  couponRedemptionsTable // 🟢 ADDED: For tracking coupon redemptions
 } from '../configs/schema.js';
 import { eq, sql, and, inArray, gte, desc } from 'drizzle-orm'; // 🟢 ADDED: desc for invoice sorting
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -417,6 +418,16 @@ export const createOrder = async (req, res) => {
           invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
         }).returning();
 
+        // 🟢 STEP 4: Record Coupon Redemption as 'completed' for Wallet Orders
+        if (breakdown.appliedCouponId) {
+          await tx.insert(couponRedemptionsTable).values({
+            couponId: breakdown.appliedCouponId,
+            userId: user.id,
+            orderId: orderId,
+            status: 'completed'
+          });
+        }
+
         await tx.insert(orderTimeline).values({
             orderId: orderId,
             status: 'Order Placed',
@@ -508,6 +519,16 @@ export const createOrder = async (req, res) => {
             progressStep: 1,
             invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
           }).returning();
+
+          // 🟢 STEP 4: Record Coupon Redemption as 'completed' for COD Orders
+          if (breakdown.appliedCouponId) {
+            await tx.insert(couponRedemptionsTable).values({
+              couponId: breakdown.appliedCouponId,
+              userId: user.id,
+              orderId: orderId,
+              status: 'completed'
+            });
+          }
 
           await tx.insert(orderTimeline).values({
             orderId: orderId,
@@ -619,6 +640,16 @@ export const createOrder = async (req, res) => {
         progressStep: 0,
         // Invoice number will be generated during verifyPayment when payment succeeds
       });
+
+      // 🟢 STEP 4: Record Coupon Redemption as 'pending' for Online Orders
+      if (breakdown.appliedCouponId) {
+        await tx.insert(couponRedemptionsTable).values({
+          couponId: breakdown.appliedCouponId,
+          userId: user.id,
+          orderId: orderId,
+          status: 'pending'
+        });
+      }
 
       await tx.insert(orderItemsTable).values(enrichedItems);
     });
@@ -737,6 +768,11 @@ export const verifyPayment = async (req, res) => {
           updatedAt: new Date(),
           invoiceNumber: newInvoiceNumber // 🟢 Persist invoice number
         }).where(eq(ordersTable.id, existingOrder.id)).returning();
+
+        // 🟢 STEP 4: Lock in the Coupon Redemption status to 'completed' upon successful payment verification
+        await tx.update(couponRedemptionsTable)
+          .set({ status: 'completed' })
+          .where(eq(couponRedemptionsTable.orderId, existingOrder.id));
 
         await tx.insert(orderTimeline).values({
             orderId: existingOrder.id,

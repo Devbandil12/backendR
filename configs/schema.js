@@ -1,15 +1,15 @@
 // file: configs/schema.js
 
-import { 
-  pgTable, 
-  serial, 
-  text, 
-  integer, 
-  uuid, 
-  varchar, 
-  timestamp, 
-  boolean, 
-  index, 
+import {
+  pgTable,
+  serial,
+  text,
+  integer,
+  uuid,
+  varchar,
+  timestamp,
+  boolean,
+  index,
   jsonb,
   real,
   json
@@ -214,7 +214,7 @@ export const ordersTable = pgTable('orders', {
   invoiceNumber: varchar('invoice_number', { length: 50 }).unique(),
 
   // Coupons & Offers
-  couponCode: varchar('coupon_code', { length: 50 }),
+  couponId: integer('coupon_id').references(() => couponsTable.id),
   discountAmount: integer('discount_amount').default(0),
   offerDiscount: integer('offer_discount').default(0),
   offerCodes: jsonb('offer_codes'),
@@ -246,10 +246,10 @@ export const orderItemsTable = pgTable('order_items', {
 // Order Timeline Table
 export const orderTimeline = pgTable("order_timeline", {
   id: uuid("id").defaultRandom().primaryKey().notNull(),
-  
+
   orderId: text("order_id")
     .notNull()
-    .references(() => ordersTable.id, { onDelete: "cascade" }), 
+    .references(() => ordersTable.id, { onDelete: "cascade" }),
 
   status: varchar("status", { length: 50 }).notNull(),
   title: text("title").notNull(),
@@ -281,6 +281,20 @@ export const couponsTable = pgTable('coupons', {
   action_getY: integer('action_get_y'),
   targetUserId: uuid('target_user_id').references(() => usersTable.id, { onDelete: 'cascade' }),
   targetCategory: varchar('target_category', { length: 50 }),
+  totalUsageLimit: integer('total_usage_limit'),
+  isActive: boolean('is_active').default(true).notNull(),
+});
+
+// Make sure to import timestamp, varchar, etc. if you haven't already
+export const couponRedemptionsTable = pgTable('coupon_redemptions', {
+  id: serial('id').primaryKey(),
+  couponId: integer('coupon_id').references(() => couponsTable.id).notNull(),
+  userId: uuid('user_id').references(() => usersTable.id).notNull(),
+  orderId: text('order_id').references(() => ordersTable.id).notNull(),
+  // Tracks if the redemption is 'pending_payment', 'completed', or 'cancelled'
+  status: varchar('status').notNull().default('pending'),
+
+  redeemedAt: timestamp('redeemed_at').defaultNow().notNull(),
 });
 
 

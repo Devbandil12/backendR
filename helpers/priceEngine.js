@@ -1,8 +1,17 @@
 // server/helpers/priceEngine.js
 import { db } from '../configs/index.js';
-import { couponsTable, productVariantsTable, ordersTable } from '../configs/schema.js';
+import { 
+  couponsTable, 
+  productVariantsTable, 
+  ordersTable, 
+  usersTable, 
+  couponRedemptionsTable 
+} from '../configs/schema.js';
 import { eq, inArray, and, isNull, gte, lte, or, sql } from 'drizzle-orm';
 import { getPincodeDetails } from '../controllers/addressController.js'; 
+
+// 🟢 NEW: Import the single source of truth for segments
+import { userMatchesSegment } from './segmentMatcher.js';
 
 export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, userId) => {
   // 1. Initialize totals
@@ -12,9 +21,7 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
   let offerDiscount = 0; 
   let appliedOffers = []; 
 
-  // 🟢 FIX 1: STRICT DELIVERY CHARGE HANDLING
-  // Only fetch details if a valid pincode is provided. 
-  // If pincode is null/undefined (Cart View), deliveryCharge must be 0.
+  // 2. STRICT DELIVERY CHARGE HANDLING
   let deliveryCharge = 0;
   let codAvailable = false;
 
@@ -29,11 +36,11 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
   // 3. Get full cart item details from DB
   const variantIds = cartItems.map(item => item.variantId);
   if (variantIds.length === 0) {
-      // Return zeroed out structure if empty
       return { 
         originalTotal: 0, productTotal: 0, deliveryCharge: 0, 
         offerDiscount: 0, appliedOffers: [], discountAmount: 0, 
-        total: 0, codAvailable: false, walletUsed: 0 
+        total: 0, codAvailable: false, walletUsed: 0,
+        appliedCouponId: null, rejectionMessage: null
       };
   }
   
@@ -41,7 +48,8 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
     where: inArray(productVariantsTable.id, variantIds),
     with: {
       product: {
-        columns: { category: true, mrp: true } // Added mrp just in case
+        // 🟢 FIXED: Removed the dead 'mrp' reference
+        columns: { category: true } 
       }
     }
   });
@@ -74,6 +82,7 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
     .where(
       and(
         eq(couponsTable.isAutomatic, true),
+        eq(couponsTable.isActive, true), // Ensure it's active
         or(isNull(couponsTable.validFrom), lte(couponsTable.validFrom, now)),
         or(isNull(couponsTable.validUntil), gte(couponsTable.validUntil, now))
       )
@@ -114,7 +123,9 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
 
         if (numFreeItems > 0) {
           const cheapestItem = matchingItems.sort((a, b) => a.discountedPrice - b.discountedPrice)[0];
-          discountAmount = cheapestItem.discountedPrice * numFreeItems;
+          // 🟢 FIXED: Clamp to ensure we never discount more items than exist in the cart
+          const actualFreeItems = Math.min(numFreeItems, cheapestItem.quantity);
+          discountAmount = cheapestItem.discountedPrice * actualFreeItems;
         } else { offerIsValid = false; }
       }
       
@@ -162,8 +173,9 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
     }
   }
 
-  // 6. --- MANUAL COUPON LOGIC ---
+  // 6. --- MANUAL COUPON LOGIC (STRICT ENFORCEMENT) ---
   let manualCoupon = null;
+  
   if (couponCode) {
       const [c] = await db.select().from(couponsTable).where(
         and(
@@ -173,62 +185,108 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
       );
       
       if (c) {
-          // 🔒 SECURITY FIX: ENFORCE First Order Only
-          if (c.firstOrderOnly && userId) {
-            const [prevOrder] = await db.select().from(ordersTable).where(eq(ordersTable.userId, userId));
-            if (prevOrder) throw new Error("This coupon is only valid for your first order.");
+          if (!c.isActive) throw new Error("This coupon is no longer active.");
+
+          let user = null;
+          if (userId) {
+              // 🟢 NEW: Fetch full user context for accurate history validation
+              user = await db.query.usersTable.findFirst({
+                  where: eq(usersTable.id, userId),
+                  with: { orders: true }
+              });
           }
 
-          // 🔒 SECURITY FIX: ENFORCE Max Usage Per User
-          if (c.maxUsagePerUser && userId) {
-            const usageQuery = await db.select({ count: sql`count(*)` })
-              .from(ordersTable)
-              .where(and(eq(ordersTable.userId, userId), eq(ordersTable.couponCode, couponCode)));
-            
-            if (Number(usageQuery[0].count) >= c.maxUsagePerUser) {
-              throw new Error("You have reached the maximum usage limit for this coupon.");
-            }
+          // 🟢 NEW: ENFORCE Target Segment
+          if (c.targetCategory) {
+              if (!user) throw new Error("You must be logged in to use this targeted coupon.");
+              if (!userMatchesSegment(user, user.orders || [], c.targetCategory)) {
+                  throw new Error("You do not meet the eligibility criteria for this coupon segment.");
+              }
           }
 
-          // 🔒 SECURITY FIX: ENFORCE Targeted User
+          // 🟢 NEW: ENFORCE Targeted User
           if (c.targetUserId && c.targetUserId !== userId) {
             throw new Error("This coupon is not valid for your account.");
           }
 
-          const now = new Date();
-          if (
-              !(c.validFrom && now < c.validFrom) &&
-              !(c.validUntil && now > c.validUntil) &&
-              productTotal >= c.minOrderValue &&
-              fullCartWithQuantities.reduce((acc, item) => acc + item.quantity, 0) >= c.minItemCount
-          ) {
-              let couponDiscount = 0;
-              if (c.discountType === 'percent') {
-                couponDiscount = Math.floor((c.discountValue / 100) * productTotal);
-                if (c.maxDiscountAmount && couponDiscount > c.maxDiscountAmount) {
-                  couponDiscount = c.maxDiscountAmount;
-                }
-              } else {
-                couponDiscount = c.discountValue;
+          // 🟢 NEW: ENFORCE Global Usage Limit
+          if (c.totalUsageLimit !== null) {
+              const totalRedemptions = await db.select().from(couponRedemptionsTable)
+                  .where(eq(couponRedemptionsTable.couponId, c.id));
+              
+              if (totalRedemptions.length >= c.totalUsageLimit) {
+                  throw new Error("The global usage limit for this flash coupon has been reached.");
               }
-              manualCoupon = { amount: couponDiscount };
-          } else {
-              throw new Error("Cart does not meet the minimum requirements for this coupon or it has expired.");
           }
+
+          // 🟢 NEW: ENFORCE First Order Only (Using loaded relations)
+          if (c.firstOrderOnly && userId) {
+            if (user && (user.orders || []).length > 0) {
+                throw new Error("This coupon is strictly valid for your first order only.");
+            }
+          }
+
+          // 🟢 NEW: ENFORCE Max Usage Per User (Using new redemptions table)
+          if (c.maxUsagePerUser !== null && userId) {
+            const userRedemptions = await db.select().from(couponRedemptionsTable).where(
+              and(
+                eq(couponRedemptionsTable.couponId, c.id), 
+                eq(couponRedemptionsTable.userId, userId)
+              )
+            );
+            
+            if (userRedemptions.length >= c.maxUsagePerUser) {
+              throw new Error(`You have reached the maximum usage limit (${c.maxUsagePerUser}) for this coupon.`);
+            }
+          }
+
+          // Verify dates and cart minimums
+          if (c.validFrom && now < c.validFrom) throw new Error("This coupon is not yet valid.");
+          if (c.validUntil && now > c.validUntil) throw new Error("This coupon has expired.");
+          if (productTotal < c.minOrderValue) throw new Error(`Cart total must be at least ₹${c.minOrderValue} to use this coupon.`);
+          if (fullCartWithQuantities.reduce((acc, item) => acc + item.quantity, 0) < c.minItemCount) throw new Error(`Add at least ${c.minItemCount} items to use this coupon.`);
+          
+          // Calculate manual discount
+          let couponDiscount = 0;
+          if (c.discountType === 'percent') {
+            couponDiscount = Math.floor((c.discountValue / 100) * productTotal);
+            if (c.maxDiscountAmount && couponDiscount > c.maxDiscountAmount) {
+              couponDiscount = c.maxDiscountAmount;
+            }
+          } else {
+            couponDiscount = c.discountValue;
+          }
+          manualCoupon = { ...c, amount: couponDiscount };
       } else {
           throw new Error("Invalid or unrecognized coupon code.");
       }
   }
 
-  // 7. --- APPLY THE WINNING DISCOUNT ---
-  if (manualCoupon) {
-    manualDiscountAmount = manualCoupon.amount;
+  // 7. --- APPLY THE WINNING DISCOUNT (Math.max Showdown) ---
+  let appliedCouponId = null;
+  let rejectionMessage = null;
+  
+  const autoDiscountAmount = bestAutoOffer ? bestAutoOffer.amount : 0;
+  const manualDiscountAmountCalc = manualCoupon ? manualCoupon.amount : 0;
+
+  // 🟢 FIXED: The customer always gets the best possible deal
+  const autoWins = bestAutoOffer && (autoDiscountAmount > manualDiscountAmountCalc);
+
+  if (manualCoupon && !autoWins) {
+    manualDiscountAmount = manualDiscountAmountCalc;
     offerDiscount = 0;
-    appliedOffers = []; 
+    appliedOffers = [manualCoupon]; 
+    appliedCouponId = manualCoupon.id;
   } else if (bestAutoOffer) {
     manualDiscountAmount = 0;
-    offerDiscount = bestAutoOffer.amount;
-    appliedOffers = [bestAutoOffer]; 
+    offerDiscount = autoDiscountAmount;
+    appliedOffers = [bestAutoOffer.offer]; 
+    appliedCouponId = bestAutoOffer.offer.id;
+    
+    // Alert the user if their code worked but the site sale was better
+    if (manualCoupon && autoDiscountAmount > manualDiscountAmountCalc) {
+        rejectionMessage = `Your code was valid for ₹${manualDiscountAmountCalc} off, but we kept the ₹${autoDiscountAmount} automatic site offer to give you the best deal!`;
+    }
   }
 
   // 8. Calculate Final Total
@@ -244,6 +302,8 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
     discountAmount: manualDiscountAmount, 
     total,
     codAvailable,
-    walletUsed: 0 // 🟢 Added Default
+    walletUsed: 0,
+    appliedCouponId, // 🟢 Helpful to pass down to order placement!
+    rejectionMessage // 🟢 Wire this up to the frontend UI
   };
 };

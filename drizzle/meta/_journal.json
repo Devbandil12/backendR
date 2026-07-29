@@ -64,6 +64,27 @@
       "when": 1785318307957,
       "tag": "0008_hard_centennial",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1785321782629,
+      "tag": "0009_normal_shinobi_shaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785321987943,
+      "tag": "0010_dark_stranger",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785322133715,
+      "tag": "0011_thankful_kate_bishop",
+      "breakpoints": true
     }
   ]
 }
