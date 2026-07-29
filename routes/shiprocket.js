@@ -237,9 +237,9 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
         
         await db.update(ordersTable).set({
           paymentStatus: 'refunded',
-          refundId: refundInit.id,
-          refundAmount: refundInit.amount,
-          refundStatus: refundInit.status,
+          refund_id: refundInit.id,
+          refund_amount: refundInit.amount,
+          refund_status: refundInit.status,
           updatedAt: new Date()
         }).where(eq(ordersTable.id, order.id));
 

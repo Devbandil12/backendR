@@ -32,6 +32,16 @@ import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../serv
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
 
+// 🛑 CRITICAL STARTUP CHECK: Ensure return logistics environment variables exist
+const requiredReturnEnvs = [
+  'RETURN_CUSTOMER_NAME', 'RETURN_PHONE', 'RETURN_ADDRESS', 
+  'RETURN_CITY', 'RETURN_STATE', 'RETURN_PINCODE', 'RETURN_COUNTRY'
+];
+const missingEnvs = requiredReturnEnvs.filter(env => !process.env[env]);
+if (missingEnvs.length > 0) {
+  throw new Error(`🚨 FATAL STARTUP ERROR: Missing required environment variables for reverse pickups: ${missingEnvs.join(', ')}. Please add them to your .env file to prevent misdelivered returns.`);
+}
+
 const router = express.Router();
 
 const razorpay = new Razorpay({
@@ -788,8 +798,16 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
 router.post("/:id/return", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
+    const requesterClerkId = req.auth.userId;
     
-    // 1. Fetch the order
+    // 1. Fetch requester to verify identity & role
+    const requester = await db.query.usersTable.findFirst({
+      where: eq(usersTable.clerkId, requesterClerkId),
+      columns: { id: true, role: true }
+    });
+    if (!requester) return res.status(401).json({ error: "Unauthorized" });
+    
+    // 2. Fetch the order
     const order = await db.query.ordersTable.findFirst({
       where: eq(ordersTable.id, id),
       with: {
@@ -800,11 +818,17 @@ router.post("/:id/return", requireAuth, async (req, res) => {
     });
 
     if (!order) return res.status(404).json({ error: "Order not found" });
+
+    // 3. 🔒 SECURITY CHECK (IDOR FIX): Ensure the user owns the order, or is an admin
+    if (order.userId !== requester.id && requester.role !== 'admin') {
+      return res.status(403).json({ error: "Forbidden: You cannot initiate a return for this order." });
+    }
+
     if (order.status !== 'Delivered') {
       return res.status(400).json({ error: "Only delivered orders can be returned." });
     }
 
-    // 2. Build Shiprocket Return Payload
+    // 4. Build Shiprocket Return Payload
     const formattedItems = order.orderItems.map(item => ({
       name: item.productName,
       sku: item.variant?.sku || `SKU-${item.variantId.substring(0, 8)}`,
@@ -826,14 +850,14 @@ router.post("/:id/return", requireAuth, async (req, res) => {
       pickup_email: order.user.email,
       pickup_phone: order.address.phone || order.user.phone,
       
-      // 🏢 2. DELIVER BACK TO WAREHOUSE (Pulled from .env or fallback)
-      shipping_customer_name: process.env.RETURN_CUSTOMER_NAME || "harsh harsh",
-      shipping_phone: process.env.RETURN_PHONE || "6264553588",
-      shipping_address: process.env.RETURN_ADDRESS || "121-B Mayur Nagar, Thatipur", 
-      shipping_city: process.env.RETURN_CITY || "Gwalior",
-      shipping_state: process.env.RETURN_STATE || "Madhya Pradesh",
-      shipping_pincode: process.env.RETURN_PINCODE || "474011",
-      shipping_country: process.env.RETURN_COUNTRY || "India",
+      // 🏢 2. DELIVER BACK TO WAREHOUSE (Strictly from env vars - no hardcoded fallbacks)
+      shipping_customer_name: process.env.RETURN_CUSTOMER_NAME,
+      shipping_phone: process.env.RETURN_PHONE,
+      shipping_address: process.env.RETURN_ADDRESS,
+      shipping_city: process.env.RETURN_CITY,
+      shipping_state: process.env.RETURN_STATE,
+      shipping_pincode: process.env.RETURN_PINCODE,
+      shipping_country: process.env.RETURN_COUNTRY,
       
       order_items: formattedItems,
       payment_method: "Prepaid",
@@ -841,16 +865,16 @@ router.post("/:id/return", requireAuth, async (req, res) => {
       length: 10, breadth: 10, height: 10, weight: 0.5 // Default dimensions
     };
 
-    // 3. Push to Shiprocket
+    // 5. Push to Shiprocket
     const shiprocketRes = await createReturnOrder(returnPayload);
 
-    // 4. Update Database Status
+    // 6. Update Database Status
     await db.update(ordersTable).set({
       status: "Return Initiated",
       updatedAt: new Date()
     }).where(eq(ordersTable.id, id));
 
-    // 5. Add Timeline Event
+    // 7. Add Timeline Event
     await db.insert(orderTimeline).values({
       orderId: order.id,
       status: 'Return Initiated',
@@ -859,7 +883,7 @@ router.post("/:id/return", requireAuth, async (req, res) => {
       timestamp: new Date()
     });
 
-    // 6. Invalidate Caches
+    // 8. Invalidate Caches
     await invalidateMultiple([
       { key: makeOrderKey(order.id) },
       { key: makeUserOrdersKey(order.userId) },

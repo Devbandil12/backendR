@@ -131,10 +131,14 @@ export async function createShiprocketOrderForExistingOrder(orderId) {
       console.log(`✅ Shiprocket Order Created: ${srResponse.order_id}`);
     } else {
       console.error("⚠️ Shiprocket Error:", srResponse);
+      // 🛑 CRITICAL FIX: Throw explicitly so the cron job's catch block executes and rolls back the order
+      throw new Error(`Shiprocket API rejected payload: ${JSON.stringify(srResponse)}`);
     }
 
   } catch (error) {
     console.error("❌ Failed to sync order to Shiprocket:", error);
+    // 🛑 CRITICAL FIX: Rethrow the error so it doesn't get swallowed
+    throw error;
   }
 }
 
