@@ -13,7 +13,7 @@ import {
 } from '../services/shiprocket.service.js';
 import { db } from '../configs/index.js';
 import { ordersTable, orderTimeline } from '../configs/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm'; // ✅ FIXED: Imported 'or' for the webhook lookup
 import { createNotification } from '../helpers/notificationManager.js';
 import { invalidateMultiple } from '../invalidateHelpers.js';
 import { makeAllOrdersKey, makeOrderKey, makeUserOrdersKey } from '../cacheKeys.js';
@@ -119,8 +119,10 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
         etd: expectedDelivery 
     } = payload;
 
-    if (!shiprocketAwb) {
-       return res.status(200).json({ message: "No AWB in payload, ignoring" });
+    // ✅ FIXED: Guard against missing IDs that we need for the lookup
+    if (!shiprocketOrderId && !shiprocketShipmentId) {
+       console.error('⚠️ Webhook dropped: Payload missing order_id and shipment_id');
+       return res.status(200).json({ message: "Invalid payload, missing IDs" });
     }
 
     // --- MAP SHIPROCKET STATUS TO INTERNAL STATUS ---
@@ -165,14 +167,20 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
 
     // --- DATABASE UPDATE ---
 
-    // 1. Find the order associated with this AWB
+    // ✅ FIXED: 1. Find the order associated with the Shiprocket Order/Shipment ID, NOT the AWB
+    // Because the AWB is null the first time this webhook fires.
     const [order] = await db
       .select()
       .from(ordersTable)
-      .where(eq(ordersTable.shiprocketAwb, shiprocketAwb));
+      .where(
+        or(
+          eq(ordersTable.shiprocketOrderId, String(shiprocketOrderId)),
+          eq(ordersTable.shiprocketShipmentId, String(shiprocketShipmentId))
+        )
+      );
 
     if (!order) {
-      console.log(`⚠️ Webhook received for unknown AWB: ${shiprocketAwb}`);
+      console.log(`⚠️ Webhook received for unknown Shiprocket Order/Shipment ID: ${shiprocketOrderId} / ${shiprocketShipmentId}`);
       // Return 200 to Shiprocket so they don't keep retrying
       return res.status(200).json({ message: "Order not found" });
     }
@@ -182,6 +190,9 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
       // Update Main Order Details
       await tx.update(ordersTable)
         .set({
+          // ✅ FIXED: Explicitly write the AWB to the database so it's not null
+          ...(shiprocketAwb ? { shiprocketAwb } : {}),
+
           // Only update status if we have a valid mapping
           ...(mappedStatus ? { status: mappedStatus } : {}),
           

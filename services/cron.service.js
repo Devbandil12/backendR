@@ -37,16 +37,18 @@ export const initCronJobs = () => {
         }
     });
 
-    // 🟢 New: Every 30 minutes, process orders older than 6 hours
+    // 🟢 Fixed: Every 5 minutes, process orders older than 5 minutes
     // Flow:
-    // - Find orders with status 'Order Placed', no Shiprocket IDs, createdAt <= now - 6h
+    // - Find orders with status 'Order Placed', no Shiprocket IDs, createdAt <= now - 5m
     // - Mark them as 'Processing' + timeline entry
     // - Trigger Shiprocket order creation
-    cron.schedule('*/30 * * * *', async () => {
+    // - Rollback to 'Order Placed' if Shiprocket fails so it can be retried
+    cron.schedule('*/5 * * * *', async () => {
         console.log("🚚 [AUTO] Checking for orders to move to Processing & create Shiprocket shipments...");
 
         try {
-            const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+            // Target orders placed at least 5 minutes ago to allow payment webhooks to settle
+            const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000);
 
             const candidates = await db
                 .select()
@@ -54,7 +56,7 @@ export const initCronJobs = () => {
                 .where(
                     and(
                         eq(ordersTable.status, 'Order Placed'),
-                        lte(ordersTable.createdAt, sixHoursAgo),
+                        lte(ordersTable.createdAt, fiveMinsAgo),
                         isNull(ordersTable.shiprocketOrderId),
                         isNull(ordersTable.shiprocketShipmentId)
                     )
@@ -102,7 +104,31 @@ export const initCronJobs = () => {
 
                     console.log(`✅ Processed order ${order.id} -> Processing + Shiprocket.`);
                 } catch (orderErr) {
-                    console.error(`❌ Failed to process order ${order.id} in cron:`, orderErr);
+                    console.error(`❌ Failed to process order ${order.id} in cron. Rolling back:`, orderErr);
+                    
+                    // 🛑 CRITICAL FIX: Roll back to 'Order Placed' on failure so it can be retried
+                    try {
+                        await db.transaction(async (tx) => {
+                            await tx
+                                .update(ordersTable)
+                                .set({
+                                    status: 'Order Placed',
+                                    progressStep: 1,
+                                    updatedAt: new Date(),
+                                })
+                                .where(eq(ordersTable.id, order.id));
+
+                            await tx.insert(orderTimeline).values({
+                                orderId: order.id,
+                                status: 'Order Placed',
+                                title: 'Fulfillment Delayed',
+                                description: 'Attempt to assign a courier failed. The system will automatically retry shortly.',
+                                timestamp: new Date(),
+                            });
+                        });
+                    } catch (rollbackErr) {
+                         console.error(`🚨 FATAL: Failed to rollback order ${order.id}:`, rollbackErr);
+                    }
                 }
             }
         } catch (err) {
