@@ -1,3 +1,5 @@
+// ✅ file: services/shiprocket.service.js
+
 import fetch from 'node-fetch';
 
 const SHIPROCKET_BASE_URL = process.env.SHIPROCKET_BASE_URL || 'https://apiv2.shiprocket.in';
@@ -59,7 +61,7 @@ async function shiprocketRequest(path, { method = 'GET', headers = {}, body } = 
     method,
     headers: {
       Authorization: `Bearer ${token}`,
-      'Content-Type': body ? 'application/json' : 'application/json',
+      'Content-Type': 'application/json',
       ...headers,
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -81,7 +83,7 @@ async function shiprocketRequest(path, { method = 'GET', headers = {}, body } = 
     );
     err.status = res.status;
     err.payload = errorPayload;
-    throw err;
+    throw err; // This throw is critical for the timeline error logging to work in the controllers
   }
 
   try {
@@ -99,11 +101,14 @@ export async function createOrder(orderPayload) {
   });
 }
 
-export async function cancelOrder(orderId) {
-  // orderId is Shiprocket order_id
+export async function cancelOrder(orderIds) {
+  // ✅ FIXED: Safely ensure we are passing a flat array of IDs to Shiprocket
+  // Handles cases where the caller passes a single string/number or an array
+  const idsArray = Array.isArray(orderIds) ? orderIds : [orderIds];
+  
   return shiprocketRequest('/v1/external/orders/cancel', {
     method: 'POST',
-    body: { ids: [orderId] },
+    body: { ids: idsArray },
   });
 }
 
@@ -130,11 +135,11 @@ export async function trackByShipment(shipmentId) {
   );
 }
 
-export async function getServiceability(payload) {
-  // payload should include pickup_postcode, delivery_postcode, cod, weight, etc.
-  return shiprocketRequest('/v1/external/courier/serviceability/', {
-    method: 'POST',
-    body: payload,
+export async function getServiceability(params) {
+  // ✅ FIXED: Shiprocket serviceability requires a GET request with query params, not a POST body
+  const queryString = new URLSearchParams(params).toString();
+  return shiprocketRequest(`/v1/external/courier/serviceability/?${queryString}`, {
+    method: 'GET',
   });
 }
 
@@ -147,7 +152,7 @@ export async function getPickupLocations() {
 export const ShiprocketService = {
   createOrder,
   cancelOrder,
-  createReturnOrder, // ✅ NEW: Exported the return function
+  createReturnOrder,
   trackByAwb,
   trackByShipment,
   getServiceability,

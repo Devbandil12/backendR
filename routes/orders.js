@@ -27,7 +27,7 @@ import {
 import { createNotification } from '../helpers/notificationManager.js';
 import { generateInvoicePDF } from "../services/invoice.service.js";
 import { processReferralCompletion } from "../controllers/referralController.js";
-import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../services/shiprocket.service.js"; // ✅ Modified this line to import createReturnOrder
+import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../services/shiprocket.service.js"; 
 
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
@@ -536,14 +536,36 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
       }
     }
 
-    // 🟢 Shiprocket Cancel Integration
-    try {
-      if (order.shiprocketShipmentId || order.shiprocketOrderId) {
-        const shiprocketId = order.shiprocketShipmentId || order.shiprocketOrderId;
-        await cancelShiprocketOrder(shiprocketId);
+    // 🟢 Shiprocket Cancel Integration (CRITICAL FIX APPLIED)
+    const shiprocketIdToCancel = order.shiprocketOrderId || order.shiprocketShipmentId;
+
+    if (shiprocketIdToCancel) {
+      try {
+        console.log(`Attempting to cancel Shiprocket order ID: ${shiprocketIdToCancel}`);
+        // Shiprocket cancel API expects an array of order IDs
+        await cancelShiprocketOrder([shiprocketIdToCancel]);
+        
+        // Optional: Add a success note to the timeline
+        await db.insert(orderTimeline).values({
+          orderId: id,
+          status: 'Order Cancelled',
+          title: 'Shiprocket Cancellation Successful',
+          description: `Shipment (Shiprocket ID: ${shiprocketIdToCancel}) was successfully cancelled with the courier.`,
+          timestamp: new Date()
+        });
+
+      } catch (shiprocketError) {
+        console.error(`🚨 Shiprocket Cancellation Failed for Order ${id}:`, shiprocketError.message);
+
+        // CRITICAL FIX: Log the failure to the timeline so admins see it
+        await db.insert(orderTimeline).values({
+          orderId: id,
+          status: 'Order Cancelled',
+          title: '⚠️ ACTION REQUIRED: Shiprocket Cancel Failed',
+          description: `Auto-cancellation failed. You MUST manually cancel this order in the Shiprocket Dashboard to avoid shipping fees! (Shiprocket ID: ${shiprocketIdToCancel}). Reason: ${shiprocketError.message || 'API Error'}`,
+          timestamp: new Date()
+        });
       }
-    } catch (shipErr) {
-      console.error("Shiprocket cancel warning:", shipErr.message);
     }
 
     await db.update(ordersTable).set({
@@ -552,7 +574,7 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
       updatedAt: new Date()
     }).where(eq(ordersTable.id, id));
 
-    // Timeline Entry
+    // Main Timeline Entry
     await db.insert(orderTimeline).values({
       orderId: id,
       status: 'Order Cancelled',

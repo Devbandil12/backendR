@@ -119,15 +119,15 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
         etd: expectedDelivery 
     } = payload;
 
-    // ✅ FIXED: Guard against missing IDs that we need for the lookup
-    if (!shiprocketOrderId && !shiprocketShipmentId) {
-       console.error('⚠️ Webhook dropped: Payload missing order_id and shipment_id');
+    // Guard against missing IDs that we need for the lookup
+    if (!shiprocketOrderId && !shiprocketShipmentId && !shiprocketAwb) {
+       console.error('⚠️ Webhook dropped: Payload missing order_id, shipment_id, and awb');
        return res.status(200).json({ message: "Invalid payload, missing IDs" });
     }
 
     // --- MAP SHIPROCKET STATUS TO INTERNAL STATUS ---
     let mappedStatus = null;
-    let shouldTriggerRefund = false; // ✅ ADDED: Flag for auto-refund
+    let shouldTriggerRefund = false; // Flag for auto-refund
     
     switch (rawStatus) {
         case 'AWB ASSIGNED':
@@ -155,9 +155,9 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
             mappedStatus = 'RTO Initiated';
             break;
         case 'RTO DELIVERED':
-        case 'RETURN DELIVERED': // ✅ ADDED: Return Delivered Status
+        case 'RETURN DELIVERED': 
             mappedStatus = 'Returned';
-            shouldTriggerRefund = true; // ✅ ADDED: Trigger refund upon successful return
+            shouldTriggerRefund = true; // Trigger refund upon successful return
             break;
         default:
             // For unknown statuses, we generally don't change the main status 
@@ -167,20 +167,20 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
 
     // --- DATABASE UPDATE ---
 
-    // ✅ FIXED: 1. Find the order associated with the Shiprocket Order/Shipment ID, NOT the AWB
-    // Because the AWB is null the first time this webhook fires.
+    // ✅ FIXED: CHANGE 1 - Dynamic Lookup
+    // Try matching on AWB first (for subsequent events), then fall back to Order ID or Shipment ID
+    const searchConditions = [];
+    if (shiprocketAwb) searchConditions.push(eq(ordersTable.shiprocketAwb, String(shiprocketAwb)));
+    if (shiprocketOrderId) searchConditions.push(eq(ordersTable.shiprocketOrderId, String(shiprocketOrderId)));
+    if (shiprocketShipmentId) searchConditions.push(eq(ordersTable.shiprocketShipmentId, String(shiprocketShipmentId)));
+
     const [order] = await db
       .select()
       .from(ordersTable)
-      .where(
-        or(
-          eq(ordersTable.shiprocketOrderId, String(shiprocketOrderId)),
-          eq(ordersTable.shiprocketShipmentId, String(shiprocketShipmentId))
-        )
-      );
+      .where(or(...searchConditions));
 
     if (!order) {
-      console.log(`⚠️ Webhook received for unknown Shiprocket Order/Shipment ID: ${shiprocketOrderId} / ${shiprocketShipmentId}`);
+      console.log(`⚠️ Webhook received for unknown Shiprocket Order/Shipment/AWB: ${shiprocketOrderId} / ${shiprocketShipmentId} / ${shiprocketAwb}`);
       // Return 200 to Shiprocket so they don't keep retrying
       return res.status(200).json({ message: "Order not found" });
     }
@@ -190,20 +190,13 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
       // Update Main Order Details
       await tx.update(ordersTable)
         .set({
-          // ✅ FIXED: Explicitly write the AWB to the database so it's not null
-          ...(shiprocketAwb ? { shiprocketAwb } : {}),
-
-          // Only update status if we have a valid mapping
+          // ✅ FIXED: CHANGE 2 - Explicitly write AWB to database
+          shiprocketAwb: shiprocketAwb || order.shiprocketAwb,
+          
           ...(mappedStatus ? { status: mappedStatus } : {}),
-          
-          // Always update logistics info if provided
           courierName: courierName || order.courierName,
-          
-          // Update IDs if they were missing or changed
           shiprocketOrderId: shiprocketOrderId ? String(shiprocketOrderId) : order.shiprocketOrderId,
           shiprocketShipmentId: shiprocketShipmentId ? String(shiprocketShipmentId) : order.shiprocketShipmentId,
-          
-          // Update dates
           expectedDeliveryDate: expectedDelivery ? new Date(expectedDelivery) : order.expectedDeliveryDate,
           updatedAt: new Date(),
           
@@ -231,7 +224,7 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
       });
     });
 
-    // ✅ ADDED: 3. Process Automatic Refunds for Returns / RTOs
+    // 3. Process Automatic Refunds for Returns / RTOs
     if (shouldTriggerRefund && order.paymentMode === 'online' && order.paymentStatus === 'paid' && order.transactionId) {
       try {
         console.log(`Processing automatic refund for Order ${order.id}...`);

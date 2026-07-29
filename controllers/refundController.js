@@ -8,7 +8,8 @@ import {
     productVariantsTable,
     productBundlesTable,
     activityLogsTable,
-    usersTable // 🟢 Added
+    usersTable,
+    orderTimeline // 🟢 Added for timeline logging
 } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -144,15 +145,46 @@ export const refundOrder = async (req, res) => {
                 .where(eq(ordersTable.id, orderId));
         }
 
-        // 🟢 Attempt Shiprocket cancellation (non-blocking, best-effort)
-        try {
-            const shipId = order.shiprocketShipmentId || order.shiprocketOrderId;
-            if (shipId) {
-                await cancelShiprocketOrder(shipId);
+        // 🟢 Attempt Shiprocket cancellation (CRITICAL FIX APPLIED)
+        const shiprocketIdToCancel = order.shiprocketOrderId || order.shiprocketShipmentId;
+
+        if (shiprocketIdToCancel) {
+            try {
+                console.log(`Attempting to cancel Shiprocket order ID: ${shiprocketIdToCancel}`);
+                // Shiprocket cancel API expects an array of order IDs
+                await cancelShiprocketOrder([shiprocketIdToCancel]);
+                
+                // Optional: Add a success note to the timeline
+                await db.insert(orderTimeline).values({
+                    orderId: orderId,
+                    status: 'Order Cancelled',
+                    title: 'Shiprocket Cancellation Successful',
+                    description: `Shipment (Shiprocket ID: ${shiprocketIdToCancel}) was successfully cancelled with the courier.`,
+                    timestamp: new Date()
+                });
+
+            } catch (shiprocketError) {
+                console.error(`🚨 Shiprocket Cancellation Failed for Order ${orderId}:`, shiprocketError.message);
+
+                // CRITICAL FIX: Log the failure to the timeline so admins see it
+                await db.insert(orderTimeline).values({
+                    orderId: orderId,
+                    status: 'Order Cancelled',
+                    title: '⚠️ ACTION REQUIRED: Shiprocket Cancel Failed',
+                    description: `Auto-cancellation failed. You MUST manually cancel this order in the Shiprocket Dashboard to avoid shipping fees! (Shiprocket ID: ${shiprocketIdToCancel}). Reason: ${shiprocketError.message || 'API Error'}`,
+                    timestamp: new Date()
+                });
             }
-        } catch (shipErr) {
-            console.error("Shiprocket cancel (user) warning:", shipErr.message);
         }
+
+        // Main Timeline Entry for general cancellation
+        await db.insert(orderTimeline).values({
+            orderId: orderId,
+            status: 'Order Cancelled',
+            title: 'Order Cancelled',
+            description: 'Your order was cancelled successfully.',
+            timestamp: new Date()
+        });
 
         const notifMessage = refund
             ? `Your refund for order #${orderId} has been ${refund.status}.`
