@@ -118,6 +118,43 @@ async function assertCouponUsageWithinLimits(tx, couponId, userId) {
   }
 }
 
+// 🟢 FIX (wallet integrity item #1): the three wallet-balance decrements in
+// this file (wallet-full checkout, COD partial-wallet, and verifyPayment)
+// used to compute how much to deduct from a `user` object read once, well
+// before any transaction opened — then decrement with no floor check:
+//   .set({ walletBalance: sql`${col} - ${amount}` }).where(eq(id, userId))
+// The SQL decrement itself is atomic, but nothing stops it from going
+// negative: two near-simultaneous spends (two tabs, a retry, or the online
+// flow where the real deduction happens minutes later at verifyPayment) can
+// each read the same stale balance, both look "affordable", and both apply.
+//
+// This makes the floor check part of the UPDATE itself — `wallet_balance
+// >= amount` in the WHERE clause — so the decrement can only ever succeed
+// if the balance is still sufficient at the moment it's actually applied.
+// If a second concurrent spend already ate the balance, this UPDATE
+// matches zero rows, .returning() comes back empty, and we throw instead
+// of silently proceeding with an order that isn't actually paid for.
+async function deductWalletBalanceOrThrow(tx, userId, amount) {
+  if (!amount || amount <= 0) return;
+
+  const [updated] = await tx
+    .update(usersTable)
+    .set({ walletBalance: sql`${usersTable.walletBalance} - ${amount}` })
+    .where(and(
+      eq(usersTable.id, userId),
+      gte(usersTable.walletBalance, amount)
+    ))
+    .returning();
+
+  if (!updated) {
+    const err = new Error('Your wallet balance changed since checkout started and is no longer sufficient for this order. Please refresh and try again.');
+    err.code = 'WALLET_INSUFFICIENT';
+    throw err;
+  }
+
+  return updated;
+}
+
 export async function createShiprocketOrderForExistingOrder(orderId) {
   try {
     const order = await db.query.ordersTable.findFirst({
@@ -504,9 +541,9 @@ export const createOrder = async (req, res) => {
             timestamp: new Date()
         });
 
-        await tx.update(usersTable)
-          .set({ walletBalance: sql`${usersTable.walletBalance} - ${walletDeduction}` })
-          .where(eq(usersTable.id, user.id));
+        // 🟢 FIX: race-safe, floor-guarded wallet deduction (see
+        // deductWalletBalanceOrThrow above) instead of a bare decrement.
+        await deductWalletBalanceOrThrow(tx, user.id, walletDeduction);
 
         await tx.insert(walletTransactionsTable).values({
           userId: user.id,
@@ -611,9 +648,8 @@ export const createOrder = async (req, res) => {
           });
 
           if (walletDeduction > 0) {
-            await tx.update(usersTable)
-              .set({ walletBalance: sql`${usersTable.walletBalance} - ${walletDeduction}` })
-              .where(eq(usersTable.id, user.id));
+            // 🟢 FIX: race-safe, floor-guarded wallet deduction.
+            await deductWalletBalanceOrThrow(tx, user.id, walletDeduction);
 
             await tx.insert(walletTransactionsTable).values({
               userId: user.id,
@@ -739,6 +775,14 @@ export const createOrder = async (req, res) => {
     if (idempotencyKey && redisClient) {
        await redisClient.del(`idemp:order:${idempotencyKey}`);
     }
+    // 🟢 FIX: WALLET_INSUFFICIENT (and similar known, user-facing business-rule
+    // rejections) are the customer's wallet balance changing underneath them,
+    // not a server fault — 400, not 500. This path never charges anything
+    // (wallet-full and COD both roll back the whole transaction), so there's
+    // nothing to refund here, unlike the equivalent check in verifyPayment.
+    if (err.code === 'WALLET_INSUFFICIENT' || err.code === 'COUPON_LIMIT_REACHED') {
+      return res.status(400).json({ success: false, msg: err.message });
+    }
     return res.status(500).json({ success: false, msg: err.message || 'Server error' });
   }
 };
@@ -858,9 +902,14 @@ export const verifyPayment = async (req, res) => {
         });
 
         if (existingOrder.walletAmountUsed > 0) {
-            await tx.update(usersTable)
-                .set({ walletBalance: sql`${usersTable.walletBalance} - ${existingOrder.walletAmountUsed}` })
-                .where(eq(usersTable.id, user.id));
+            // 🟢 FIX: race-safe, floor-guarded wallet deduction. This is the
+            // highest-risk of the three spots — for the online flow, the
+            // wallet amount was "reserved" back at createOrder time but only
+            // actually deducted here, minutes later, after Razorpay has
+            // already captured the payment. If the user's wallet balance
+            // was spent elsewhere in that window, this throws and the catch
+            // block below auto-refunds the captured payment.
+            await deductWalletBalanceOrThrow(tx, user.id, existingOrder.walletAmountUsed);
 
             await tx.insert(walletTransactionsTable).values({
                 userId: user.id,
@@ -925,6 +974,31 @@ export const verifyPayment = async (req, res) => {
           return res.status(500).json({
             success: false,
             error: "Coupon limit reached. Payment deducted but refund failed. Please contact support."
+          });
+        }
+      }
+
+      // 🟢 FIX: the wallet balance reserved for this order at checkout time
+      // was spent elsewhere (another order, a reward claim) before this
+      // payment finished verifying — auto-refund rather than leave the
+      // customer charged for an order whose wallet portion can't be honored.
+      if (error.code === "WALLET_INSUFFICIENT") {
+        try {
+          await razorpay.payments.refund(req.body.razorpay_payment_id, {
+            speed: 'optimum',
+            notes: { reason: 'Wallet balance insufficient at verification time' }
+          });
+
+          return res.status(400).json({
+            success: false,
+            error: "Your wallet balance changed since checkout started and this order can no longer be completed. Your payment has been auto-refunded."
+          });
+
+        } catch (refundError) {
+          console.error("Refund failed:", refundError);
+          return res.status(500).json({
+            success: false,
+            error: "Wallet balance issue. Payment deducted but refund failed. Please contact support."
           });
         }
       }

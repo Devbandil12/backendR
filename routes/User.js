@@ -203,25 +203,60 @@ router.put("/:id", requireAuth, async (req, res) => {
     }
 
     // 4. Filter Fields (Sanitize Input)
-    const { 
-        profileImage, dob, gender, // Safe fields
-        role, walletBalance, referralCode, // 🔒 Restricted fields
-        actorId, // Ignored, we use requester info
-        ...rest 
+    // 🟢 FIX: this used to be a DENY-list (`...rest` spread everything except
+    // 3 named fields straight into the update) — meaning `clerkId`, `email`,
+    // `createdAt`, `referredBy`, or any other column not explicitly named
+    // could be overwritten by a user editing their own profile. That's a
+    // mass-assignment hole, and `createdAt` in particular feeds directly into
+    // segmentMatcher.js's "how long has this user been a customer" logic,
+    // which gates targetCategory-restricted coupons — a user could rewrite
+    // their own join date to unlock segment-only coupons.
+    //
+    // This is now a real ALLOW-list: every field not explicitly named below
+    // is silently dropped, regardless of what the request body contains.
+    const {
+      // Self-editable (both the user themselves and an admin can set these)
+      name, phone, profileImage, dob, gender,
+      notify_order_updates, notify_promos, notify_pincode, pushSubscription,
+      // Admin-only
+      role, walletBalance, referralCode,
     } = req.body;
 
-    const cleanUpdates = {
-        ...rest,
-        ...(profileImage !== undefined && { profileImage }),
-        ...(dob !== undefined && { dob: new Date(dob) }),
-        ...(gender !== undefined && { gender }),
-    };
+    const cleanUpdates = {};
+
+    if (name !== undefined) cleanUpdates.name = name;
+    if (profileImage !== undefined) cleanUpdates.profileImage = profileImage;
+    if (dob !== undefined) cleanUpdates.dob = dob ? new Date(dob) : null;
+    if (gender !== undefined) cleanUpdates.gender = gender;
+    if (notify_order_updates !== undefined) cleanUpdates.notify_order_updates = notify_order_updates;
+    if (notify_promos !== undefined) cleanUpdates.notify_promos = notify_promos;
+    if (notify_pincode !== undefined) cleanUpdates.notify_pincode = notify_pincode;
+    if (pushSubscription !== undefined) cleanUpdates.pushSubscription = pushSubscription;
+
+    // 🟢 Same phone validation already enforced on saved addresses — apply it
+    // here too, since this is a real, order-affecting contact number.
+    if (phone !== undefined) {
+      const phoneRegex = /^[6-9]\d{9}$/;
+      if (phone !== null && phone !== "" && !phoneRegex.test(String(phone).trim())) {
+        return res.status(400).json({ error: "Invalid phone number. Must be a valid 10-digit Indian mobile number." });
+      }
+      cleanUpdates.phone = phone ? String(phone).trim() : null;
+    }
 
     // Only Admin can update restricted fields
     if (isAdmin) {
         if (role !== undefined) cleanUpdates.role = role;
         if (walletBalance !== undefined) cleanUpdates.walletBalance = walletBalance;
         if (referralCode !== undefined) cleanUpdates.referralCode = referralCode;
+    }
+
+    // 🟢 Deliberately NOT allow-listed anywhere, self or admin: `id`, `clerkId`,
+    // `email`, `createdAt`, `referredBy`. These are identity/audit fields —
+    // clerkId/email changes need to go through a dedicated, verified flow
+    // (not a generic profile PATCH), and createdAt/referredBy should never
+    // change after account creation.
+    if (Object.keys(cleanUpdates).length === 0) {
+      return res.status(400).json({ error: "No valid fields to update." });
     }
 
     const [updatedUser] = await db
