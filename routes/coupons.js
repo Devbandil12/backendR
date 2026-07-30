@@ -18,6 +18,7 @@ import { makeAllCouponsKey, makeAvailableCouponsKey } from "../cacheKeys.js";
 
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
+import { rateLimit } from "../middleware/rateLimiter.js"; // 🟢 FIX: throttle public coupon-code lookups
 
 // Import Notification Logic
 import { sendPushNotification, sendPromotionalEmail } from "./notifications.js";
@@ -170,6 +171,7 @@ router.post("/", requireAuth, verifyAdmin, async (req, res) => {
       { key: makeAllCouponsKey() },
       { key: "coupons:available", prefix: true },
       { key: "coupons:auto-offers" }, 
+      { key: "coupons:auto-offers:raw" }, // 🟢 NEW: priceEngine.js's raw cache
       { key: "promos:latest-public" }
     ]);
 
@@ -184,7 +186,17 @@ router.post("/", requireAuth, verifyAdmin, async (req, res) => {
    🟢 GET /api/coupons/validate (PUBLIC/USER)
    Removed Cache wrapper to ensure accurate real-time limits
 -------------------------------------------------------- */
-router.get("/validate", async (req, res) => {
+// 🟢 FIX: /validate is public (no requireAuth) and takes an arbitrary code —
+// without a limit it's a free coupon-code enumeration oracle. This caps
+// guesses per IP without affecting a real shopper trying one code.
+const couponValidateLimiter = rateLimit({
+  windowSeconds: 60,
+  max: 20,
+  keyPrefix: 'rl:coupon-validate',
+  message: 'Too many coupon checks. Please wait a moment and try again.',
+});
+
+router.get("/validate", couponValidateLimiter, async (req, res) => {
     const { code, userId } = req.query;
 
     if (!code || !userId) return res.status(400).json({ error: "Required fields missing" });
@@ -214,23 +226,35 @@ router.get("/validate", async (req, res) => {
       if (coupon.validFrom && now < new Date(coupon.validFrom)) return res.status(400).json({ message: "Not yet valid" });
       if (coupon.validUntil && now > new Date(coupon.validUntil)) return res.status(400).json({ message: "Expired" });
 
-      // 🟢 Check Global Total Usage Limit
+      // 🟢 FIX: Check Global Total Usage Limit — only count redemptions that
+      // actually completed (an abandoned Razorpay checkout or a cancelled order
+      // must not permanently consume a slot in a limited flash-sale coupon).
       if (coupon.totalUsageLimit !== null) {
-          const totalRedemptions = await db.select().from(couponRedemptionsTable).where(eq(couponRedemptionsTable.couponId, coupon.id));
+          const totalRedemptions = await db.select().from(couponRedemptionsTable).where(
+            and(eq(couponRedemptionsTable.couponId, coupon.id), eq(couponRedemptionsTable.status, 'completed'))
+          );
           if (totalRedemptions.length >= coupon.totalUsageLimit) {
               return res.status(400).json({ message: "Global usage limit reached for this coupon." });
           }
       }
 
-      // 🟢 Accurately check user history using new redemptions/orders setup
+      // 🟢 FIX: Accurately check user history — exclude abandoned online-payment
+      // attempts ('pending_payment') and cancelled orders ('Order Cancelled'),
+      // so a failed/cancelled order never permanently disqualifies a real
+      // first-time customer from a first-order coupon.
       if (coupon.firstOrderOnly) {
         const userOrders = await db.select().from(ordersTable).where(eq(ordersTable.userId, userId));
-        if (userOrders.length > 0) return res.status(400).json({ message: "First order only" });
+        const realOrders = userOrders.filter(o => o.status !== 'pending_payment' && o.status !== 'Order Cancelled');
+        if (realOrders.length > 0) return res.status(400).json({ message: "First order only" });
       }
 
       if (coupon.maxUsagePerUser !== null) {
         const userRedemptions = await db.select().from(couponRedemptionsTable).where(
-            and(eq(couponRedemptionsTable.couponId, coupon.id), eq(couponRedemptionsTable.userId, userId))
+            and(
+              eq(couponRedemptionsTable.couponId, coupon.id),
+              eq(couponRedemptionsTable.userId, userId),
+              eq(couponRedemptionsTable.status, 'completed') // 🟢 FIX: ignore pending/cancelled rows
+            )
         );
         if (userRedemptions.length >= coupon.maxUsagePerUser) {
           return res.status(400).json({ message: "Usage limit reached" });
@@ -258,6 +282,7 @@ router.get(
     try {
       let userData = null;
       let userRedemptionsMap = {}; // Tracks usage accurately
+      let realOrders = [];
 
       if (userId) {
           userData = await db.query.usersTable.findFirst({
@@ -265,7 +290,17 @@ router.get(
               with: { orders: true }
           });
 
-          const redemptions = await db.select().from(couponRedemptionsTable).where(eq(couponRedemptionsTable.userId, userId));
+          // 🟢 FIX: exclude abandoned online-payment attempts and cancelled orders
+          // from "has this user already ordered" — same reasoning as /validate.
+          realOrders = (userData?.orders || []).filter(
+            o => o.status !== 'pending_payment' && o.status !== 'Order Cancelled'
+          );
+
+          // 🟢 FIX: only count redemptions that actually completed — a pending or
+          // cancelled row must not permanently consume a usage slot.
+          const redemptions = await db.select().from(couponRedemptionsTable).where(
+            and(eq(couponRedemptionsTable.userId, userId), eq(couponRedemptionsTable.status, 'completed'))
+          );
           redemptions.forEach(r => {
               userRedemptionsMap[r.couponId] = (userRedemptionsMap[r.couponId] || 0) + 1;
           });
@@ -289,7 +324,7 @@ router.get(
         if (coupon.maxUsagePerUser !== null && usageCount >= coupon.maxUsagePerUser) return false;
         if (coupon.validFrom && now < new Date(coupon.validFrom)) return false;
         if (coupon.validUntil && now > new Date(coupon.validUntil)) return false;
-        if (coupon.firstOrderOnly && userData && (userData.orders || []).length > 0) return false;
+        if (coupon.firstOrderOnly && userData && realOrders.length > 0) return false;
         
         // Note: Global usage limits are intentionally omitted here to prevent heavy DB hits on list views.
         // It gets strictly enforced during checkout and /validate.
@@ -378,6 +413,7 @@ router.put("/:id", requireAuth, verifyAdmin, async (req, res) => {
       { key: makeAllCouponsKey() },
       { key: "coupons:available", prefix: true },
       { key: "coupons:auto-offers" },
+      { key: "coupons:auto-offers:raw" }, // 🟢 NEW: priceEngine.js's raw cache
       { key: "promos:latest-public" }
     ]);
 
@@ -420,6 +456,7 @@ router.delete("/:id", requireAuth, verifyAdmin, async (req, res) => {
       { key: makeAllCouponsKey() },
       { key: "coupons:available", prefix: true },
       { key: "coupons:auto-offers" },
+      { key: "coupons:auto-offers:raw" }, // 🟢 NEW: priceEngine.js's raw cache
       { key: "promos:latest-public" }
     ]);
 

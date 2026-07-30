@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url'; // 🟢 1. Import this
 import { errorHandler } from './middleware/errorHandler.js'; // 🟢 Import this
+import { rateLimit } from './middleware/rateLimiter.js'; // 🟢 FIX: general request rate limiting
 
 // 🟢 2. Define __dirname manually
 const __filename = fileURLToPath(import.meta.url);
@@ -94,6 +95,18 @@ app.post(
 // ───── JSON Body Parser (must be before routes using req.body) ─────
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+// 🟢 FIX: General-purpose rate limiting for all API traffic. This is
+// deliberately generous (it's a backstop against scraping/abuse, not the
+// main defense for sensitive endpoints) — see paymentRoute.js and
+// coupons.js for tighter, route-specific limits on payments and coupon
+// validation.
+app.use('/api/', rateLimit({
+  windowSeconds: 300,
+  max: 600,
+  keyPrefix: 'rl:global',
+  message: 'Too many requests from this connection. Please try again in a few minutes.',
+}));
 
 
 

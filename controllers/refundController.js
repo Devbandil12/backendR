@@ -9,7 +9,8 @@ import {
     productBundlesTable,
     activityLogsTable,
     usersTable,
-    orderTimeline // 🟢 Added for timeline logging
+    orderTimeline, // 🟢 Added for timeline logging
+    couponRedemptionsTable
 } from '../configs/schema.js';
 import { eq, sql } from 'drizzle-orm';
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -144,6 +145,13 @@ export const refundOrder = async (req, res) => {
                 })
                 .where(eq(ordersTable.id, orderId));
         }
+
+        // 🟢 FIX: mark any coupon redemption tied to this order as 'cancelled' so
+        // it stops permanently consuming a usage slot (maxUsagePerUser,
+        // totalUsageLimit, and firstOrderOnly checks all filter on this status).
+        await db.update(couponRedemptionsTable)
+            .set({ status: 'cancelled' })
+            .where(eq(couponRedemptionsTable.orderId, orderId));
 
         // 🟢 Attempt Shiprocket cancellation (CRITICAL FIX APPLIED)
         const shiprocketIdToCancel = order.shiprocketOrderId || order.shiprocketShipmentId;

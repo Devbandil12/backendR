@@ -85,6 +85,13 @@
       "when": 1785322133715,
       "tag": "0011_thankful_kate_bishop",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785391009722,
+      "tag": "0012_nifty_master_chief",
+      "breakpoints": true
     }
   ]
 }

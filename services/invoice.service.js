@@ -15,6 +15,11 @@ const formatDate = (date) => {
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 };
 
+// 🟢 FIX: GST split (CGST+SGST vs IGST) depends on whether the seller and the
+// customer are in the same state. Normalize both sides before comparing so
+// "Chhattisgarh", "chhattisgarh ", and "CHHATTISGARH" all match.
+const normalizeState = (state) => (state || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
 // ---- Layout Components -----------------------------------------------------
 
 function drawHeader(doc, seller) {
@@ -140,7 +145,7 @@ function drawTable(doc, items, startY) {
   return currentY;
 }
 
-function drawTotals(doc, totals, startY) {
+function drawTotals(doc, totals, startY, isInterState) {
   // INTELLIGENT PAGE BREAK
   if (startY > 620) { // Adjusted to leave more room for GST lines
     doc.addPage();
@@ -170,23 +175,34 @@ function drawTotals(doc, totals, startY) {
   });
 
   // ⚖️ GST Breakout (Assuming 18% inclusive GST)
+  // 🟢 FIX: Split as IGST for inter-state orders (customer's shipping state
+  // differs from the seller's registered state), or CGST+SGST for intra-state
+  // orders — as required for a GST-compliant tax invoice in India.
   const totalAmount = totals.grandTotal || 0;
   const taxableValue = totalAmount / 1.18;
-  const cgstAmount = (totalAmount - taxableValue) / 2;
-  const sgstAmount = cgstAmount;
+  const totalTax = totalAmount - taxableValue;
 
   y += 5; // Spacing before tax details
   doc.fillColor('#6B7280').text('Taxable Value', labelX, y, { width: 90, align: 'left' });
   doc.fillColor('#111827').text(formatCurrency(taxableValue), valX, y, { width: valWidth, align: 'right' });
   y += 18;
 
-  doc.fillColor('#6B7280').text('CGST (9%)', labelX, y, { width: 90, align: 'left' });
-  doc.fillColor('#111827').text(formatCurrency(cgstAmount), valX, y, { width: valWidth, align: 'right' });
-  y += 18;
+  if (isInterState) {
+    doc.fillColor('#6B7280').text('IGST (18%)', labelX, y, { width: 90, align: 'left' });
+    doc.fillColor('#111827').text(formatCurrency(totalTax), valX, y, { width: valWidth, align: 'right' });
+    y += 18;
+  } else {
+    const cgstAmount = totalTax / 2;
+    const sgstAmount = cgstAmount;
 
-  doc.fillColor('#6B7280').text('SGST (9%)', labelX, y, { width: 90, align: 'left' });
-  doc.fillColor('#111827').text(formatCurrency(sgstAmount), valX, y, { width: valWidth, align: 'right' });
-  y += 18;
+    doc.fillColor('#6B7280').text('CGST (9%)', labelX, y, { width: 90, align: 'left' });
+    doc.fillColor('#111827').text(formatCurrency(cgstAmount), valX, y, { width: valWidth, align: 'right' });
+    y += 18;
+
+    doc.fillColor('#6B7280').text('SGST (9%)', labelX, y, { width: 90, align: 'left' });
+    doc.fillColor('#111827').text(formatCurrency(sgstAmount), valX, y, { width: valWidth, align: 'right' });
+    y += 18;
+  }
 
   // Grand Total Box
   y += 5;
@@ -215,6 +231,9 @@ export async function generateInvoiceBuffer({
     phone: process.env.STORE_PHONE || '+91-XXXXXXXXXX',
     email: process.env.STORE_EMAIL || 'support@example.com',
     gstin: process.env.STORE_GSTIN || undefined,
+    // 🟢 FIX: needed to decide CGST+SGST (intra-state) vs IGST (inter-state).
+    // Set STORE_STATE in .env to the state your GSTIN is registered in.
+    state: process.env.STORE_STATE || undefined,
   }
 }) {
   return new Promise((resolve, reject) => {
@@ -237,7 +256,16 @@ export async function generateInvoiceBuffer({
       const tableBottomY = drawTable(doc, items, 275);
 
       // 4. Totals (Now includes GST)
-      drawTotals(doc, order.totals, tableBottomY);
+      // 🟢 FIX: if we don't confidently know both states, default to
+      // CGST+SGST (the pre-existing behavior) rather than guessing IGST —
+      // an incorrect CGST/SGST-vs-IGST split needs correcting either way,
+      // but silently defaulting to the more common intra-state case is the
+      // safer failure mode when seller/customer state data is incomplete.
+      const sellerState = normalizeState(seller.state);
+      const customerState = normalizeState(order.shippingState);
+      const isInterState = Boolean(sellerState && customerState && sellerState !== customerState);
+
+      drawTotals(doc, order.totals, tableBottomY, isInterState);
 
       // 5. Footer
       drawFooter(doc);

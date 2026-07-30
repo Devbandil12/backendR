@@ -12,6 +12,7 @@ import {
   makeOrderKey,
 } from '../cacheKeys.js';
 import { createNotification } from '../helpers/notificationManager.js';
+import { safeCompare } from '../helpers/safeCompare.js'; // 🟢 FIX: timing-safe signature comparison
 import { processReferralCompletion } from './referralController.js'; 
 
 // 🟢 ADDED: Import the Queue Producer
@@ -51,7 +52,7 @@ const razorpayWebhookHandler = async (req, res) => {
 
   const expected = crypto.createHmac('sha256', secret).update(bodyBuf).digest('hex');
 
-  if (signature !== expected) {
+  if (!safeCompare(signature, expected)) {
     console.warn('⚠️ Invalid webhook signature');
     return res.status(400).send('Invalid signature');
   }

@@ -11,7 +11,8 @@ import {
   usersTable,
   activityLogsTable,
   productBundlesTable,
-  orderTimeline
+  orderTimeline,
+  couponRedemptionsTable
 } from "../configs/schema.js";
 import { eq, asc, desc, sql, inArray, and, gte } from "drizzle-orm"; 
 import { cache } from "../cacheMiddleware.js";
@@ -572,6 +573,13 @@ router.put("/:id/cancel", requireAuth, verifyAdmin, async (req, res) => {
       paymentStatus: order.paymentMode === 'cod' ? 'cancelled' : 'refunded',
       updatedAt: new Date()
     }).where(eq(ordersTable.id, id));
+
+    // 🟢 FIX: mark any coupon redemption tied to this order as 'cancelled' so
+    // it stops permanently consuming a usage slot (maxUsagePerUser,
+    // totalUsageLimit, and firstOrderOnly checks all filter on this status).
+    await db.update(couponRedemptionsTable)
+      .set({ status: 'cancelled' })
+      .where(eq(couponRedemptionsTable.orderId, id));
 
     // Main Timeline Entry
     await db.insert(orderTimeline).values({

@@ -13,6 +13,55 @@ import { getPincodeDetails } from '../controllers/addressController.js';
 // 🟢 NEW: Import the single source of truth for segments
 import { userMatchesSegment } from './segmentMatcher.js';
 
+// 🟢 NEW: Redis cache for the automatic-offers list (see getActiveAutomaticOffers below)
+import { redis } from '../configs/redis.js';
+
+const AUTO_OFFERS_CACHE_KEY = 'coupons:auto-offers:raw';
+const AUTO_OFFERS_CACHE_TTL_SECONDS = 60;
+
+/**
+ * 🟢 FIX (Round 3, item 2.4/efficiency): calculatePriceBreakdown fires on
+ * essentially every cart/address keystroke during checkout, and was doing a
+ * full table scan of every automatic coupon on every single call. Automatic
+ * offers rarely change, so cache the active list in Redis with a short TTL,
+ * and invalidate it immediately on coupon create/update/delete (see
+ * routes/coupons.js, which already invalidates "coupons:auto-offers" for the
+ * public /automatic-offers endpoint — it now also invalidates this raw key).
+ */
+async function getActiveAutomaticOffers() {
+  try {
+    if (redis.status === 'ready') {
+      const cached = await redis.get(AUTO_OFFERS_CACHE_KEY);
+      if (cached) return JSON.parse(cached);
+    }
+  } catch (err) {
+    console.error('[priceEngine] Auto-offer cache read failed:', err.message);
+  }
+
+  const now = new Date();
+  const offers = await db
+    .select()
+    .from(couponsTable)
+    .where(
+      and(
+        eq(couponsTable.isAutomatic, true),
+        eq(couponsTable.isActive, true),
+        or(isNull(couponsTable.validFrom), lte(couponsTable.validFrom, now)),
+        or(isNull(couponsTable.validUntil), gte(couponsTable.validUntil, now))
+      )
+    );
+
+  try {
+    if (redis.status === 'ready') {
+      await redis.set(AUTO_OFFERS_CACHE_KEY, JSON.stringify(offers), 'EX', AUTO_OFFERS_CACHE_TTL_SECONDS);
+    }
+  } catch (err) {
+    console.error('[priceEngine] Auto-offer cache write failed:', err.message);
+  }
+
+  return offers;
+}
+
 export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, userId) => {
   // 1. Initialize totals
   let originalTotal = 0;
@@ -76,17 +125,8 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
 
   // 5. --- AUTOMATIC PROMOTION ENGINE ---
   const now = new Date();
-  const autoCoupons = await db
-    .select()
-    .from(couponsTable)
-    .where(
-      and(
-        eq(couponsTable.isAutomatic, true),
-        eq(couponsTable.isActive, true), // Ensure it's active
-        or(isNull(couponsTable.validFrom), lte(couponsTable.validFrom, now)),
-        or(isNull(couponsTable.validUntil), gte(couponsTable.validUntil, now))
-      )
-    );
+  // 🟢 FIX: Was a direct DB hit on every call; now Redis-cached (60s TTL).
+  const autoCoupons = await getActiveAutomaticOffers();
     
   let bestAutoOffer = null;
 
@@ -196,6 +236,14 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
               });
           }
 
+          // 🟢 FIX: An abandoned Razorpay checkout (status: 'pending_payment', never
+          // actually paid) or a cancelled order must not count as "this user has
+          // already ordered" — otherwise a genuinely first-time customer whose
+          // payment once failed gets permanently locked out of a first-order coupon.
+          const realOrders = user
+            ? (user.orders || []).filter(o => o.status !== 'pending_payment' && o.status !== 'Order Cancelled')
+            : [];
+
           // 🟢 NEW: ENFORCE Target Segment
           if (c.targetCategory) {
               if (!user) throw new Error("You must be logged in to use this targeted coupon.");
@@ -209,29 +257,40 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
             throw new Error("This coupon is not valid for your account.");
           }
 
-          // 🟢 NEW: ENFORCE Global Usage Limit
+          // 🟢 FIX: ENFORCE Global Usage Limit — only count redemptions that actually
+          // completed. A 'pending' row from an abandoned Razorpay checkout (or a
+          // 'cancelled' row from a cancelled order) must not permanently consume a
+          // slot in a limited flash-sale coupon.
           if (c.totalUsageLimit !== null) {
               const totalRedemptions = await db.select().from(couponRedemptionsTable)
-                  .where(eq(couponRedemptionsTable.couponId, c.id));
+                  .where(and(
+                    eq(couponRedemptionsTable.couponId, c.id),
+                    eq(couponRedemptionsTable.status, 'completed')
+                  ));
               
               if (totalRedemptions.length >= c.totalUsageLimit) {
                   throw new Error("The global usage limit for this flash coupon has been reached.");
               }
           }
 
-          // 🟢 NEW: ENFORCE First Order Only (Using loaded relations)
+          // 🟢 FIX: ENFORCE First Order Only using realOrders (excludes abandoned
+          // online-payment attempts and cancelled orders — see filter above)
           if (c.firstOrderOnly && userId) {
-            if (user && (user.orders || []).length > 0) {
+            if (realOrders.length > 0) {
                 throw new Error("This coupon is strictly valid for your first order only.");
             }
           }
 
-          // 🟢 NEW: ENFORCE Max Usage Per User (Using new redemptions table)
+          // 🟢 FIX: ENFORCE Max Usage Per User — same status filter as above. This is
+          // still just the preview-time check; the race-safe, money-changing check
+          // now lives in paymentController.js's assertCouponUsageWithinLimits(),
+          // which locks the coupon row inside the actual order/payment transaction.
           if (c.maxUsagePerUser !== null && userId) {
             const userRedemptions = await db.select().from(couponRedemptionsTable).where(
               and(
                 eq(couponRedemptionsTable.couponId, c.id), 
-                eq(couponRedemptionsTable.userId, userId)
+                eq(couponRedemptionsTable.userId, userId),
+                eq(couponRedemptionsTable.status, 'completed')
               )
             );
             

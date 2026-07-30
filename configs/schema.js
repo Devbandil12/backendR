@@ -291,11 +291,17 @@ export const couponRedemptionsTable = pgTable('coupon_redemptions', {
   couponId: integer('coupon_id').references(() => couponsTable.id).notNull(),
   userId: uuid('user_id').references(() => usersTable.id).notNull(),
   orderId: text('order_id').references(() => ordersTable.id).notNull(),
-  // Tracks if the redemption is 'pending_payment', 'completed', or 'cancelled'
+  // Tracks if the redemption is 'pending', 'completed', or 'cancelled'
   status: varchar('status').notNull().default('pending'),
 
   redeemedAt: timestamp('redeemed_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  // 🟢 NEW: Every usage-limit check now filters by (couponId, status='completed')
+  // or (couponId, userId, status='completed') — index both access patterns.
+  couponStatusIdx: index('idx_coupon_redemptions_coupon_status').on(table.couponId, table.status),
+  couponUserStatusIdx: index('idx_coupon_redemptions_coupon_user_status').on(table.couponId, table.userId, table.status),
+  orderIdIdx: index('idx_coupon_redemptions_order_id').on(table.orderId),
+}));
 
 
 export const reviewsTable = pgTable('product_reviews', {

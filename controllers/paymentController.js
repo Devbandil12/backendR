@@ -14,7 +14,8 @@ import {
   usersTable,
   walletTransactionsTable,
   orderTimeline,
-  couponRedemptionsTable
+  couponRedemptionsTable,
+  couponsTable
 } from '../configs/schema.js';
 import { eq, sql, and, inArray, gte, desc } from 'drizzle-orm'; 
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -28,6 +29,7 @@ import {
 } from '../cacheKeys.js';
 import { calculatePriceBreakdown } from '../helpers/priceEngine.js';
 import { createNotification } from '../helpers/notificationManager.js';
+import { safeCompare } from '../helpers/safeCompare.js'; // 🟢 FIX: timing-safe signature comparison
 import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
 import { addToEmailQueue } from '../services/emailQueue.js';
 import { createOrder as createShiprocketOrder } from '../services/shiprocket.service.js';
@@ -53,6 +55,67 @@ async function getNextInvoiceNumber(tx) {
     }
   }
   return `${prefix}${String(nextSeq).padStart(5, '0')}`;
+}
+
+// 🟢 FIX (Round 3, item "no unique constraint / race condition"): the
+// maxUsagePerUser / totalUsageLimit checks in priceEngine.js and
+// routes/coupons.js are only advisory previews — two concurrent checkouts
+// can both read "under limit" before either one commits. This is the
+// actual race-safe guard: it locks the coupon row (SELECT ... FOR UPDATE)
+// for the lifetime of the caller's transaction, so a second concurrent
+// completion for the same coupon blocks until the first transaction
+// commits or rolls back, then re-reads the true, up-to-date count.
+//
+// NOTE: a single blanket UNIQUE(coupon_id, user_id) index was intentionally
+// NOT used instead — maxUsagePerUser can be > 1 (multi-use coupons), and a
+// blanket unique index would incorrectly block those. Row-locking handles
+// both single-use and multi-use coupons correctly.
+//
+// Call this immediately before a redemption is finalized as 'completed' —
+// i.e. inside the COD/wallet order-creation transaction, and inside the
+// verifyPayment transaction right before flipping a 'pending' redemption
+// to 'completed'.
+async function assertCouponUsageWithinLimits(tx, couponId, userId) {
+  if (!couponId) return;
+
+  const [lockedCoupon] = await tx
+    .select()
+    .from(couponsTable)
+    .where(eq(couponsTable.id, couponId))
+    .for('update');
+
+  if (!lockedCoupon) return; // Coupon was deleted mid-flow — nothing left to enforce
+
+  const fail = (message) => {
+    const err = new Error(message);
+    err.code = 'COUPON_LIMIT_REACHED';
+    throw err;
+  };
+
+  if (lockedCoupon.totalUsageLimit !== null) {
+    const totalCompleted = await tx.select().from(couponRedemptionsTable).where(
+      and(
+        eq(couponRedemptionsTable.couponId, couponId),
+        eq(couponRedemptionsTable.status, 'completed')
+      )
+    );
+    if (totalCompleted.length >= lockedCoupon.totalUsageLimit) {
+      fail('The global usage limit for this coupon has just been reached.');
+    }
+  }
+
+  if (lockedCoupon.maxUsagePerUser !== null && userId) {
+    const userCompleted = await tx.select().from(couponRedemptionsTable).where(
+      and(
+        eq(couponRedemptionsTable.couponId, couponId),
+        eq(couponRedemptionsTable.userId, userId),
+        eq(couponRedemptionsTable.status, 'completed')
+      )
+    );
+    if (userCompleted.length >= lockedCoupon.maxUsagePerUser) {
+      fail(`You have reached the maximum usage limit (${lockedCoupon.maxUsagePerUser}) for this coupon.`);
+    }
+  }
 }
 
 export async function createShiprocketOrderForExistingOrder(orderId) {
@@ -421,6 +484,10 @@ export const createOrder = async (req, res) => {
 
         // Record Coupon Redemption as 'completed'
         if (breakdown.appliedCouponId) {
+          // 🟢 FIX: race-safe re-check under a locked coupon row before
+          // finalizing this as a 'completed' redemption.
+          await assertCouponUsageWithinLimits(tx, breakdown.appliedCouponId, user.id);
+
           await tx.insert(couponRedemptionsTable).values({
             couponId: breakdown.appliedCouponId,
             userId: user.id,
@@ -523,6 +590,10 @@ export const createOrder = async (req, res) => {
 
           // Record Coupon Redemption as 'completed'
           if (breakdown.appliedCouponId) {
+            // 🟢 FIX: race-safe re-check under a locked coupon row before
+            // finalizing this as a 'completed' redemption.
+            await assertCouponUsageWithinLimits(tx, breakdown.appliedCouponId, user.id);
+
             await tx.insert(couponRedemptionsTable).values({
               couponId: breakdown.appliedCouponId,
               userId: user.id,
@@ -700,7 +771,7 @@ export const verifyPayment = async (req, res) => {
       .update(`${razorpay_order_id}|${razorpay_payment_id}`)
       .digest('hex');
 
-    if (generatedSignature !== razorpay_signature) {
+    if (!safeCompare(generatedSignature, razorpay_signature)) {
       return res.status(400).json({ success: false, error: "Verification failed" });
     }
 
@@ -767,6 +838,13 @@ export const verifyPayment = async (req, res) => {
         }).where(eq(ordersTable.id, existingOrder.id)).returning();
 
         // Lock in the Coupon Redemption status to 'completed'
+        // 🟢 FIX: race-safe re-check under a locked coupon row — this is the
+        // real point where an online order's coupon usage becomes permanent,
+        // so it's the point that must be race-safe.
+        if (existingOrder.couponId) {
+          await assertCouponUsageWithinLimits(tx, existingOrder.couponId, user.id);
+        }
+
         await tx.update(couponRedemptionsTable)
           .set({ status: 'completed' })
           .where(eq(couponRedemptionsTable.orderId, existingOrder.id));
@@ -823,6 +901,30 @@ export const verifyPayment = async (req, res) => {
           return res.status(500).json({
             success: false,
             error: "Out of stock. Payment deducted but refund failed. Please contact support."
+          });
+        }
+      }
+
+      // 🟢 FIX: another concurrent checkout beat this one to the coupon's usage
+      // limit while this payment was being verified — auto-refund rather than
+      // leave the customer charged with no valid order.
+      if (error.code === "COUPON_LIMIT_REACHED") {
+        try {
+          await razorpay.payments.refund(req.body.razorpay_payment_id, {
+            speed: 'optimum',
+            notes: { reason: 'Coupon usage limit reached at verification time' }
+          });
+
+          return res.status(400).json({
+            success: false,
+            error: "This coupon's usage limit was reached just before your payment completed. Your payment has been auto-refunded."
+          });
+
+        } catch (refundError) {
+          console.error("Refund failed:", refundError);
+          return res.status(500).json({
+            success: false,
+            error: "Coupon limit reached. Payment deducted but refund failed. Please contact support."
           });
         }
       }
