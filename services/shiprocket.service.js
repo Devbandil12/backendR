@@ -143,6 +143,18 @@ export async function getServiceability(params) {
   });
 }
 
+// 🟢 NEW: assign a courier + generate an AWB for a shipment — the actual
+// "Ship Now" action. courier_id is optional; omit it and Shiprocket
+// auto-picks the recommended courier for that shipment.
+export async function assignAwb({ shipment_id, courier_id = null }) {
+  const body = { shipment_id };
+  if (courier_id) body.courier_id = courier_id;
+  return shiprocketRequest('/v1/external/courier/assign/awb', {
+    method: 'POST',
+    body,
+  });
+}
+
 export async function getPickupLocations() {
   return shiprocketRequest('/v1/external/settings/company/pickup', {
     method: 'GET',
@@ -157,4 +169,5 @@ export const ShiprocketService = {
   trackByShipment,
   getServiceability,
   getPickupLocations,
+  assignAwb,
 };

@@ -12,7 +12,8 @@ import {
   index,
   jsonb,
   real,
-  json
+  json,
+  unique
 } from 'drizzle-orm/pg-core';
 import { sql, relations } from 'drizzle-orm';
 
@@ -47,6 +48,11 @@ export const usersTable = pgTable('users', {
   referralCode: text('referral_code').unique(),
   referredBy: uuid('referred_by'),
   walletBalance: integer('wallet_balance').default(0).notNull(),
+  phoneVerified: boolean('phone_verified').default(false).notNull(),       // 🟢 NEW: phone verification (Part A)
+  phoneVerifiedAt: timestamp('phone_verified_at', { withTimezone: true }), // 🟢 NEW
+  codDisabled: boolean('cod_disabled').default(false).notNull(),          // 🟢 NEW: refusal tiering (Part C)
+  codDisabledAt: timestamp('cod_disabled_at', { withTimezone: true }),    // 🟢 NEW
+  codDisabledReason: text('cod_disabled_reason'),                        // 🟢 NEW
 });
 
 // 2. User Address Table
@@ -202,6 +208,7 @@ export const ordersTable = pgTable('orders', {
   transactionId: text('transaction_id').default("null"),
   paymentStatus: text("payment_status").default("pending"),
   phone: text("phone").notNull(),
+  paymentContactPhone: text('payment_contact_phone'), // 🟢 NEW: Razorpay-confirmed contact, backup only — never overwrites `phone` (Part A4)
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
   refund_id: text('refund_id'),
@@ -255,6 +262,61 @@ export const orderTimeline = pgTable("order_timeline", {
   title: text("title").notNull(),
   description: text("description"),
   timestamp: timestamp("timestamp", { withTimezone: true, mode: 'string' }).defaultNow(),
+});
+
+// --- COD WHATSAPP OTP VERIFICATION ---
+//
+// Backs the "verify the phone before we create a risky COD order" feature.
+// Three tables, on purpose kept separate rather than bolted onto `orders`
+// or `user_address`, because they have different lifecycles:
+//   - otpVerificationsTable: one row per OTP attempt (send -> verify).
+//     Short-lived, high write volume, safe to prune periodically.
+//   - verifiedPhonesTable: "we already confirmed this human owns this
+//     number" memory, so a repeat customer is never asked twice.
+//   - codOtpDecisionLogTable: audit trail of every risk-engine decision,
+//     including ones made in shadow mode where nothing was enforced. This
+//     is what you look at before flipping COD_OTP_MODE from shadow -> enforce.
+
+export const otpVerificationsTable = pgTable('otp_verifications', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
+  phone: text('phone').notNull(),
+  otpHash: text('otp_hash').notNull(), // sha256(otp + pepper) — never store the raw code
+  purpose: varchar('purpose', { length: 30 }).notNull().default('cod_checkout'),
+  channel: varchar('channel', { length: 10 }).notNull().default('whatsapp'), // 'whatsapp' | 'sms'
+  attempts: integer('attempts').notNull().default(0), // failed verify attempts
+  maxAttempts: integer('max_attempts').notNull().default(5),
+  resendCount: integer('resend_count').notNull().default(0),
+  verified: boolean('verified').notNull().default(false),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }),
+  verificationToken: text('verification_token'), // issued once verified=true; single-use hand-off to createOrder
+  tokenConsumed: boolean('token_consumed').notNull().default(false),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  index('idx_otp_user_phone').on(table.userId, table.phone),
+]);
+
+export const verifiedPhonesTable = pgTable('verified_phones', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').notNull().references(() => usersTable.id, { onDelete: 'cascade' }),
+  phone: text('phone').notNull(),
+  verifiedAt: timestamp('verified_at', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  unique('uq_verified_user_phone').on(table.userId, table.phone),
+]);
+
+export const codOtpDecisionLogTable = pgTable('cod_otp_decision_log', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').references(() => usersTable.id, { onDelete: 'set null' }),
+  phone: text('phone'),
+  postalCode: text('postal_code'),
+  cartTotal: integer('cart_total'),
+  mode: varchar('mode', { length: 10 }).notNull(), // 'shadow' | 'enforce'
+  required: boolean('required').notNull(),
+  reasons: jsonb('reasons'), // e.g. ["high_order_value", "risky_pincode"]
+  orderId: text('order_id'), // backfilled if/when the order actually completes
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
 // --- COUPONS, REVIEWS, TESTIMONIALS & NOTIFICATIONS ---

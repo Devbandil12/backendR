@@ -82,6 +82,13 @@ export const calculatePriceBreakdown = async (cartItems, couponCode, pincode, us
     }
   }
 
+  // 🟢 NEW: Part C — a user auto-switched to prepaid-only (2+ refused COD
+  // deliveries) never sees COD as available, regardless of pincode.
+  if (codAvailable && userId) {
+    const [codUser] = await db.select({ codDisabled: usersTable.codDisabled }).from(usersTable).where(eq(usersTable.id, userId));
+    if (codUser?.codDisabled) codAvailable = false;
+  }
+
   // 3. Get full cart item details from DB
   const variantIds = cartItems.map(item => item.variantId);
   if (variantIds.length === 0) {

@@ -72,8 +72,16 @@ export const refundOrder = async (req, res) => {
             return res.status(403).json({ success: false, error: "Forbidden: Not your order" });
         }
 
-        // 🟢 STRICT RESTRICTION: Only 'Order Placed' can be cancelled by User
-        if (order.status.toLowerCase() !== 'order placed') {
+        // 🟢 UPDATED (Part B): cancellation window extended past just 'Order
+        // Placed' — a customer can still cancel while their order is
+        // 'Processing' or 'Packed' (courier hasn't picked it up yet), for
+        // free either way (no escalating fee — see the flat-5%-if-prepaid
+        // logic below, which already applies regardless of which of these
+        // three statuses the order is in). Blocked once 'Shipped' or
+        // later, matching Shiprocket's own rule that a shipment can only
+        // be cancelled before courier pickup.
+        const CANCELLABLE_STATUSES = ['order placed', 'processing', 'packed'];
+        if (!CANCELLABLE_STATUSES.includes(order.status.toLowerCase())) {
             return res.status(400).json({ 
                 success: false, 
                 error: `You cannot cancel this order as it is already ${order.status}. Please contact support.` 

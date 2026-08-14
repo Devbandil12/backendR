@@ -15,7 +15,9 @@ import {
   walletTransactionsTable,
   orderTimeline,
   couponRedemptionsTable,
-  couponsTable
+  couponsTable,
+  otpVerificationsTable,   // 🟢 NEW: COD WhatsApp OTP
+  verifiedPhonesTable      // 🟢 NEW: COD WhatsApp OTP
 } from '../configs/schema.js';
 import { eq, sql, and, inArray, gte, desc } from 'drizzle-orm'; 
 import { invalidateMultiple } from '../invalidateHelpers.js';
@@ -33,6 +35,7 @@ import { safeCompare } from '../helpers/safeCompare.js'; // 🟢 FIX: timing-saf
 import { sendOrderConfirmationEmail, sendAdminOrderAlert } from '../routes/notifications.js';
 import { addToEmailQueue } from '../services/emailQueue.js';
 import { createOrder as createShiprocketOrder } from '../services/shiprocket.service.js';
+import { evaluateCodRisk, logOtpDecision } from '../helpers/codRiskEngine.js'; // 🟢 NEW: COD WhatsApp OTP
 
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
@@ -370,7 +373,8 @@ export const createOrder = async (req, res) => {
       cartItems,
       userAddressId,
       couponCode = null,
-      useWallet = false
+      useWallet = false,
+      otpVerificationToken = null // 🟢 NEW: COD WhatsApp OTP — hand-off from /api/checkout-otp/verify
     } = req.body;
 
     // 🟢 SAFEGUARD: Ensure couponCode is a strict string (Fixes React object-passing bugs)
@@ -442,6 +446,72 @@ export const createOrder = async (req, res) => {
         success: false,
         msg: "Cash on Delivery is not available for this address."
       });
+    }
+
+    // 🟢 NEW: Part C — COD refusal tiering. A user auto-switched to
+    // prepaid-only (2+ refused COD deliveries) can't select COD at all.
+    if (paymentMode === 'cod' && user.codDisabled) {
+      return res.status(400).json({
+        success: false,
+        code: 'COD_DISABLED',
+        msg: "Cash on Delivery isn't available on this account right now — please pay online to place this order.",
+      });
+    }
+
+    // 🟢 NEW: COD WHATSAPP OTP GATE
+    // This is the authoritative check — /api/checkout-otp/send only drives
+    // the UI. Even if a client skips that call entirely, a risky COD order
+    // can't complete without a valid, unconsumed verification token once
+    // COD_OTP_MODE=enforce. Re-evaluated here (not trusted from the client)
+    // using finalAmount, i.e. what COD will actually collect at the door.
+    let otpTokenRecord = null;
+    if (paymentMode === 'cod') {
+      const codOtpMode = (process.env.COD_OTP_MODE || 'shadow').toLowerCase();
+      const risk = await evaluateCodRisk({
+        userId: user.id,
+        phone: address.phone,
+        address,
+        cartTotal: finalAmount,
+      });
+
+      if (codOtpMode === 'shadow') {
+        // Never blocks — just records what enforcement WOULD have done.
+        logOtpDecision({
+          userId: user.id, phone: address.phone, postalCode: address.postalCode,
+          cartTotal: finalAmount, mode: 'shadow', required: risk.required, reasons: risk.reasons,
+        });
+      } else if (risk.required && !risk.trustedPhone) {
+        if (!otpVerificationToken) {
+          return res.status(400).json({
+            success: false,
+            code: 'OTP_REQUIRED',
+            msg: 'Please verify your phone number to place this Cash on Delivery order.',
+          });
+        }
+
+        [otpTokenRecord] = await db.select().from(otpVerificationsTable)
+          .where(eq(otpVerificationsTable.verificationToken, otpVerificationToken));
+
+        const tokenValid = otpTokenRecord
+          && otpTokenRecord.userId === user.id
+          && otpTokenRecord.phone === address.phone
+          && otpTokenRecord.verified
+          && !otpTokenRecord.tokenConsumed
+          && new Date(otpTokenRecord.expiresAt) > new Date();
+
+        if (!tokenValid) {
+          return res.status(400).json({
+            success: false,
+            code: 'OTP_REQUIRED',
+            msg: 'Your verification code has expired. Please verify your phone number again.',
+          });
+        }
+
+        logOtpDecision({
+          userId: user.id, phone: address.phone, postalCode: address.postalCode,
+          cartTotal: finalAmount, mode: 'enforce', required: true, reasons: risk.reasons,
+        });
+      }
     }
 
     // 🟢 SERVER-SIDE IDEMPOTENCY LOCK
@@ -624,6 +694,14 @@ export const createOrder = async (req, res) => {
             progressStep: 1,
             invoiceNumber: newInvoiceNumber 
           }).returning();
+
+          // 🟢 NEW: COD WhatsApp OTP — burn the token now that the order it
+          // was issued for is actually being created, so it can't be reused.
+          if (otpTokenRecord) {
+            await tx.update(otpVerificationsTable)
+              .set({ tokenConsumed: true })
+              .where(eq(otpVerificationsTable.id, otpTokenRecord.id));
+          }
 
           // Record Coupon Redemption as 'completed'
           if (breakdown.appliedCouponId) {
@@ -857,6 +935,21 @@ export const verifyPayment = async (req, res) => {
     }
 
     let transactionResult;
+
+    // 🟢 NEW: Part A4 — Razorpay's confirmed payment contact, captured as a
+    // backup only. Never overwrites `existingOrder.phone` (the actual
+    // delivery number) — a gift order paid by someone other than the
+    // recipient should still have the courier calling the recipient, not
+    // the payer. This is purely a fallback contact + a quiet trust signal
+    // for future checkouts (written to verified_phones below).
+    const razorpayContact = payment.contact ? String(payment.contact).replace(/\D/g, '').slice(-10) : null;
+    if (razorpayContact && /^[6-9]\d{9}$/.test(razorpayContact) && razorpayContact !== existingOrder.phone) {
+      db.update(ordersTable).set({ paymentContactPhone: razorpayContact }).where(eq(ordersTable.id, existingOrder.id))
+        .catch(err => console.error('Failed to store paymentContactPhone:', err.message));
+      db.insert(verifiedPhonesTable).values({ userId: user.id, phone: razorpayContact })
+        .onConflictDoUpdate({ target: [verifiedPhonesTable.userId, verifiedPhonesTable.phone], set: { verifiedAt: new Date() } })
+        .catch(err => console.error('Failed to trust Razorpay contact phone:', err.message));
+    }
 
     try {
       transactionResult = await db.transaction(async (tx) => {

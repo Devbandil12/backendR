@@ -15,6 +15,7 @@ import { db } from '../configs/index.js';
 import { ordersTable, orderTimeline, orderItemsTable, productVariantsTable, productBundlesTable } from '../configs/schema.js'; // 🟢 ADDED: Required tables for stock restoration
 import { eq, or, sql } from 'drizzle-orm'; // ✅ FIXED: Imported 'or' and 'sql'
 import { createNotification } from '../helpers/notificationManager.js';
+import { handleCodRefusal } from '../helpers/codRefusalTiering.js'; // 🟢 NEW: Part C
 import { safeCompare } from '../helpers/safeCompare.js'; // 🟢 FIX: timing-safe signature comparison
 import { invalidateMultiple } from '../invalidateHelpers.js';
 import { makeAllOrdersKey, makeOrderKey, makeUserOrdersKey, makeAllProductsKey, makeProductKey } from '../cacheKeys.js'; // 🟢 ADDED: Product cache keys
@@ -263,6 +264,12 @@ router.post('/webhook', verifyShiprocketWebhook, async (req, res) => {
       }
 
     });
+
+    // 🟢 NEW: Part C — COD refusal tiering. Runs after the transaction so
+    // the new 'RTO Initiated' status is already committed and counted.
+    if (mappedStatus === 'RTO Initiated') {
+      await handleCodRefusal({ ...order, status: mappedStatus });
+    }
 
     // 3. Process Automatic Refunds for Returns / RTOs
     if (shouldTriggerRefund && order.paymentMode === 'online' && order.paymentStatus === 'paid' && order.transactionId) {

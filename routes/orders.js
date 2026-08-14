@@ -28,7 +28,7 @@ import {
 import { createNotification } from '../helpers/notificationManager.js';
 import { generateInvoiceBuffer } from "../services/invoice.service.js"; 
 import { processReferralCompletion } from "../controllers/referralController.js";
-import { cancelOrder as cancelShiprocketOrder, createReturnOrder } from "../services/shiprocket.service.js";
+import { cancelOrder as cancelShiprocketOrder, createReturnOrder, assignAwb, getServiceability } from "../services/shiprocket.service.js";
 
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
@@ -784,6 +784,175 @@ router.put("/bulk-status", requireAuth, verifyAdmin, async (req, res) => {
 
   } catch (error) {
     console.error("❌ Bulk update error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+/* ======================================================
+   🔒 ADMIN — BULK "SHIP NOW" (Part D)
+   Two-step flow: preview (read-only, no side effects) then
+   ship-now (the actual mutating AWB assignment). Never let the
+   estimate double as the commit.
+====================================================== */
+
+// Mirrors the weight-estimation logic in
+// controllers/paymentController.js#createShiprocketOrderForExistingOrder —
+// kept in sync manually since it's a small, stable calculation.
+function estimateOrderWeight(orderItems) {
+  let totalWeight = 0;
+  for (const item of orderItems) {
+    const itemWeight = item.variant?.weight ? parseFloat(item.variant.weight) : 0.5;
+    totalWeight += itemWeight * item.quantity;
+  }
+  return totalWeight > 0 ? parseFloat(totalWeight.toFixed(2)) : 0.5;
+}
+
+router.post("/admin/ship-preview", requireAuth, verifyAdmin, async (req, res) => {
+  try {
+    const { orderIds } = req.body;
+    if (!orderIds || !Array.isArray(orderIds) || orderIds.length === 0) {
+      return res.status(400).json({ error: "No order IDs provided" });
+    }
+
+    const pickupPincode = process.env.SHIPROCKET_PICKUP_PINCODE;
+    if (!pickupPincode) {
+      return res.status(500).json({ error: "SHIPROCKET_PICKUP_PINCODE is not configured." });
+    }
+
+    const orders = await db.query.ordersTable.findMany({
+      where: inArray(ordersTable.id, orderIds),
+      with: { address: true, orderItems: { with: { variant: true } } },
+    });
+
+    const results = [];
+    let totalEstimate = 0;
+
+    for (const order of orders) {
+      if (!order.shiprocketShipmentId) {
+        results.push({ orderId: order.id, error: "Not yet synced to Shiprocket — no shipment ID." });
+        continue;
+      }
+      if (order.shiprocketAwb) {
+        results.push({ orderId: order.id, error: "Already has an AWB assigned." });
+        continue;
+      }
+      try {
+        const weight = estimateOrderWeight(order.orderItems);
+        const svc = await getServiceability({
+          pickup_postcode: pickupPincode,
+          delivery_postcode: order.address.postalCode,
+          weight,
+          cod: order.paymentMode === 'cod' ? 1 : 0,
+        });
+        const couriers = svc?.data?.available_courier_companies || [];
+        const cheapest = couriers.length
+          ? couriers.reduce((min, c) => (c.rate < min.rate ? c : min), couriers[0])
+          : null;
+
+        if (!cheapest) {
+          results.push({ orderId: order.id, error: "No serviceable courier found for this pincode." });
+          continue;
+        }
+
+        totalEstimate += cheapest.rate;
+        results.push({
+          orderId: order.id,
+          courierName: cheapest.courier_name,
+          courierId: cheapest.courier_company_id,
+          estimatedRate: cheapest.rate,
+          estimatedDays: cheapest.estimated_delivery_days,
+        });
+      } catch (err) {
+        results.push({ orderId: order.id, error: err.message || "Serviceability check failed." });
+      }
+    }
+
+    res.json({ success: true, results, totalEstimate });
+  } catch (error) {
+    console.error("❌ Ship preview error:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+router.post("/admin/ship-now", requireAuth, verifyAdmin, async (req, res) => {
+  try {
+    // orders: [{ orderId, courierId? }] — courierId optional, omit to let Shiprocket auto-pick.
+    const { orders: shipRequests } = req.body;
+    if (!shipRequests || !Array.isArray(shipRequests) || shipRequests.length === 0) {
+      return res.status(400).json({ error: "No orders provided" });
+    }
+
+    const orderIds = shipRequests.map(r => r.orderId);
+    const orders = await db.query.ordersTable.findMany({
+      where: inArray(ordersTable.id, orderIds),
+    });
+    const orderMap = new Map(orders.map(o => [o.id, o]));
+
+    const results = [];
+    const timelineValues = [];
+    const itemsToInvalidate = [{ key: makeAllOrdersKey() }, { key: makeAdminOrdersReportKey() }];
+
+    for (const req_ of shipRequests) {
+      const order = orderMap.get(req_.orderId);
+      if (!order) {
+        results.push({ orderId: req_.orderId, success: false, error: "Order not found." });
+        continue;
+      }
+      if (!order.shiprocketShipmentId) {
+        results.push({ orderId: order.id, success: false, error: "No Shiprocket shipment ID." });
+        continue;
+      }
+      if (order.shiprocketAwb) {
+        results.push({ orderId: order.id, success: false, error: "Already shipped." });
+        continue;
+      }
+
+      try {
+        const srResponse = await assignAwb({
+          shipment_id: order.shiprocketShipmentId,
+          courier_id: req_.courierId || null,
+        });
+        const awbData = srResponse?.response?.data;
+        if (!awbData?.awb_code) {
+          throw new Error(srResponse?.message || "Shiprocket did not return an AWB code.");
+        }
+
+        await db.update(ordersTable).set({
+          shiprocketAwb: String(awbData.awb_code),
+          courierName: awbData.courier_name || null,
+          status: 'Packed',
+          progressStep: 2,
+          updatedAt: new Date(),
+        }).where(eq(ordersTable.id, order.id));
+
+        timelineValues.push({
+          orderId: order.id,
+          status: 'Packed',
+          title: 'Packed',
+          description: `Shipped via ${awbData.courier_name || 'courier'}. AWB: ${awbData.awb_code}`,
+          timestamp: new Date(),
+        });
+
+        itemsToInvalidate.push({ key: makeOrderKey(order.id) }, { key: makeUserOrdersKey(order.userId) });
+        results.push({ orderId: order.id, success: true, awb: awbData.awb_code, courierName: awbData.courier_name });
+      } catch (err) {
+        results.push({ orderId: order.id, success: false, error: err.message || "AWB assignment failed." });
+      }
+    }
+
+    if (timelineValues.length > 0) {
+      await db.insert(orderTimeline).values(timelineValues);
+    }
+    await invalidateMultiple(itemsToInvalidate);
+
+    const successCount = results.filter(r => r.success).length;
+    res.json({
+      success: true,
+      message: `Shipped ${successCount} of ${shipRequests.length} orders.`,
+      results,
+    });
+  } catch (error) {
+    console.error("❌ Ship now error:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });

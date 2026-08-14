@@ -6,11 +6,19 @@ import fs from 'fs'; // Kept for file cleanup only
 // import path from 'path'; // REMOVED (No longer needed for config)
 import { db } from "../configs/index.js";
 // 🟢 Added rewardConfigTable
-import { usersTable, walletTransactionsTable, rewardClaimsTable, reviewsTable, rewardConfigTable } from "../configs/schema.js";
+import { usersTable, walletTransactionsTable, rewardClaimsTable, reviewsTable, rewardConfigTable, referralsTable, ordersTable } from "../configs/schema.js"; // 🟢 UPDATED: referralsTable, ordersTable
 import { eq, and, desc, sql } from "drizzle-orm";
 
 // 🔒 SECURITY: Import Middleware
 import { requireAuth, verifyAdmin } from "../middleware/authMiddleware.js";
+import path from "path";
+import { fileURLToPath } from "url";
+// 🟢 NEW: referralConfig.json already existed with the intended amounts
+// (₹50 each way) but was never actually imported anywhere in the codebase —
+// read via fs instead of a JSON import assertion so this doesn't depend on
+// a specific Node version in production.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const referralAmounts = JSON.parse(fs.readFileSync(path.join(__dirname, "../referralConfig.json"), "utf-8"));
 
 const router = express.Router();
 const upload = multer({ dest: "uploads/" }); 
@@ -255,6 +263,138 @@ router.post("/claim", requireAuth, upload.single("proofImage"), async (req, res)
     console.error("Claim Error:", error);
     if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
     res.status(500).json({ error: "Server Error" });
+  }
+});
+
+/* ======================================================
+   🔒 GET REFERRAL STATS (Owner Only)
+   🟢 NEW: this endpoint never existed — WalletTab.jsx and
+   OverviewTab.jsx have been calling GET /api/referrals/stats/:userId
+   since they were built, silently 404ing. That's the actual root
+   cause of "Aura Circle isn't showing a referral code": there was
+   no code to show, because nothing ever generated one.
+   Lazily generates + persists a referralCode on first call, since
+   nothing does this at signup either.
+====================================================== */
+function generateReferralCode(name) {
+  const initials = (name || "AURA").replace(/[^a-zA-Z]/g, "").slice(0, 4).toUpperCase().padEnd(4, "X");
+  const digits = Math.floor(1000 + Math.random() * 9000);
+  return `${initials}${digits}`;
+}
+
+router.get("/stats/:userId", requireAuth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const requester = await db.query.usersTable.findFirst({
+      where: eq(usersTable.clerkId, req.auth.userId),
+    });
+    if (!requester) return res.status(401).json({ error: "Unauthorized" });
+    if (userId !== requester.id && requester.role !== 'admin') {
+      return res.status(403).json({ error: "Forbidden" }); // 🔒 same ownership check as /my-history above
+    }
+
+    let user = requester.id === userId ? requester : await db.query.usersTable.findFirst({ where: eq(usersTable.id, userId) });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Lazily generate a code if this user doesn't have one yet, retrying
+    // on the rare collision (referralCode has a unique constraint).
+    if (!user.referralCode) {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const candidate = generateReferralCode(user.name);
+        try {
+          const [updated] = await db.update(usersTable).set({ referralCode: candidate })
+            .where(eq(usersTable.id, user.id)).returning();
+          user = updated;
+          break;
+        } catch (err) {
+          if (attempt === 4) throw err; // exhausted retries on unique-constraint collisions
+        }
+      }
+    }
+
+    const [{ totalEarnings }] = await db.select({ totalEarnings: sql`coalesce(sum(${walletTransactionsTable.amount}), 0)`.mapWith(Number) })
+      .from(walletTransactionsTable)
+      .where(and(eq(walletTransactionsTable.userId, user.id), eq(walletTransactionsTable.type, 'referral_bonus')));
+
+    const referralRows = await db.select({ status: referralsTable.status })
+      .from(referralsTable).where(eq(referralsTable.referrerId, user.id));
+    const totalReferrals = referralRows.length;
+    const completedReferrals = referralRows.filter(r => r.status === 'completed').length;
+
+    res.json({
+      referralCode: user.referralCode,
+      walletBalance: user.walletBalance || 0,
+      stats: { totalEarnings, totalReferrals, completedReferrals },
+    });
+  } catch (error) {
+    console.error("❌ Referral Stats Error:", error);
+    res.status(500).json({ error: "Failed to fetch referral stats" });
+  }
+});
+
+/* ======================================================
+   🔒 APPLY A REFERRAL CODE (User Only)
+   🟢 NEW: also never existed — the "Redeem" form in WalletTab.jsx
+   has been POSTing here with no route to receive it.
+====================================================== */
+router.post("/apply", requireAuth, async (req, res) => {
+  try {
+    const { code } = req.body; // userId is trusted from the auth token below, never from the body
+    if (!code || typeof code !== 'string') {
+      return res.status(400).json({ error: "Please enter a referral code." });
+    }
+
+    const requester = await db.query.usersTable.findFirst({
+      where: eq(usersTable.clerkId, req.auth.userId),
+    });
+    if (!requester) return res.status(401).json({ error: "Unauthorized" });
+
+    if (requester.referredBy) {
+      return res.status(400).json({ error: "You've already used a referral code." });
+    }
+
+    const referrer = await db.query.usersTable.findFirst({
+      where: eq(usersTable.referralCode, code.trim().toUpperCase()),
+    });
+    if (!referrer) return res.status(404).json({ error: "That referral code doesn't exist." });
+    if (referrer.id === requester.id) return res.status(400).json({ error: "You can't refer yourself." });
+
+    // One order already placed disqualifies "new customer" referral bonuses —
+    // matches processReferralCompletion firing on a first order only.
+    const [existingOrder] = await db.select({ id: ordersTable.id }).from(ordersTable)
+      .where(and(eq(ordersTable.userId, requester.id), sql`${ordersTable.status} != 'Order Cancelled'`)).limit(1);
+    if (existingOrder) {
+      return res.status(400).json({ error: "Referral codes can only be applied by new customers, before your first order." });
+    }
+
+    await db.transaction(async (tx) => {
+      await tx.update(usersTable).set({ referredBy: referrer.id }).where(eq(usersTable.id, requester.id));
+      await tx.insert(referralsTable).values({
+        referrerId: referrer.id, refereeId: requester.id, status: 'pending',
+        rewardAmount: referralAmounts.REFERRER_BONUS, // 🟢 UPDATED: from config, not the table's generic default
+      });
+
+      // 🟢 NEW: the friend applying the code gets an instant bonus too —
+      // previously only the referrer was ever rewarded (and only much
+      // later, on the friend's first order). A one-sided "I get rewarded
+      // if you use my code" isn't much of a pitch for the friend; this
+      // makes the share message's "you both get a reward" honest.
+      await tx.update(usersTable)
+        .set({ walletBalance: sql`${usersTable.walletBalance} + ${referralAmounts.REFEREE_BONUS}` })
+        .where(eq(usersTable.id, requester.id));
+      await tx.insert(walletTransactionsTable).values({
+        userId: requester.id, amount: referralAmounts.REFEREE_BONUS,
+        type: 'referral_signup_bonus', description: `Welcome bonus for using ${referrer.name || 'a friend'}'s referral code`,
+      });
+    });
+
+    res.json({
+      success: true,
+      message: `Code applied! ₹${referralAmounts.REFEREE_BONUS} added to your wallet. Your friend gets theirs once you complete your first order.`,
+    });
+  } catch (error) {
+    console.error("❌ Referral Apply Error:", error);
+    res.status(500).json({ error: "Failed to apply referral code." });
   }
 });
 

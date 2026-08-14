@@ -42,6 +42,8 @@ import { startEmailWorker } from './services/emailQueue.js';
 import referralRouter from "./routes/referral.js";
 import rewardsRouter from "./routes/rewards.js";
 import shiprocketRoutes from "./routes/shiprocket.js";
+import checkoutOtpRoutes from "./routes/checkoutOtp.js"; // 🟢 NEW: COD WhatsApp OTP verification
+import phoneVerificationRoutes from "./routes/phoneVerification.js"; // 🟢 NEW: Part A2/A3 — general phone verification
 
 const app = express();
 const server = http.createServer(app);
@@ -193,6 +195,8 @@ app.use('/api/cms', cmsRoutes);
 app.use("/api/referrals", referralRouter); // 🟢 THIS IS MISSING
 app.use("/api/rewards", rewardsRouter); // 🟢 THIS IS MISSING
 app.use("/api/shipping/shiprocket", shiprocketRoutes);
+app.use("/api/checkout-otp", checkoutOtpRoutes); // 🟢 NEW: COD WhatsApp OTP verification
+app.use("/api/phone-verification", phoneVerificationRoutes); // 🟢 NEW: Part A2/A3
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // ───── Global Error Handler (Must be after all routes) ─────
 app.use(errorHandler);

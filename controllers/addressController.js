@@ -1,12 +1,27 @@
 import { db } from '../configs/index.js';
-import { UserAddressTable, pincodeServiceabilityTable } from '../configs/schema.js';
-import { eq, and, desc, sql, inArray } from "drizzle-orm"; 
+import { UserAddressTable, pincodeServiceabilityTable, verifiedPhonesTable } from '../configs/schema.js'; // 🟢 UPDATED: Part A5
+import { eq, and, desc, sql, inArray, ne } from "drizzle-orm"; 
 import fetch from "node-fetch";
 
 // Import helpers
 import { invalidateMultiple } from "../invalidateHelpers.js";
 import { makeUserAddressesKey } from "../cacheKeys.js";
 import { createNotification } from '../helpers/notificationManager.js';
+
+// 🟢 NEW: Part A5 — never trust `isVerified` from the request body (it was
+// previously accepted as-is, meaning a client could mark any address
+// "verified" without ever completing an OTP). Compute it live instead: an
+// address's phone is only "verified" if it matches a phone this user has
+// actually verified via OTP at some point (Profile page, address form, or
+// a Razorpay payment contact — see verified_phones).
+async function isPhoneVerifiedForUser(userId, phone) {
+  if (!userId || !phone) return false;
+  const [row] = await db.select({ id: verifiedPhonesTable.id })
+    .from(verifiedPhonesTable)
+    .where(and(eq(verifiedPhonesTable.userId, userId), eq(verifiedPhonesTable.phone, phone.trim())))
+    .limit(1);
+  return !!row;
+}
 
 const API_KEY = process.env.GOOGLE_API_KEY;
 
@@ -113,7 +128,8 @@ export async function saveAddress(req, res) {
       userId, name, phone, altPhone, address, city, state, postalCode, country,
       landmark, deliveryInstructions, addressType = "Home", label,
       latitude, longitude, geoAccuracy,
-      isDefault = false, isVerified = false, isDeleted = false
+      isDefault = false, isDeleted = false
+      // 🟢 REMOVED: isVerified no longer accepted from the client (Part A5) — computed below
     } = req.body;
 
     if (!userId || !name || !phone) {
@@ -144,12 +160,33 @@ export async function saveAddress(req, res) {
       return res.status(400).json({ success: false, msg: "Incomplete address details after geocoding" });
     }
 
+    // 🟢 NEW: prevent a second "Home" or "Work" address — those are meant
+    // to be singular per user. "Other" stays unlimited since it's a
+    // catch-all label (gym, parents' house, etc.), not a fixed slot.
+    if (['Home', 'Work'].includes(addressType)) {
+      const [existingOfType] = await db.select({ id: UserAddressTable.id })
+        .from(UserAddressTable)
+        .where(and(
+          eq(UserAddressTable.userId, userId),
+          eq(UserAddressTable.addressType, addressType),
+          eq(UserAddressTable.isDeleted, false)
+        )).limit(1);
+      if (existingOfType) {
+        return res.status(409).json({
+          success: false,
+          msg: `You already have a ${addressType} address saved. Edit that one, or save this as "Other" instead.`,
+        });
+      }
+    }
+
     if (isDefault) {
       await db
         .update(UserAddressTable)
         .set({ isDefault: false })
         .where(eq(UserAddressTable.userId, userId));
     }
+
+    const isVerified = await isPhoneVerifiedForUser(userId, phone); // 🟢 NEW: Part A5
 
     const inserted = await db
       .insert(UserAddressTable)
@@ -194,7 +231,8 @@ export async function updateAddress(req, res) {
       name, phone, altPhone, address, city, state, postalCode, country,
       landmark, deliveryInstructions, addressType, label,
       latitude, longitude, geoAccuracy,
-      isDefault, isVerified, isDeleted
+      isDefault, isDeleted
+      // 🟢 REMOVED: isVerified no longer accepted from the client (Part A5) — computed below
     } = req.body;
 
     // --- 🟢 STRICT PHONE VALIDATION START ---
@@ -229,12 +267,38 @@ export async function updateAddress(req, res) {
     const existing = await db.select().from(UserAddressTable).where(eq(UserAddressTable.id, id));
     if (existing.length === 0) return res.status(404).json({ success: false, msg: "Address not found" });
 
+    // 🟢 NEW: same Home/Work singularity check as saveAddress — but only
+    // when addressType is actually changing to Home/Work, and excluding
+    // this address itself (editing a Home address that stays Home is fine).
+    const targetType = req.body.hasOwnProperty('addressType') ? addressType : existing[0].addressType;
+    if (['Home', 'Work'].includes(targetType) && targetType !== existing[0].addressType) {
+      const [existingOfType] = await db.select({ id: UserAddressTable.id })
+        .from(UserAddressTable)
+        .where(and(
+          eq(UserAddressTable.userId, existing[0].userId),
+          eq(UserAddressTable.addressType, targetType),
+          eq(UserAddressTable.isDeleted, false),
+          ne(UserAddressTable.id, id)
+        )).limit(1);
+      if (existingOfType) {
+        return res.status(409).json({
+          success: false,
+          msg: `You already have a ${targetType} address saved. Edit that one, or save this as "Other" instead.`,
+        });
+      }
+    }
+
     if (isDefault) {
       await db
         .update(UserAddressTable)
         .set({ isDefault: false })
         .where(eq(UserAddressTable.userId, existing[0].userId));
     }
+
+    // 🟢 NEW: Part A5 — recompute live rather than trust the client. Uses
+    // the new phone if one was submitted, otherwise the address's existing phone.
+    const phoneToCheck = req.body.hasOwnProperty('phone') ? phone : existing[0].phone;
+    const isVerified = await isPhoneVerifiedForUser(existing[0].userId, phoneToCheck);
 
     const updated = await db
       .update(UserAddressTable)

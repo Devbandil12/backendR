@@ -37,9 +37,12 @@ export const initCronJobs = () => {
         }
     });
 
-    // 🟢 Fixed: Every 5 minutes, process orders older than 5 minutes
+    // 🟢 UPDATED (Part B): window extended from a hardcoded 5 minutes to
+    // ORDER_CANCEL_WINDOW_MINUTES (default 60) — this is now the same
+    // number customers are shown as their free-cancellation deadline, so
+    // the promise and the mechanism can never drift apart.
     // Flow:
-    // - Find orders with status 'Order Placed', no Shiprocket IDs, createdAt <= now - 5m
+    // - Find orders with status 'Order Placed', no Shiprocket IDs, createdAt <= now - window
     // - Mark them as 'Processing' + timeline entry
     // - Trigger Shiprocket order creation
     // - Rollback to 'Order Placed' if Shiprocket fails so it can be retried
@@ -47,8 +50,8 @@ export const initCronJobs = () => {
         console.log("🚚 [AUTO] Checking for orders to move to Processing & create Shiprocket shipments...");
 
         try {
-            // Target orders placed at least 5 minutes ago to allow payment webhooks to settle
-            const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000);
+            const cancelWindowMinutes = Number(process.env.ORDER_CANCEL_WINDOW_MINUTES || 60);
+            const windowAgo = new Date(Date.now() - cancelWindowMinutes * 60 * 1000);
 
             const candidates = await db
                 .select()
@@ -56,7 +59,7 @@ export const initCronJobs = () => {
                 .where(
                     and(
                         eq(ordersTable.status, 'Order Placed'),
-                        lte(ordersTable.createdAt, fiveMinsAgo),
+                        lte(ordersTable.createdAt, windowAgo),
                         isNull(ordersTable.shiprocketOrderId),
                         isNull(ordersTable.shiprocketShipmentId)
                     )
