@@ -92,6 +92,13 @@
       "when": 1785391009722,
       "tag": "0012_nifty_master_chief",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1787120199046,
+      "tag": "0013_mighty_living_tribunal",
+      "breakpoints": true
     }
   ]
 }
