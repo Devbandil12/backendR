@@ -31,7 +31,8 @@ export const createRole = async (req, res) => {
     const createdByClerkId = req.auth.userId;
     const [user] = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.clerkId, createdByClerkId));
 
-    if (req.adminRole !== 'SUPER_ADMIN' && !req.adminPermissions.includes('roles.manage')) {
+    const isSuperAdmin = req.adminRole === 'SUPER_ADMIN' || req.adminRole === 'SUPER ADMIN';
+    if (!isSuperAdmin && !req.adminPermissions.includes('roles.manage')) {
       await audit.log({
         actorUserId: user?.id,
         action: 'PERMISSION_DENIED',
@@ -143,7 +144,10 @@ export const assignRole = async (req, res) => {
     // Privilege Escalation Prevention
     const [targetRole] = await db.select().from(rolesTable).where(eq(rolesTable.id, roleId));
     
-    if (targetRole && targetRole.name === 'SUPER_ADMIN' && req.adminRole !== 'SUPER_ADMIN') {
+    const isTargetSuperAdmin = targetRole?.name === 'SUPER_ADMIN' || targetRole?.name === 'SUPER ADMIN';
+    const isCurrentSuperAdmin = req.adminRole === 'SUPER_ADMIN' || req.adminRole === 'SUPER ADMIN';
+    
+    if (targetRole && isTargetSuperAdmin && !isCurrentSuperAdmin) {
       await audit.log({
         actorUserId: assignedByUser.id,
         action: 'PRIVILEGE_ESCALATION_ATTEMPT',
