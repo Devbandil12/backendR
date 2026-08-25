@@ -26,3 +26,4 @@ export * from './site.schema.js';
 export * from './knowledge.schema.js';
 export * from './returns.schema.js';
 export * from './orderNotes.schema.js';
+export * from './waitlist.schema.js';

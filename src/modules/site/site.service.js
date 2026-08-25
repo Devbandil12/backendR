@@ -1,5 +1,6 @@
 import { db } from '../../db/client.js';
 import { siteSettingsTable, siteStatusLogsTable, globalAnnouncementsTable } from '../../db/schema/site.schema.js';
+import { outboxTable } from '../../db/schema/outbox.schema.js';
 import { usersTable } from '../../db/schema/users.schema.js';
 import { eq, desc, and, or, sql } from 'drizzle-orm';
 import { redis } from '../../config/redis.js';
@@ -79,6 +80,16 @@ export async function updateSiteStatus(clerkId, payload) {
         reason: reason || 'Manual update',
         updatedBy: user.id,
       });
+
+      // Durable Launch Event Trigger
+      if (oldMode === 'COMING_SOON' && newSettings.mode === 'LIVE') {
+        await tx.insert(outboxTable).values({
+          id: `launch-waitlist-${Date.now()}`,
+          eventType: 'LAUNCH_WAITLIST_NOTIFY',
+          payload: { triggeredBy: user.id, oldMode, newMode: 'LIVE', timestamp: new Date().toISOString() },
+          processed: false,
+        });
+      }
     }
 
     // Invalidate Cache

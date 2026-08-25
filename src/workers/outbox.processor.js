@@ -16,6 +16,9 @@ export async function processOutbox() {
           type: event.eventType,
           payload: event.payload
         }, { jobId: `outbox-${event.id}` }); // Idempotent job addition based on outbox ID
+      } else if (event.eventType === 'LAUNCH_WAITLIST_NOTIFY') {
+        const { WaitlistService } = await import('../modules/site/waitlist.service.js');
+        await WaitlistService.processLaunchNotifications();
       }
       
       // Mark as processed

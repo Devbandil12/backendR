@@ -73,6 +73,17 @@ async function transitionTo(newMode, reason, currentStatus) {
       reason: reason,
       updatedBy: null, // System
     });
+
+    // Durable Launch Event Trigger
+    if (currentStatus.mode === 'COMING_SOON' && newMode === 'LIVE') {
+      const { outboxTable } = await import('../../db/schema/outbox.schema.js');
+      await tx.insert(outboxTable).values({
+        id: `launch-waitlist-${Date.now()}`,
+        eventType: 'LAUNCH_WAITLIST_NOTIFY',
+        payload: { triggeredBy: 'SYSTEM_SCHEDULER', oldMode: 'COMING_SOON', newMode: 'LIVE', timestamp: new Date().toISOString() },
+        processed: false,
+      });
+    }
   });
 
   await redis.del('site:status:current');
