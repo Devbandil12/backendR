@@ -1,7 +1,9 @@
-
-node_modules
+node_modules/
 .env
-.env.local
-uploads/
-logs/
-storage/
+.env.*
+/.env
+/.env.local
+/uploads/
+/logs/
+/storage/
+scratch/
