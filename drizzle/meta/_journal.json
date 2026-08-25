@@ -8,6 +8,13 @@
       "when": 1787648782281,
       "tag": "0000_cuddly_ares",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787678964164,
+      "tag": "0001_vengeful_pandemic",
+      "breakpoints": true
     }
   ]
 }
