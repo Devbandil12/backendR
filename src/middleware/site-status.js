@@ -10,6 +10,11 @@ import { eq } from 'drizzle-orm';
  */
 export const siteStatusMiddleware = async (req, res, next) => {
   try {
+    // Exclude webhooks so background payment/shipping callbacks are never blocked
+    if (req.path.includes('webhook') || req.path.includes('razorpay-webhook')) {
+      return next();
+    }
+
     // Exclude the site status endpoints so frontend can actually check the status
     if (req.path.startsWith('/api/site')) {
       return next();
@@ -22,7 +27,7 @@ export const siteStatusMiddleware = async (req, res, next) => {
 
     const status = await getSiteStatus();
 
-    if (status.mode === 'LIVE') {
+    if (!status || status.mode === 'LIVE') {
       return next();
     }
 
@@ -39,9 +44,6 @@ export const siteStatusMiddleware = async (req, res, next) => {
           .where(eq(userRolesTable.userId, user.id));
           
         if (roleAssignment) {
-          // In RBAC, typically we just check if they have a role assignment.
-          // Or we can check the exact role name.
-          // We'll trust that any roleAssignment implies admin panel access.
           isAdmin = true;
         }
       }
@@ -55,9 +57,12 @@ export const siteStatusMiddleware = async (req, res, next) => {
     const isCriticalWrite = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE';
     const isStorefrontRoute = req.path.startsWith('/api/cart') 
       || req.path.startsWith('/api/checkout') 
+      || req.path.startsWith('/api/checkout-otp')
       || req.path.startsWith('/api/payments')
       || req.path.startsWith('/api/orders') 
-      || req.path.startsWith('/api/products');
+      || req.path.startsWith('/api/products')
+      || req.path.startsWith('/api/coupons')
+      || req.path.startsWith('/api/address');
 
     // We block critical writes and storefront reads during maintenance.
     // Allow read-only access to user profile, support, etc.

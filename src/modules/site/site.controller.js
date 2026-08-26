@@ -19,7 +19,7 @@ export const updateSiteStatus = async (req, res) => {
     res.json(updated);
   } catch (error) {
     console.error('❌ updateSiteStatus:', error);
-    res.status(500).json({ error: 'Server error' });
+    res.status(error.status || 500).json({ error: error.message || 'Server error', message: error.message });
   }
 };
 

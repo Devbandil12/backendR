@@ -19,6 +19,9 @@ export async function processOutbox() {
       } else if (event.eventType === 'LAUNCH_WAITLIST_NOTIFY') {
         const { WaitlistService } = await import('../modules/site/waitlist.service.js');
         await WaitlistService.processLaunchNotifications();
+      } else if (event.eventType === 'SCHEDULED_MAINTENANCE_NOTIFY') {
+        const { processScheduledMaintenanceNotifications } = await import('../modules/site/site.service.js');
+        await processScheduledMaintenanceNotifications(event.payload);
       }
       
       // Mark as processed

@@ -156,7 +156,13 @@ export class WaitlistService {
       const notified = r.notifiedAt ? new Date(r.notifiedAt).toISOString() : '';
       const isRegistered = r.userId ? 'Yes' : 'No';
 
-      const escapeCSV = (str) => `"${String(str || '').replace(/"/g, '""')}"`;
+      const escapeCSV = (str) => {
+        let clean = String(str || '');
+        if (/^[=+\-@\t\r]/.test(clean)) {
+          clean = "'" + clean;
+        }
+        return `"${clean.replace(/"/g, '""')}"`;
+      };
 
       csvRows.push([
         escapeCSV(r.email),
