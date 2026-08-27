@@ -8,10 +8,9 @@ import { eq } from "drizzle-orm";
 import { getServiceability } from "../../infrastructure/shipping/providers/shiprocket.js";
 import { redis } from "../../config/redis.js";
 
-const getUserFromToken = async (clerkId) => {
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, clerkId));
-  return user;
-};
+import { getUserWithRole } from "../../middleware/rbac.js";
+
+const getUserFromToken = getUserWithRole;
 
 export const getCart = async (req, res) => {
   try {

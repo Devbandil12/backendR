@@ -564,7 +564,8 @@ export const initiateReturn = async (id, requester) => {
   const order = await OrdersRepository.getOrderByIdWithDetails(id);
   if (!order) throw new Error("Order not found");
 
-  if (order.userId !== requester.id && requester.role !== 'admin') {
+  const isAuthorized = order.userId === requester.id || requester.role === 'admin' || !!requester.adminRole || requester.permissions?.includes('orders.return');
+  if (!isAuthorized) {
     throw new Error("Forbidden: You cannot initiate a return for this order.");
   }
 

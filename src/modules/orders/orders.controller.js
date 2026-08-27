@@ -17,11 +17,9 @@ import { audit } from "../../infrastructure/audit/audit.service.js";
 import { ACTOR_TYPES } from "../../infrastructure/audit/audit.constants.js";
 import * as ordersSse from "./orders.sse.js";
 
-const getUserFromToken = async (clerkId) => {
-  if (!clerkId) return null;
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, clerkId));
-  return user;
-};
+import { resolveEffectivePermissions, getUserWithRole } from "../../middleware/rbac.js";
+
+const getUserFromToken = getUserWithRole;
 
 import * as AdminService from "../admin/admin.service.js";
 
@@ -84,7 +82,8 @@ export const getOrderById = async (req, res) => {
     let order = await OrdersRepository.getOrderByIdWithDetails(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    if (order.userId !== requester.id && requester.role !== 'admin') {
+    const isAuthorized = order.userId === requester.id || requester.role === 'admin' || !!requester.adminRole || requester.permissions?.includes('orders.view');
+    if (!isAuthorized) {
       return res.status(403).json({ error: "Forbidden: You cannot view this order." });
     }
 
@@ -125,17 +124,39 @@ export const getOrderById = async (req, res) => {
       phone: order.user?.phone,
       shippingAddress: order.address,
       timeline: finalTimeline,
-      orderItems: order.orderItems?.map((item) => ({
+      orderItems: (order.orderItems || []).map((item) => {
+        let displayImg = item.img || '';
+        if (!displayImg && item.product?.imageurl) {
+          if (Array.isArray(item.product.imageurl)) {
+            displayImg = item.product.imageurl[0] || '';
+          } else if (typeof item.product.imageurl === 'string') {
+            displayImg = item.product.imageurl;
+          }
+        }
+        return {
+          id: item.id,
+          orderItemId: item.id,
+          productId: item.productId,
+          productName: item.product?.name || item.productName || 'Product',
+          variantName: item.variant?.name || item.variantName || (item.size ? `${item.size}ml` : 'Standard'),
+          quantity: item.quantity || 1,
+          price: item.price || 0,
+          totalPrice: item.totalPrice || ((item.price || 0) * (item.quantity || 1)),
+          img: displayImg || '/fallback.png',
+          size: item.size || item.variant?.size || 'N/A',
+        };
+      }),
+      items: (order.orderItems || []).map((item) => ({
         id: item.id,
         orderItemId: item.id,
         productId: item.productId,
-        productName: item.product?.name || item.productName,
-        variantName: item.variant?.name,
-        quantity: item.quantity,
-        price: item.price,
-        totalPrice: item.totalPrice || (item.price * item.quantity),
-        img: item.product?.imageurl?.[0] || item.img || '',
-        size: item.variant?.size || item.size || 'N/A',
+        productName: item.product?.name || item.productName || 'Product',
+        variantName: item.variant?.name || item.variantName || (item.size ? `${item.size}ml` : 'Standard'),
+        quantity: item.quantity || 1,
+        price: item.price || 0,
+        totalPrice: item.totalPrice || ((item.price || 0) * (item.quantity || 1)),
+        img: item.img || '/fallback.png',
+        size: item.size || item.variant?.size || 'N/A',
       })),
       refunds: normalizedRefunds,
       financialSummary,
@@ -164,7 +185,8 @@ export const getInvoice = async (req, res) => {
     const order = await OrdersRepository.getOrderByIdWithDetails(orderId);
     if (!order) return res.status(404).json({ error: "Order not found" });
 
-    if (order.userId !== requester.id && requester.role !== 'admin') {
+    const isAuthorized = order.userId === requester.id || requester.role === 'admin' || !!requester.adminRole || requester.permissions?.includes('orders.view');
+    if (!isAuthorized) {
       return res.status(403).json({ error: "Forbidden" });
     }
 

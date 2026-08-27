@@ -4,11 +4,9 @@ import { db } from "../../db/client.js";
 import { usersTable } from "../../db/schema/index.js";
 import { eq } from "drizzle-orm";
 
-const getUserFromToken = async (clerkId) => {
-  if (!clerkId) return null;
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, clerkId));
-  return user;
-};
+import { getUserWithRole } from "../../middleware/rbac.js";
+
+const getUserFromToken = getUserWithRole;
 
 export const getConfig = async (req, res) => {
   try {

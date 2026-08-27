@@ -1,13 +1,14 @@
 import * as ReferralsService from './referrals.service.js';
 import * as ReferralsRepository from './referrals.repository.js';
+import { getUserWithRole } from '../../middleware/rbac.js';
 
 export const getStats = async (req, res) => {
   try {
     const { userId } = req.params;
-    const requester = await ReferralsRepository.getUserByClerkId(req.auth.userId);
+    const requester = await getUserWithRole(req.auth.userId);
     if (!requester) return res.status(401).json({ error: "Unauthorized" });
 
-    if (userId !== requester.id && requester.role !== 'admin') {
+    if (userId !== requester.id && requester.role !== 'admin' && !requester.adminRole) {
       return res.status(403).json({ error: "Forbidden" }); 
     }
 

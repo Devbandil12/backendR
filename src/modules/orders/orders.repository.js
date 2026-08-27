@@ -149,16 +149,47 @@ export const getAllOrders = async (params = {}) => {
       trackingId: ordersTable.trackingId,
     })
     .from(ordersTable)
-    .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
+    .leftJoin(usersTable, eq(ordersTable.userId, usersTable.id))
     .where(whereClause)
     .orderBy(orderByClause)
     .limit(limit)
     .offset(cursor ? 0 : (page - 1) * limit);
 
+  if (data.length > 0) {
+    const orderIds = data.map(o => o.id);
+    const items = await db
+      .select({
+        id: orderItemsTable.id,
+        orderId: orderItemsTable.orderId,
+        productName: orderItemsTable.productName,
+        img: orderItemsTable.img,
+        quantity: orderItemsTable.quantity,
+        price: orderItemsTable.price,
+        totalPrice: orderItemsTable.totalPrice,
+        size: orderItemsTable.size,
+        productId: orderItemsTable.productId,
+        variantId: orderItemsTable.variantId,
+      })
+      .from(orderItemsTable)
+      .where(inArray(orderItemsTable.orderId, orderIds));
+
+    const itemsMap = {};
+    for (const item of items) {
+      if (!itemsMap[item.orderId]) itemsMap[item.orderId] = [];
+      itemsMap[item.orderId].push(item);
+    }
+
+    for (const order of data) {
+      order.orderItems = itemsMap[order.id] || [];
+      order.items = order.orderItems;
+      order.itemCount = order.orderItems.reduce((sum, it) => sum + (it.quantity || 1), 0);
+    }
+  }
+
   const [{ count }] = await db
     .select({ count: sql`count(*)` })
     .from(ordersTable)
-    .innerJoin(usersTable, eq(ordersTable.userId, usersTable.id))
+    .leftJoin(usersTable, eq(ordersTable.userId, usersTable.id))
     .where(whereClause);
 
   return {

@@ -69,39 +69,51 @@ export async function getSiteStatus() {
 }
 
 export async function updateSiteStatus(clerkId, payload) {
-  const { mode, scheduledStart, scheduledEnd, title, message, showCountdown, bypassEnabled, reason } = payload;
+  const { mode, scheduledStart, scheduledEnd, title, message, showCountdown, bypassEnabled, reason, isExtension } = payload;
   
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.clerkId, clerkId));
-  if (!user) throw new Error('User not found');
+  const [user] = clerkId ? await db.select().from(usersTable).where(eq(usersTable.clerkId, clerkId)) : [null];
+  const userId = user?.id || null;
 
   const now = new Date();
-
-  // Strict Validation: start time >= now + 29.5 min, end time > start time
-  if (scheduledStart !== undefined && scheduledStart !== null) {
-    const startDate = new Date(scheduledStart);
-    if (isNaN(startDate.getTime())) {
-      throw Object.assign(new Error('Invalid start date provided'), { status: 400 });
-    }
-    if (startDate.getTime() < now.getTime() + 29.5 * 60 * 1000) {
-      throw Object.assign(new Error('Maintenance start time must be at least 30 minutes in the future.'), { status: 400 });
-    }
-
-    if (scheduledEnd !== undefined && scheduledEnd !== null) {
-      const endDate = new Date(scheduledEnd);
-      if (isNaN(endDate.getTime())) {
-        throw Object.assign(new Error('Invalid end date provided'), { status: 400 });
-      }
-      if (endDate.getTime() <= startDate.getTime()) {
-        throw Object.assign(new Error('Maintenance end time must be after the start time.'), { status: 400 });
-      }
-    }
-  }
-
   const [current] = await db.select().from(siteSettingsTable).limit(1);
   const oldMode = current ? current.mode : 'UNKNOWN';
 
-  const parsedStart = scheduledStart === null ? null : (scheduledStart !== undefined ? new Date(scheduledStart) : current?.scheduledStart);
-  const parsedEnd = scheduledEnd === null ? null : (scheduledEnd !== undefined ? new Date(scheduledEnd) : current?.scheduledEnd);
+  const parseSafeDate = (val) => {
+    if (val === null || val === undefined || val === '') return null;
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const hasStartInPayload = scheduledStart !== undefined;
+  const hasEndInPayload = scheduledEnd !== undefined;
+
+  const incomingStart = hasStartInPayload ? parseSafeDate(scheduledStart) : undefined;
+  const incomingEnd = hasEndInPayload ? parseSafeDate(scheduledEnd) : undefined;
+
+  // Case A: Explicit Extension or End-time update on active schedule
+  const isExtending = isExtension || (current?.scheduledEnd && incomingEnd && !hasStartInPayload);
+
+  if (isExtending && current?.scheduledEnd && incomingEnd) {
+    const currentEnd = new Date(current.scheduledEnd);
+    if (incomingEnd.getTime() <= currentEnd.getTime()) {
+      throw Object.assign(new Error('New end time must be later than the current scheduled end time.'), { status: 400 });
+    }
+  } else if (incomingStart) {
+    // Case B: Scheduling new maintenance window
+    if (incomingStart.getTime() < now.getTime() + 29.5 * 60 * 1000) {
+      throw Object.assign(new Error('Maintenance start time must be at least 30 minutes in the future.'), { status: 400 });
+    }
+
+    if (incomingEnd && incomingEnd.getTime() <= incomingStart.getTime()) {
+      throw Object.assign(new Error('Maintenance end time must be after the start time.'), { status: 400 });
+    }
+  }
+
+  const parsedStart = isExtending
+    ? current?.scheduledStart
+    : (hasStartInPayload ? incomingStart : current?.scheduledStart);
+
+  const parsedEnd = hasEndInPayload ? incomingEnd : current?.scheduledEnd;
 
   return await db.transaction(async (tx) => {
     let newSettings;
@@ -115,7 +127,7 @@ export async function updateSiteStatus(clerkId, payload) {
           message: message !== undefined ? message : current.message,
           showCountdown: showCountdown !== undefined ? showCountdown : current.showCountdown,
           bypassEnabled: bypassEnabled !== undefined ? bypassEnabled : current.bypassEnabled,
-          updatedBy: user.id,
+          updatedBy: userId,
           updatedAt: new Date(),
         })
         .where(eq(siteSettingsTable.id, current.id))
@@ -130,7 +142,7 @@ export async function updateSiteStatus(clerkId, payload) {
           message: message || null,
           showCountdown: showCountdown || false,
           bypassEnabled: bypassEnabled !== undefined ? bypassEnabled : true,
-          updatedBy: user.id
+          updatedBy: userId
         })
         .returning();
     }
@@ -139,8 +151,8 @@ export async function updateSiteStatus(clerkId, payload) {
       await tx.insert(siteStatusLogsTable).values({
         oldMode,
         newMode: newSettings.mode,
-        reason: reason || 'Manual update',
-        updatedBy: user.id,
+        reason: reason || (isExtending ? 'Maintenance Extended' : 'Manual update'),
+        updatedBy: userId,
       });
 
       // Durable Launch Event Trigger
@@ -148,14 +160,29 @@ export async function updateSiteStatus(clerkId, payload) {
         await tx.insert(outboxTable).values({
           id: `launch-waitlist-${Date.now()}`,
           eventType: 'LAUNCH_WAITLIST_NOTIFY',
-          payload: { triggeredBy: user.id, oldMode, newMode: 'LIVE', timestamp: new Date().toISOString() },
+          payload: { triggeredBy: userId, oldMode, newMode: 'LIVE', timestamp: new Date().toISOString() },
           processed: false,
         });
       }
     }
 
-    // Trigger Outbox notification for newly scheduled maintenance
-    if (parsedStart && parsedStart > now && (!current?.scheduledStart || new Date(current.scheduledStart).getTime() !== parsedStart.getTime())) {
+    // Trigger Outbox notification for Extension vs New Scheduled Maintenance
+    if (isExtending && current?.scheduledEnd && parsedEnd && parsedEnd.getTime() > new Date(current.scheduledEnd).getTime()) {
+      await tx.insert(outboxTable).values({
+        id: `maint-ext-${Date.now()}`,
+        eventType: 'MAINTENANCE_EXTENDED_NOTIFY',
+        payload: {
+          scheduledStart: current.scheduledStart ? new Date(current.scheduledStart).toISOString() : null,
+          scheduledEnd: parsedEnd.toISOString(),
+          oldScheduledEnd: new Date(current.scheduledEnd).toISOString(),
+          title: title || 'Scheduled Maintenance Extended',
+          message: message || 'Our scheduled maintenance has been extended to complete necessary system enhancements.',
+          isExtension: true,
+          timestamp: new Date().toISOString(),
+        },
+        processed: false,
+      });
+    } else if (!isExtending && parsedStart && parsedStart > now && (!current?.scheduledStart || new Date(current.scheduledStart).getTime() !== parsedStart.getTime())) {
       await tx.insert(outboxTable).values({
         id: `sched-maint-${Date.now()}`,
         eventType: 'SCHEDULED_MAINTENANCE_NOTIFY',
@@ -164,6 +191,7 @@ export async function updateSiteStatus(clerkId, payload) {
           scheduledEnd: parsedEnd ? parsedEnd.toISOString() : null,
           title: title || 'Scheduled Maintenance Notice',
           message: message || 'We are performing scheduled maintenance to upgrade our systems.',
+          isExtension: false,
           timestamp: new Date().toISOString(),
         },
         processed: false,
@@ -180,7 +208,7 @@ export async function updateSiteStatus(clerkId, payload) {
 // ── Scheduled Maintenance Notifications ───────────────────────────────────────
 
 export async function processScheduledMaintenanceNotifications(payload) {
-  const { scheduledStart, scheduledEnd, title, message } = payload;
+  const { scheduledStart, scheduledEnd, oldScheduledEnd, title, message, isExtension } = payload;
   const { notificationsTable } = await import('../../db/schema/notifications.schema.js');
   const { usersTable } = await import('../../db/schema/users.schema.js');
   const { Resend } = await import('resend');
@@ -198,7 +226,7 @@ export async function processScheduledMaintenanceNotifications(payload) {
         minute: '2-digit',
         hour12: true,
       }).format(new Date(scheduledStart))
-    : 'Upcoming Window';
+    : 'Active Maintenance';
 
   const formattedEnd = scheduledEnd
     ? new Intl.DateTimeFormat('en-US', {
@@ -211,12 +239,18 @@ export async function processScheduledMaintenanceNotifications(payload) {
       }).format(new Date(scheduledEnd))
     : 'To Be Announced';
 
-  console.log(`📣 [Maintenance Notification] Dispatching notices for window: ${formattedStart} -> ${formattedEnd}`);
+  console.log(`📣 [Maintenance Notification] Dispatching ${isExtension ? 'Extension' : 'Scheduled'} notices for window: ${formattedStart} -> ${formattedEnd}`);
 
   const allUsers = await db.select().from(usersTable);
   if (!allUsers || allUsers.length === 0) return;
 
-  const noticeMessage = `⚠️ Scheduled Maintenance: Devid Aura will undergo scheduled maintenance from ${formattedStart} until ${formattedEnd}. The site will be temporarily offline.`;
+  const noticeMessage = isExtension
+    ? `⚠️ Maintenance Extended: Devid Aura scheduled maintenance has been extended until ${formattedEnd}. We will be back online shortly.`
+    : `⚠️ Scheduled Maintenance: Devid Aura will undergo scheduled maintenance from ${formattedStart} until ${formattedEnd}. The site will be temporarily offline.`;
+
+  const emailSubject = isExtension
+    ? `[Update] Scheduled Maintenance Extended — Devid Aura`
+    : `Scheduled Maintenance Notice — Devid Aura`;
 
   for (const user of allUsers) {
     // 1. In-App Notification
@@ -237,8 +271,8 @@ export async function processScheduledMaintenanceNotifications(payload) {
         await webpush.sendNotification(
           user.pushSubscription,
           JSON.stringify({
-            title: 'Devid Aura • Scheduled Maintenance',
-            body: `Maintenance scheduled from ${formattedStart} to ${formattedEnd}.`,
+            title: isExtension ? 'Devid Aura • Maintenance Extended' : 'Devid Aura • Scheduled Maintenance',
+            body: isExtension ? `Maintenance extended until ${formattedEnd}.` : `Maintenance scheduled from ${formattedStart} to ${formattedEnd}.`,
             icon: '/devidaura-logo.webp',
             url: '/',
           })
@@ -254,23 +288,23 @@ export async function processScheduledMaintenanceNotifications(payload) {
         await resend.emails.send({
           from: getSender(),
           to: [user.email],
-          subject: `Scheduled Maintenance Notice — Devid Aura`,
+          subject: emailSubject,
           html: `
             <div style="background:#050505;color:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;padding:40px 20px;max-width:600px;margin:0 auto;border-radius:16px;border:1px solid #222;">
               <div style="text-align:center;margin-bottom:30px;">
                 <h1 style="color:#ffffff;font-size:24px;font-weight:300;letter-spacing:4px;text-transform:uppercase;margin:0;">Devid Aura</h1>
-                <p style="color:#f59e0b;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-top:8px;">Scheduled System Maintenance</p>
+                <p style="color:#f59e0b;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-top:8px;">${isExtension ? 'Maintenance Window Extended' : 'Scheduled System Maintenance'}</p>
               </div>
               <div style="background:#111;border:1px solid #333;border-radius:12px;padding:24px;margin-bottom:24px;">
                 <p style="color:#d4d4d8;font-size:15px;line-height:1.6;margin:0 0 16px 0;">
                   Dear ${user.name || 'Valued Customer'},
                 </p>
                 <p style="color:#a1a1aa;font-size:14px;line-height:1.6;margin:0 0 20px 0;">
-                  ${message || 'We will be conducting scheduled system enhancements to improve platform performance and reliability. During this window, access to the Devid Aura store will be temporarily paused.'}
+                  ${message || (isExtension ? 'Our ongoing scheduled maintenance has been extended to complete necessary system enhancements.' : 'We will be conducting scheduled system enhancements to improve platform performance and reliability. During this window, access to the Devid Aura store will be temporarily paused.')}
                 </p>
                 <div style="background:#000;border-left:3px solid #f59e0b;padding:16px;border-radius:6px;margin-bottom:16px;">
-                  <p style="margin:0 0 8px 0;font-size:13px;color:#d4d4d8;"><strong>Starts:</strong> ${formattedStart}</p>
-                  <p style="margin:0;font-size:13px;color:#d4d4d8;"><strong>Expected Completion:</strong> ${formattedEnd}</p>
+                  ${!isExtension ? `<p style="margin:0 0 8px 0;font-size:13px;color:#d4d4d8;"><strong>Starts:</strong> ${formattedStart}</p>` : ''}
+                  <p style="margin:0;font-size:13px;color:#d4d4d8;"><strong>${isExtension ? 'New Expected Completion:' : 'Expected Completion:'}</strong> ${formattedEnd}</p>
                 </div>
                 <p style="color:#71717a;font-size:12px;line-height:1.5;margin:0;">
                   Any ongoing shopping sessions or orders are safely preserved. We appreciate your patience as we elevate your luxury fragrance experience.

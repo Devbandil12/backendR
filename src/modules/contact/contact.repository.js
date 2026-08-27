@@ -10,7 +10,7 @@ export const getAllTickets = async () => {
 };
 
 export const getUserByClerkId = async (clerkId) => {
-  const [user] = await db.select({ id: usersTable.id, role: usersTable.role, email: usersTable.email }).from(usersTable).where(eq(usersTable.clerkId, clerkId));
+  const [user] = await db.select({ id: usersTable.id, email: usersTable.email }).from(usersTable).where(eq(usersTable.clerkId, clerkId));
   return user;
 };
 

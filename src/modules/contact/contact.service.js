@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import * as ContactRepository from './contact.repository.js';
+import { getUserWithRole } from '../../middleware/rbac.js';
 
 const transporter = nodemailer.createTransport({ 
   service: 'gmail', 
@@ -13,10 +14,10 @@ export async function getAllTickets() {
 }
 
 export async function getUserTickets(clerkId, targetEmail) {
-  const requester = await ContactRepository.getUserByClerkId(clerkId);
+  const requester = await getUserWithRole(clerkId);
   if (!requester) throw Object.assign(new Error('Unauthorized'), { status: 401 });
   
-  if (requester.email !== targetEmail && requester.role !== 'admin') {
+  if (requester.email !== targetEmail && requester.role !== 'admin' && !requester.adminRole) {
     throw Object.assign(new Error('Forbidden: You can only view your own tickets.'), { status: 403 });
   }
   
@@ -61,7 +62,7 @@ export async function createTicket({ email, phone, name, subject, message }) {
 }
 
 export async function replyToTicket(clerkId, ticketId, message) {
-  const actor = await ContactRepository.getUserByClerkId(clerkId);
+  const actor = await getUserWithRole(clerkId);
   if (!actor) throw Object.assign(new Error('Unauthorized'), { status: 401 });
   
   const ticket = await ContactRepository.getTicketById(ticketId);
@@ -71,7 +72,7 @@ export async function replyToTicket(clerkId, ticketId, message) {
   }
   
   let senderRole = 'user';
-  if (actor.role === 'admin') { 
+  if (actor.role === 'admin' || !!actor.adminRole) { 
     senderRole = 'admin'; 
   } else {
     const isOwner = (ticket.userId === actor.id) || (ticket.guestEmail === actor.email);

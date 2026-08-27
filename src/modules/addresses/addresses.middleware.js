@@ -1,20 +1,15 @@
-import { db } from "../../db/client.js";
-import { usersTable } from "../../db/schema/index.js";
-import { eq } from "drizzle-orm";
+import { getUserWithRole } from "../../middleware/rbac.js";
 
 export const resolveAndValidateUser = async (req, res, next) => {
   try {
-    const user = await db.query.usersTable.findFirst({
-        where: eq(usersTable.clerkId, req.auth.userId),
-        columns: { id: true, role: true }
-    });
+    const user = await getUserWithRole(req.auth.userId);
 
     if (!user) return res.status(401).json({ error: "User not found" });
 
     req.userDbId = user.id;
     req.userRole = user.role;
 
-    if (req.params.userId && req.params.userId !== user.id && user.role !== 'admin') {
+    if (req.params.userId && req.params.userId !== user.id && user.role !== 'admin' && !user.adminRole) {
         return res.status(403).json({ error: "Forbidden: Access Denied" });
     }
 

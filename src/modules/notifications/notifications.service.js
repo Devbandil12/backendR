@@ -1,6 +1,7 @@
 import * as NotificationsRepository from './notifications.repository.js';
 import webpush from 'web-push';
 import { Resend } from 'resend';
+import { getUserWithRole } from '../../middleware/rbac.js';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 const getSender = () => process.env.RESEND_FROM_EMAIL || 'Devid Aura Luxury <onboarding@resend.dev>';
@@ -23,9 +24,9 @@ export const createNotification = async (userId, message, link = null, type = 'g
 };
 
 export const getUserNotifications = async (clerkId, targetUserId) => {
-  const requester = await NotificationsRepository.getUserByClerkId(clerkId);
+  const requester = await getUserWithRole(clerkId);
   if (!requester) throw Object.assign(new Error('Unauthorized'), { status: 401 });
-  if (requester.id !== targetUserId && requester.role !== 'admin') throw Object.assign(new Error('Forbidden'), { status: 403 });
+  if (requester.id !== targetUserId && requester.role !== 'admin' && !requester.adminRole) throw Object.assign(new Error('Forbidden'), { status: 403 });
 
   const notifications = await NotificationsRepository.getUserNotifications(targetUserId);
   const unreadCount = await NotificationsRepository.getUnreadNotificationCount(targetUserId);
@@ -34,15 +35,15 @@ export const getUserNotifications = async (clerkId, targetUserId) => {
 };
 
 export const markNotificationsAsRead = async (clerkId, targetUserId) => {
-  const requester = await NotificationsRepository.getUserByClerkId(clerkId);
-  if (!requester || (requester.id !== targetUserId && requester.role !== 'admin')) throw Object.assign(new Error('Forbidden'), { status: 403 });
+  const requester = await getUserWithRole(clerkId);
+  if (!requester || (requester.id !== targetUserId && requester.role !== 'admin' && !requester.adminRole)) throw Object.assign(new Error('Forbidden'), { status: 403 });
 
   await NotificationsRepository.markNotificationsAsRead(targetUserId);
 };
 
 export const clearNotifications = async (clerkId, targetUserId) => {
-  const requester = await NotificationsRepository.getUserByClerkId(clerkId);
-  if (!requester || (requester.id !== targetUserId && requester.role !== 'admin')) throw Object.assign(new Error('Forbidden'), { status: 403 });
+  const requester = await getUserWithRole(clerkId);
+  if (!requester || (requester.id !== targetUserId && requester.role !== 'admin' && !requester.adminRole)) throw Object.assign(new Error('Forbidden'), { status: 403 });
 
   await NotificationsRepository.clearNotifications(targetUserId);
 };

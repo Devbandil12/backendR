@@ -5,7 +5,7 @@ import { eq, and, sql, desc, inArray } from 'drizzle-orm';
 export const getUserByClerkId = async (clerkId) => {
   return await db.query.usersTable.findFirst({
     where: eq(usersTable.clerkId, clerkId),
-    columns: { id: true, role: true }
+    columns: { id: true }
   });
 };
 

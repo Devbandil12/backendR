@@ -115,3 +115,33 @@ export const requireAdmin = async (req, res, next) => {
 export const invalidatePermissionCache = async (clerkId) => {
   await redis.del(`admin:permissions:${clerkId}`);
 };
+
+export const getUserWithRole = async (clerkId) => {
+  if (!clerkId) return null;
+  const user = await db.query.usersTable.findFirst({
+    where: eq(usersTable.clerkId, clerkId)
+  });
+  
+  const rbacData = await resolveEffectivePermissions(clerkId);
+  const isAdmin = !!(rbacData?.role || rbacData?.permissions?.length > 0);
+  
+  if (!user) {
+    if (isAdmin) {
+      return {
+        id: null,
+        clerkId,
+        role: 'admin',
+        adminRole: rbacData?.role || 'admin',
+        permissions: rbacData?.permissions || []
+      };
+    }
+    return null;
+  }
+  
+  return {
+    ...user,
+    role: isAdmin ? 'admin' : 'user',
+    adminRole: rbacData?.role || null,
+    permissions: rbacData?.permissions || []
+  };
+};
