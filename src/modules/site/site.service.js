@@ -7,16 +7,59 @@ import { redis } from '../../config/redis.js';
 
 const SITE_STATUS_CACHE_KEY = 'site:status:current';
 
+// Wraps a redis promise so a flapping/reconnecting connection can never hang
+// the caller for longer than `ms`. This function is called by a GLOBAL
+// middleware on nearly every request, so a hung Redis call here stalls the
+// entire API — this timeout is what prevents that.
+function withTimeout(promise, ms = 800) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('redis_timeout')), ms)),
+  ]);
+}
+
+// Safe wrapper: never throws, never hangs. Falls back to `undefined` (caller
+// treats that as a cache miss) whenever Redis is not ready or misbehaves.
+async function safeRedisGet(key) {
+  if (redis.status !== 'ready') return undefined;
+  try {
+    return await withTimeout(redis.get(key));
+  } catch (err) {
+    console.error('⚠️ [SiteService] Redis GET failed, falling back to DB:', err.message);
+    return undefined;
+  }
+}
+
+async function safeRedisSet(key, value, ...args) {
+  if (redis.status !== 'ready') return;
+  try {
+    await withTimeout(redis.set(key, value, ...args));
+  } catch (err) {
+    console.error('⚠️ [SiteService] Redis SET failed (non-fatal):', err.message);
+  }
+}
+
+async function safeRedisDel(key) {
+  if (redis.status !== 'ready') return;
+  try {
+    await withTimeout(redis.del(key));
+  } catch (err) {
+    console.error('⚠️ [SiteService] Redis DEL failed (non-fatal):', err.message);
+  }
+}
+
 // ── Site Status ───────────────────────────────────────────────────────────────
 
 export async function getSiteStatus() {
-  // Check Redis first for extreme performance
-  const cached = await redis.get(SITE_STATUS_CACHE_KEY);
+  // Check Redis first for extreme performance — but never let a flaky Redis
+  // connection block or fail this call. Any failure here just falls through
+  // to the DB below, exactly like a cache miss.
+  const cached = await safeRedisGet(SITE_STATUS_CACHE_KEY);
   if (cached) {
     const parsed = JSON.parse(cached);
     // Check if cached maintenance has expired
     if (parsed.mode === 'MAINTENANCE' && parsed.scheduledEnd && new Date(parsed.scheduledEnd) <= new Date()) {
-      await redis.del(SITE_STATUS_CACHE_KEY);
+      await safeRedisDel(SITE_STATUS_CACHE_KEY);
     } else {
       return parsed;
     }
@@ -64,7 +107,7 @@ export async function getSiteStatus() {
     serverTime: new Date(),
   };
 
-  await redis.set(SITE_STATUS_CACHE_KEY, JSON.stringify(payload));
+  await safeRedisSet(SITE_STATUS_CACHE_KEY, JSON.stringify(payload));
   return payload;
 }
 
@@ -198,8 +241,9 @@ export async function updateSiteStatus(clerkId, payload) {
       });
     }
 
-    // Invalidate Cache
-    await redis.del(SITE_STATUS_CACHE_KEY);
+    // Invalidate Cache (best-effort — a Redis blip should never fail an
+    // otherwise-successful settings update)
+    await safeRedisDel(SITE_STATUS_CACHE_KEY);
 
     return newSettings;
   });
@@ -360,5 +404,3 @@ export async function createAnnouncement(clerkId, data) {
     
   return announcement;
 }
-
-
