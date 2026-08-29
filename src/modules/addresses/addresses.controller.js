@@ -98,6 +98,9 @@ export async function saveAddress(req, res) {
     await invalidateMultiple([{ key: makeUserAddressesKey(userId) }]);
     return res.json({ success: true, msg: "Address saved successfully", data: inserted });
   } catch (err) {
+    if (err.code === 'PHONE_VERIFICATION_REQUIRED') {
+      return res.status(403).json({ success: false, code: err.code, msg: err.message, purpose: err.purpose });
+    }
     console.error("saveAddress error:", err);
     return res.status(500).json({ success: false, msg: "Server error" });
   }
@@ -150,6 +153,9 @@ export async function updateAddress(req, res) {
       return res.json({ success: true, msg: "Address updated successfully", data: updated });
     } catch (e) {
       if (e.message.includes("already have a")) return res.status(409).json({ success: false, msg: e.message });
+      if (e.code === 'PHONE_VERIFICATION_REQUIRED') {
+        return res.status(403).json({ success: false, code: e.code, msg: e.message, purpose: e.purpose });
+      }
       throw e;
     }
 

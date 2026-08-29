@@ -222,7 +222,7 @@ export const updateOrderStatus = async (id, status, message, actorId, expectedVe
   return updatedOrder;
 };
 
-export const cancelOrder = async (id, actorId, expectedVersion = null) => {
+export const cancelOrder = async (id, actorId, expectedVersion = null, origin = null) => {
   const order = await OrdersRepository.getOrderById(id);
   if (!order) throw new Error("Order not found");
 
@@ -246,18 +246,18 @@ export const cancelOrder = async (id, actorId, expectedVersion = null) => {
         refundStatus: refund.status, // lowercase legacy
         gatewayRefundId: refund.id,
         refundSpeed: refund.speed_processed || 'optimum',
-        reason: 'Admin cancelled order',
+        reason: origin === 'shiprocket_webhook' ? 'Shiprocket webhook cancelled order' : 'Admin cancelled order',
         createdAt: refund.created_at ? safeDate(refund.created_at) : new Date(),
         completedAt: refund.status === 'processed' ? new Date() : null,
       });
     } catch (payErr) {
-      console.error("Admin Auto-Refund Warning:", payErr.message);
+      console.error("Auto-Refund Warning:", payErr.message);
     }
   }
 
   const shiprocketIdToCancel = order.shiprocketOrderId || order.shiprocketShipmentId;
 
-  if (shiprocketIdToCancel) {
+  if (shiprocketIdToCancel && origin !== 'shiprocket_webhook') {
     try {
       console.log(`Attempting to cancel Shiprocket order ID: ${shiprocketIdToCancel}`);
       await cancelShiprocketOrder([shiprocketIdToCancel]);

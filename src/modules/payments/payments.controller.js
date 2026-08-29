@@ -24,8 +24,7 @@ export const createOrder = async (req, res) => {
       cartItems,
       userAddressId,
       couponCode = null,
-      useWallet = false,
-      otpVerificationToken = null 
+      useWallet = false
     } = req.body;
 
     if (couponCode && typeof couponCode === 'object') {
@@ -85,13 +84,10 @@ export const createOrder = async (req, res) => {
       });
     }
 
-    let otpTokenRecord = null;
-    if (paymentMode === 'cod') {
-      try {
-        otpTokenRecord = await PaymentsService.verifyCodRisk(user, address, finalAmount, otpVerificationToken);
-      } catch (err) {
-        return res.status(400).json({ success: false, code: err.code, msg: err.msg });
-      }
+    try {
+      await PaymentsService.verifyPhoneVerification(user, address);
+    } catch (err) {
+      return res.status(403).json({ success: false, code: err.code, msg: err.msg, purpose: err.purpose });
     }
 
     const idempotencyKey = req.headers['x-idempotency-key'] || req.body.idempotencyKey;
@@ -202,10 +198,6 @@ export const createOrder = async (req, res) => {
             couponId: breakdown.appliedCouponId || null, discountAmount: discountAmount,
             offerDiscount: offerDiscount, offerCodes: offerCodes, progressStep: 1, invoiceNumber: newInvoiceNumber 
           });
-
-          if (otpTokenRecord) {
-            await PaymentsRepository.markOtpTokenConsumed(tx, otpTokenRecord.id);
-          }
 
           if (breakdown.appliedCouponId) {
             await PaymentsService.assertCouponUsageWithinLimits(tx, breakdown.appliedCouponId, user.id);

@@ -14,7 +14,8 @@ router.get('/find-by-clerk-id', requireAuth, usersController.getCurrentUser);
 router.post('/', requireAuth, usersController.createUser);
 router.put('/:id', requireAuth, usersController.updateUser);
 router.delete('/:id', requireAuth, usersController.deleteUser);
-// /:id/logs route deprecated
+// User's personal activity logs
+router.get('/:id/logs', requireAuth, usersController.getUserLogs);
 router.get('/:id/addresses', requireAuth, cache((req) => makeUserAddressesKey(req.params.id), 300), usersController.getUserAddresses);
 router.get('/:userId/orders', requireAuth, cache((req) => makeUserOrdersKey(req.params.userId), 300), usersController.getUserOrders);
 

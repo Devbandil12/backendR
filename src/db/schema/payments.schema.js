@@ -45,17 +45,3 @@ export const verifiedPhonesTable = pgTable(
   },
   (table) => [unique('uq_verified_user_phone').on(table.userId, table.phone)]
 );
-
-export const codOtpDecisionLogTable = pgTable('cod_otp_decision_log', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').references(() => usersTable.id, { onDelete: 'set null' }),
-  phone: text('phone'),
-  postalCode: text('postal_code'),
-  cartTotal: integer('cart_total'),
-  mode: varchar('mode', { length: 10 }).notNull(),
-  required: boolean('required').notNull(),
-  reasons: jsonb('reasons'),
-  orderId: text('order_id'),
-  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
-});
-

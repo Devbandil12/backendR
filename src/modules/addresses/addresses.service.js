@@ -7,8 +7,17 @@ import { eq, and } from "drizzle-orm";
 
 const API_KEY = process.env.GOOGLE_API_KEY;
 
+function toE164India(phone) {
+  const digitsOnly = String(phone || '').replace(/\D/g, '');
+  if (digitsOnly.length === 10) return `91${digitsOnly}`;
+  if (digitsOnly.length === 12 && digitsOnly.startsWith('91')) return digitsOnly;
+  return null;
+}
+
 export async function isPhoneVerifiedForUser(userId, phone) {
-  return await AddressesRepository.getVerifiedPhone(userId, phone) !== null;
+  const normalized = toE164India(phone);
+  if (!normalized) return false;
+  return await AddressesRepository.getVerifiedPhone(userId, normalized) !== null;
 }
 
 export async function fetchGoogleAutocomplete(query, countryCode = 'in') {
@@ -72,6 +81,13 @@ export const createAddress = async (data) => {
   }
 
   data.isVerified = await isPhoneVerifiedForUser(data.userId, data.phone);
+  
+  if (!data.isVerified) {
+    const error = new Error('Please verify your phone number.');
+    error.code = 'PHONE_VERIFICATION_REQUIRED';
+    error.purpose = 'ADDRESS';
+    throw error;
+  }
 
   return await AddressesRepository.insertAddress(data);
 };
@@ -89,6 +105,13 @@ export const updateAddress = async (id, data, existing) => {
 
   const phoneToCheck = data.phone !== undefined ? data.phone : existing.phone;
   data.isVerified = await isPhoneVerifiedForUser(existing.userId, phoneToCheck);
+
+  if (!data.isVerified) {
+    const error = new Error('Please verify your phone number.');
+    error.code = 'PHONE_VERIFICATION_REQUIRED';
+    error.purpose = 'ADDRESS';
+    throw error;
+  }
 
   return await AddressesRepository.updateAddress(id, data);
 };

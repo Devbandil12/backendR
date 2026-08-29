@@ -2,6 +2,7 @@ import * as ShippingRepository from './shipping.repository.js';
 import Razorpay from 'razorpay';
 import { handleCodRefusal } from '../../modules/risk/cod-refusal.service.js';
 import { createNotification } from '../../modules/notifications/notifications.service.js';
+import { cancelOrder } from '../../modules/orders/orders.service.js';
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_ID_KEY,
@@ -75,9 +76,20 @@ export const processWebhookEvent = async (payload) => {
   const activityDescription = payload.scans?.[0]?.activity || payload.remark || rawStatus;
   const payloadScansLocation = payload.scans?.[0]?.location;
 
-  const productIdsToInvalidate = await ShippingRepository.updateOrderAndStockInTransaction(
-    order, mappedStatus, shiprocketAwb, courierName, shiprocketOrderId, shiprocketShipmentId, expectedDelivery, rawStatus, activityDescription, payloadScansLocation
-  );
+  let productIdsToInvalidate = [];
+  if (mappedStatus === 'Order Cancelled') {
+    try {
+      console.log(`Processing automatic cancellation for Order ${order.id} from Shiprocket Webhook...`);
+      const { itemsToInvalidate } = await cancelOrder(order.id, null, null, 'shiprocket_webhook');
+      productIdsToInvalidate = itemsToInvalidate || [];
+    } catch (cancelErr) {
+      console.error(`⚠️ Webhook Auto-Cancel Failed for Order ${order.id}:`, cancelErr.message);
+    }
+  } else {
+    productIdsToInvalidate = await ShippingRepository.updateOrderAndStockInTransaction(
+      order, mappedStatus, shiprocketAwb, courierName, shiprocketOrderId, shiprocketShipmentId, expectedDelivery, rawStatus, activityDescription, payloadScansLocation
+    );
+  }
 
   if (mappedStatus === 'RTO Initiated') {
     await handleCodRefusal({ ...order, status: mappedStatus });

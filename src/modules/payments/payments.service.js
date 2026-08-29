@@ -3,8 +3,6 @@ import crypto from 'crypto';
 import * as PaymentsRepository from './payments.repository.js';
 import { safeCompare } from '../../utils/safeCompare.js';
 import { createOrder as createShiprocketOrder } from '../../infrastructure/shipping/providers/shiprocket.js';
-import { evaluateCodRisk, logOtpDecision } from '../../modules/risk/cod-risk.service.js';
-
 const { RAZORPAY_ID_KEY, RAZORPAY_SECRET_KEY } = process.env;
 
 export const razorpay = new Razorpay({
@@ -190,46 +188,23 @@ export async function reduceStock(cartItems, tx) {
   return Array.from(affectedProductIds);
 }
 
-export const verifyCodRisk = async (user, address, finalAmount, otpVerificationToken) => {
-  const codOtpMode = (process.env.COD_OTP_MODE || 'shadow').toLowerCase();
-  const risk = await evaluateCodRisk({
-    userId: user.id,
-    phone: address.phone,
-    address,
-    cartTotal: finalAmount,
-  });
-
-  if (codOtpMode === 'shadow') {
-    logOtpDecision({
-      userId: user.id, phone: address.phone, postalCode: address.postalCode,
-      cartTotal: finalAmount, mode: 'shadow', required: risk.required, reasons: risk.reasons,
-    });
-    return null;
-  } else if (risk.required && !risk.trustedPhone) {
-    if (!otpVerificationToken) {
-      throw { code: 'OTP_REQUIRED', msg: 'Please verify your phone number to place this Cash on Delivery order.' };
-    }
-
-    const otpTokenRecord = await PaymentsRepository.getOtpTokenRecord(otpVerificationToken);
-
-    const tokenValid = otpTokenRecord
-      && otpTokenRecord.userId === user.id
-      && otpTokenRecord.phone === address.phone
-      && otpTokenRecord.verified
-      && !otpTokenRecord.tokenConsumed
-      && new Date(otpTokenRecord.expiresAt) > new Date();
-
-    if (!tokenValid) {
-      throw { code: 'OTP_REQUIRED', msg: 'Your verification code has expired. Please verify your phone number again.' };
-    }
-
-    logOtpDecision({
-      userId: user.id, phone: address.phone, postalCode: address.postalCode,
-      cartTotal: finalAmount, mode: 'enforce', required: true, reasons: risk.reasons,
-    });
-    return otpTokenRecord;
-  }
+function toE164India(phone) {
+  const digitsOnly = String(phone || '').replace(/\D/g, '');
+  if (digitsOnly.length === 10) return `91${digitsOnly}`;
+  if (digitsOnly.length === 12 && digitsOnly.startsWith('91')) return digitsOnly;
   return null;
+}
+
+export const verifyPhoneVerification = async (user, address) => {
+  const normalizedPhone = toE164India(address.phone);
+  if (!normalizedPhone) {
+    throw { code: 'INVALID_PHONE', msg: 'Invalid phone format.', purpose: 'CHECKOUT' };
+  }
+  const verifiedPhone = await PaymentsRepository.getVerifiedPhone(user.id, normalizedPhone);
+  if (!verifiedPhone) {
+    throw { code: 'PHONE_VERIFICATION_REQUIRED', msg: 'Please verify your phone number to complete checkout.', purpose: 'CHECKOUT' };
+  }
+  return true;
 };
 
 export const verifyRazorpaySignature = (orderId, paymentId, signature) => {

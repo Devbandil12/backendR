@@ -17,10 +17,23 @@ export async function getAllUsers(page = 1, limit = 20, search = '') {
   return await UsersRepository.getAllUsers(page, limit, search);
 }
 
+import * as OtpRepository from '../verification/otp/otp.repository.js';
+
+function toE164India(phone) {
+  const digitsOnly = String(phone || '').replace(/\D/g, '');
+  if (digitsOnly.length === 10) return `91${digitsOnly}`;
+  if (digitsOnly.length === 12 && digitsOnly.startsWith('91')) return digitsOnly;
+  return null;
+}
+
 export async function getUserByClerkId(clerkId) {
   const user = await UsersRepository.getUserByClerkId(clerkId);
   if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
-  return { ...user, profileImage: user.profileImage || null, dob: user.dob || null, gender: user.gender || null };
+  
+  const normalized = toE164India(user.phone);
+  const isVerified = normalized ? await OtpRepository.getVerifiedPhone(user.id, normalized) : null;
+  
+  return { ...user, phoneVerified: !!isVerified, profileImage: user.profileImage || null, dob: user.dob || null, gender: user.gender || null };
 }
 
 export async function createUser(clerkId, name, email) {
@@ -75,7 +88,11 @@ export async function updateUser(requesterClerkId, targetId, updates) {
     if (updates.referralCode !== undefined) cleanUpdates.referralCode = updates.referralCode;
   }
 
-  if (Object.keys(cleanUpdates).length === 0) throw Object.assign(new Error('No valid fields to update.'), { status: 400 });
+  if (Object.keys(cleanUpdates).length === 0) {
+    const normalized = toE164India(userToUpdate.phone);
+    const isVerified = normalized ? await OtpRepository.getVerifiedPhone(targetId, normalized) : null;
+    return { ...userToUpdate, phoneVerified: !!isVerified };
+  }
 
   const updatedUser = await UsersRepository.updateUser(targetId, cleanUpdates);
 
@@ -97,7 +114,9 @@ export async function updateUser(requesterClerkId, targetId, updates) {
   }
 
   await invalidateMultiple([{ key: makeAllUsersKey() }, { key: makeFindByClerkIdKey(userToUpdate.clerkId) }]);
-  return updatedUser;
+  const normalizedUpdate = toE164India(updatedUser.phone);
+  const isVerifiedUpdate = normalizedUpdate ? await OtpRepository.getVerifiedPhone(targetId, normalizedUpdate) : null;
+  return { ...updatedUser, phoneVerified: !!isVerifiedUpdate };
 }
 
 export async function deleteUser(requesterClerkId, targetId) {

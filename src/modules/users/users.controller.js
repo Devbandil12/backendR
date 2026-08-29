@@ -55,7 +55,31 @@ export const deleteUser = async (req, res) => {
   }
 };
 
-// getUserLogs moved to audit module
+// getUserLogs reinstated for the frontend UserPage
+export const getUserLogs = async (req, res) => {
+  try {
+    const { id } = req.params;
+    // ensure users can only see their own logs unless admin
+    const requester = await usersService.getUserByClerkId(req.auth.userId);
+    
+    // We can't strictly check admin here without RBAC, but we can enforce that 
+    // the requested log ID must match the requester's DB ID.
+    if (requester.id !== id) {
+       return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    // Dynamic import to avoid circular dependencies and get AuditRepository
+    const AuditRepository = await import('../../infrastructure/audit/audit.repository.js');
+    const logs = await AuditRepository.getAuditLogs({ actorUserId: id }, null, 50);
+    
+    // Frontend expects an array directly or { success, data }
+    // UserPage: setPersonalLogs(Array.isArray(data) ? data : []);
+    res.json(logs);
+  } catch (error) {
+    console.error('❌ Error fetching user logs:', error);
+    res.status(error.status || 500).json({ error: error.message || 'Internal Server Error' });
+  }
+};
 
 export const getUserAddresses = async (req, res) => {
   try {

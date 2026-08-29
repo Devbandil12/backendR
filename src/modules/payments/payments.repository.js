@@ -167,6 +167,12 @@ export const getOtpTokenRecord = async (token) => {
   return record;
 };
 
+export const getVerifiedPhone = async (userId, phone) => {
+  const [record] = await db.select().from(verifiedPhonesTable)
+      .where(and(eq(verifiedPhonesTable.userId, userId), eq(verifiedPhonesTable.phone, phone)));
+  return record;
+};
+
 export const executeTransaction = async (callback) => {
   return await db.transaction(callback);
 };
