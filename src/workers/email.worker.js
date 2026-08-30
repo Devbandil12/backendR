@@ -14,7 +14,7 @@ export const startEmailWorker = () => {
 
 const processNextJob = async () => {
   try {
-    const result = await queueClient.brpop(QUEUE_NAME, 5);
+    const result = await queueClient.brpop(QUEUE_NAME, 100);
 
     if (result) {
       const jobData = JSON.parse(result[1]);

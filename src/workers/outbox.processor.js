@@ -39,4 +39,4 @@ setInterval(async () => {
   polling = true;
   await processOutbox();
   polling = false;
-}, 5000); // Poll every 5 seconds
+}, 60000); // Poll every 60 seconds
